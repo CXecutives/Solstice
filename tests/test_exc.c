@@ -8,6 +8,7 @@ DECLARE_PROGRAM(p_brk_undef);
 DECLARE_PROGRAM(p_dabt);
 DECLARE_PROGRAM(p_el0);
 DECLARE_PROGRAM(p_sysregs);
+DECLARE_PROGRAM(p_sysregs2);
 DECLARE_PROGRAM(p_irq);
 DECLARE_PROGRAM(p_fptrap);
 DECLARE_PROGRAM(p_psci);
@@ -120,6 +121,23 @@ int main(void) {
         check("sysregs", "CNTV_CVAL", c.x[21], 0x123);
         check("sysregs", "CNTV_CTL ISTATUS", c.x[23], 5);
     }
+    static const TestProgram sr2 = TEST_PROGRAM(p_sysregs2);
+    m.stats_interval = 1000000; /* count helper calls (never prints) */
+    uint64_t msr0 = m.stats.helper[HV_OP_MSR], mrs0 = m.stats.helper[HV_OP_MRS];
+    if (!run(&sr2, &c, 0)) {
+        check("sysregs2", "SCTLR EnIA written inline", c.x[3], c.x[2]);
+        check("sysregs2", "SCTLR fixups (ITD set, CP15BEN clear)", c.x[5], c.x[1]);
+        check("sysregs2", "SCTLR WXN through the helper", c.x[6], c.x[1] | 1u << 19);
+        check("sysregs2", "SCTLR back", c.x[7], c.x[1]);
+        check("sysregs2", "CONTEXTIDR", c.x[10], 0x1234);
+        check("sysregs2", "CONTEXTIDR from and to stolen registers", c.x[28], seeded.x[18]);
+        check("sysregs2", "TTBR0 read", c.x[12], 0x4000);
+        check("sysregs2", "DCZID", c.x[13], 4);
+        check("sysregs2", "MSRs through the helper (VBAR, SCTLR twice, TTBR0 twice)", m.stats.helper[HV_OP_MSR] - msr0, 5);
+        check("sysregs2", "MRSs through the helper", m.stats.helper[HV_OP_MRS] - mrs0, 0);
+    }
+    m.stats_interval = 0;
+
     mach_timebase_info_data_t tb;
     mach_timebase_info(&tb);
     check("host", "mach_absolute_time is 24 MHz (timebase 125/3)", (uint64_t)tb.numer * 1000 + tb.denom, 125003);

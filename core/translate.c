@@ -33,7 +33,7 @@ typedef struct {
     uint8_t cold; /* the instruction is in the cold part */
 } LitFix;
 
-enum { OOL_EXIT, OOL_SLOW, OOL_SYS, OOL_MRS, OOL_GROUP };
+enum { OOL_EXIT, OOL_SLOW, OOL_SYS, OOL_MRS, OOL_GROUP, OOL_MSR_EXIT /* the MSR helper, then out of the block at pc + 4 */ };
 
 typedef struct {
     uint32_t at;        /* the branch that jumps here */
@@ -320,11 +320,25 @@ static void put_xjump(Emit *e, uint64_t target, int check) {
         put_ijc_jump(e, 1);
         return;
     }
+    uint32_t data = (e->flags & 0x7fffffffu) | (check ? 1u << 31 : 0);
+    if (e->npool + 2 <= MAX_LITS && e->nfix < MAX_LITS) {
+        /* The site's 16 bytes in the literal pool, with the cold code: the thunk only reads them (flags at [x7], the
+           target at [x7, #8]), so the hot part keeps just these three words (Tomba247 a218623). */
+        uint32_t info = e->npool;
+        e->pool[info] = data;
+        e->pool[info + 1] = target;
+        e->npool += 2;
+        e->fix[e->nfix++] = (LitFix){e->n, FIX_ADR, info, (uint8_t)(e->in_cold && !e->flat)};
+        put(e, 0x10000007u); /* adr x7, data */
+        put(e, LDR_X(15, 28, HV_CPU_XJUMP_THUNK));
+        put(e, BR_X(15));
+        return;
+    }
     if (!(e->n & 1)) put(e, 0xd503201f); /* nop: the data after the br starts 8-byte aligned */
     put(e, 0x10000007u | 3u << 5);       /* adr x7, data */
     put(e, LDR_X(15, 28, HV_CPU_XJUMP_THUNK));
     put(e, BR_X(15));
-    put(e, (e->flags & 0x7fffffffu) | (check ? 1u << 31 : 0));
+    put(e, data);
     put(e, 0);
     put(e, (uint32_t)target);
     put(e, (uint32_t)(target >> 32));
@@ -410,8 +424,9 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
         }
         return;
     }
-    uint64_t *slot = &e->m->slots[slot_index];
+    uint64_t *slot = HV_SLOT(e->m, slot_index);
     *slot = 0;
+    slot[1] = target; /* hv_chain_thunk reads it there, so the stub holds only the slot's address */
     e->m->slot_site[slot_index] = NULL; /* until placed: what it held is a dropped block's */
     e->m->slot_cond[slot_index] = NULL;
     e->m->slot_xa[slot_index] = xa;
@@ -455,12 +470,11 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
     if (check) link_here(e, to_exit, p0);
     put(e, STR_X(30, 28, HV_CPU_X(30)));
     put(e, LDR_X(15, 28, HV_CPU_CHAIN_THUNK));
-    if ((e->n & 1) == 0) put(e, 0xd503201f);                         /* nop: the data starts 8-byte aligned */
     put(e, BLR_X(15));
+    /* The slot's address after the BLR, where hv_chain_thunk finds it (an unaligned 8-byte load is fine there); the
+       target is in the slot. 5 words a stub, not 7 or 8 (Tomba247 a3ca070). */
     put(e, (uint32_t)(uintptr_t)slot);
     put(e, (uint32_t)((uintptr_t)slot >> 32));
-    put(e, (uint32_t)target);
-    put(e, (uint32_t)(target >> 32));
     if (xa) {
         link_here(e, to_miss, p0);
         if (use_xjump()) put_xjump(e, target, 0); /* exit_req was checked above if it had to be */
@@ -1309,6 +1323,54 @@ static void put_store_field(Emit *e, int rt, uint32_t off) {
     unspill(e, &s, 1);
 }
 
+/* Guest rt to or from an HvCpu field past one load's reach (the fields only C touched, after the TLB and the return
+   tables): x15 = x28 + the offset's upper bits, then the access with the low 12. x15 and x6 are free scratch
+   (Tomba247 2f8b1e0). */
+static void put_far_field(Emit *e, int rt, uint32_t off, int read) {
+    if (read && rt == 31) return;
+    put(e, 0x91400000u | (off >> 12) << 10 | 28u << 5 | 15u); /* add x15, x28, #off >> 12, lsl #12 */
+    uint32_t lo = off & 0xfff;
+    if (read) {
+        if (!is_stolen(rt)) {
+            put(e, LDR_X(rt, 15, lo));
+            return;
+        }
+        put(e, LDR_X(15, 15, lo));
+        put(e, STR_X(15, 28, slot_of(rt)));
+        return;
+    }
+    if (!is_stolen(rt)) {
+        put(e, STR_X(rt, 15, lo)); /* 31 stores XZR */
+        return;
+    }
+    put(e, LDR_X(6, 28, slot_of(rt)));
+    put(e, STR_X(6, 15, lo));
+}
+#define FAR_FIELD_OK(f) (offsetof(HvCpu, f) % 8 == 0 && offsetof(HvCpu, f) >> 12 < 4096)
+_Static_assert(FAR_FIELD_OK(ttbr0_el1) && FAR_FIELD_OK(contextidr_el1), "put_far_field reaches 16 MB, 8-byte aligned");
+
+/* MSR SCTLR_EL1, Xt at EL1. xnu writes it on every kernel entry and exit of a process whose PAC keys differ (the
+   EnIA/IB/DA/DB bits): hundreds of thousands a second with a busy app, each through the helper and each ending its
+   block. Only M, WXN, E0E and EE change what translations mean (hv_sysreg_msr flushes for them), so when none of those
+   changes the store is the whole write, fixed up as hv_sysreg_msr does it (ITD and SED set, CP15BEN clear), and the
+   block goes on. When one does, the helper out of line, then out of the block as before (Tomba247 2d9fa9d). */
+static void translate_sctlr_write(Emit *e, uint32_t insn, uint64_t pc) {
+    int rt = insn & 0x1f;
+    if (rt == 31) put(e, 0xd2800006u);                /* movz x6, #0 */
+    else if (is_stolen(rt)) put(e, LDR_X(6, 28, slot_of(rt)));
+    else put(e, MOV_X(6, rt));
+    put(e, 0xb27904c6u);                              /* orr x6, x6, #0x180 */
+    put(e, 0x927af8c6u);                              /* and x6, x6, #~0x20 */
+    put(e, LDR_X(7, 28, HV_CPU_SCTLR_EL1));
+    put(e, 0xca0600e7u);                              /* eor x7, x7, x6: what changes */
+    put(e, 0xd280002fu);                              /* movz x15, #1 */
+    put(e, 0xf2a0610fu);                              /* movk x15, #0x308, lsl #16: M, WXN, E0E, EE */
+    put(e, 0x8a0f00e7u);                              /* and x7, x7, x15 */
+    put(e, CBNZ_X(7));
+    put_ool(e, (Ool){.kind = OOL_MSR_EXIT, .pc = pc, .insn = insn});
+    put(e, STR_X(6, 28, HV_CPU_SCTLR_EL1));
+}
+
 /* MRS/MSR of NZCV, FPCR, FPSR: the host registers are the guest's. */
 static void put_native_sysreg(Emit *e, uint32_t insn, int read) {
     int rt = insn & 0x1f;
@@ -1515,10 +1577,15 @@ static int translate_sysreg_inline(Emit *e, uint32_t insn, uint64_t pc) {
         else put_store_field(e, rt, off);
         return 1;
     }
-    case SR(3, 0, 1, 0, 0): /* SCTLR_EL1, ESR_EL1, FAR_EL1: reads (writes have side effects or are rare) */
+    case SR(3, 0, 1, 0, 0): /* SCTLR_EL1, ESR_EL1, FAR_EL1: reads; SCTLR writes that keep what translations depend on */
     case SR(3, 0, 5, 2, 0):
     case SR(3, 0, 6, 0, 0): {
-        if (!read || !el1) return 0;
+        if (!el1) return 0;
+        if (!read && reg == SR(3, 0, 1, 0, 0)) {
+            translate_sctlr_write(e, insn, pc);
+            return 1;
+        }
+        if (!read) return 0;
         uint32_t off = reg == SR(3, 0, 1, 0, 0) ? HV_CPU_SCTLR_EL1 : reg == SR(3, 0, 5, 2, 0) ? HV_CPU_ESR_EL1 : HV_CPU_FAR_EL1;
         put_load_field(e, rt, off);
         return 1;
@@ -1527,6 +1594,21 @@ static int translate_sysreg_inline(Emit *e, uint32_t insn, uint64_t pc) {
     case SR(3, 0, 7, 4, 0):
         if (!read || !el1) return 0;
         put_load_field(e, rt, reg == SR(3, 0, 2, 0, 2) ? HV_CPU_TCR_EL1 : HV_CPU_PAR_EL1);
+        return 1;
+    /* Plain storage in hv_sysreg too (read_reg / write_reg), and common (a phone's --stats, per second): TTBR0_EL1
+       reads 8.4K (writes switch address spaces: the helper), CONTEXTIDR_EL1 writes 7.4K (each also ended its block),
+       DCZID_EL0 reads 2.4K, a constant (64-byte DC ZVA; EL0 may read it). Tomba247 2f8b1e0. */
+    case SR(3, 0, 2, 0, 0): /* TTBR0_EL1: reads */
+        if (!read || !el1) return 0;
+        put_far_field(e, rt, (uint32_t)offsetof(HvCpu, ttbr0_el1), 1);
+        return 1;
+    case SR(3, 0, 13, 0, 1): /* CONTEXTIDR_EL1 */
+        if (!el1) return 0;
+        put_far_field(e, rt, (uint32_t)offsetof(HvCpu, contextidr_el1), read);
+        return 1;
+    case SR(3, 3, 0, 0, 7): /* DCZID_EL0 */
+        if (!read) return 0;
+        put_const_to(e, rt, 4);
         return 1;
     case SR(3, 0, 4, 2, 3): /* PAN: a block is translated for one PAN state (HV_BLOCK_PAN) and every write ends it */
         if (!read || !el1) return 0;
@@ -1801,6 +1883,13 @@ static void emit_ool(Emit *e) {
             continue;
         }
         unspill(e, o->restore, o->nrestore);
+        if (o->kind == OOL_MSR_EXIT) {
+            put_helper(e, o->pc, o->insn, HV_OP_MSR);
+            e->cur_pc = o->site;
+            if (e->no_ijc) put_exit(e, o->pc + 4);
+            else put_branch_exit(e, o->pc + 4, 0); /* checks exit_req, which the helper set if it flushed */
+            continue;
+        }
         if (o->kind == OOL_EXIT) {
             e->cur_pc = o->site;
             put_branch_exit(e, o->pc, o->plain); /* branches, and exits for interrupts let through */
@@ -2091,7 +2180,7 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
             if (tb && tb->maker == b->maker) code = tb->code;
         }
         if (!code) continue;
-        m->slots[slot] = (uint64_t)(uintptr_t)code;
+        *HV_SLOT(m, slot) = (uint64_t)(uintptr_t)code;
         uint32_t at = e->site[k].at;
         int64_t off = code - ((e->site[k].cold ? cold : dst) + at);
         if (off >= -(1 << 25) && off < (1 << 25)) (e->site[k].cold ? e->cold : e->hot)[at] = 0x14000000u | (uint32_t)(off & 0x3ffffff);

@@ -33,12 +33,17 @@ static inline uint64_t hv_exec_key(uint64_t page_va, int64_t addend) {
 #define HV_TLB_PAGE_BITS 14
 #define HV_TLB_ADJ 15
 #define HV_TLB_INVALID 0x8080808080808080ull /* what memset(0x80) leaves */
-#define HV_TLB_BITS 14 /* 16384 entries per EL: 256 MB of 16 KB pages (xnu's working set overflowed 64 MB) */
+/* 8192 entries per EL: 128 MB of 16 KB pages (xnu's working set overflowed 64 MB). Was 16384: a phone's profile put
+   27% of translated-code samples on the first load of a TLB entry, and the tables (2 MB a CPU) missed the caches;
+   these are half that (Tomba247 2797ea5). -DHV_TLB_BITS=14 builds the old size. */
+#ifndef HV_TLB_BITS
+#define HV_TLB_BITS 13
+#endif
 #define HV_TLB_SIZE (1u << HV_TLB_BITS)
 #define HV_IJC_TABLES 16
 #define HV_RET_BITS 13 /* entries in a return table */
 #define HV_RET_TAB_BYTES ((1u << HV_RET_BITS) * 16)
-#define HV_CPU_RET_TAB 0x201000 /* just past the TLB */
+#define HV_CPU_RET_TAB ((0x580 + HV_TLB_SIZE * 4 * 32 + 0xfff) & ~0xfffu) /* just past the TLB, at a multiple of 4 KB */
 
 /* Guest CPU state. While a translated block runs, host x28 points here and the
    guest's x0..x17, x19..x27, x29 and x30 live in the same host registers.

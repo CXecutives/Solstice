@@ -166,6 +166,35 @@ PROGRAM p_sysregs
     mrs x23, cntv_ctl_el0      // enabled and already expired: ISTATUS set
 END p_sysregs
 
+// System registers the translator handles inline (test_exc counts the helper calls):
+// SCTLR_EL1 writes that keep M, WXN, E0E and EE, CONTEXTIDR_EL1, TTBR0_EL1 reads, DCZID_EL0.
+PROGRAM p_sysregs2
+    SETUP
+    mrs x1, sctlr_el1
+    eor x2, x1, #(1 << 31)     // EnIA: inline
+    msr sctlr_el1, x2
+    mrs x3, sctlr_el1
+    orr x4, x1, #(1 << 5)      // CP15BEN reads as 0 and ITD as 1, whatever is written
+    bic x4, x4, #(1 << 7)
+    msr sctlr_el1, x4
+    mrs x5, sctlr_el1
+    orr x9, x1, #(1 << 19)     // WXN: the helper, then out of the block
+    msr sctlr_el1, x9
+    mrs x6, sctlr_el1
+    msr sctlr_el1, x1          // and back: the helper again
+    mrs x7, sctlr_el1
+    mov x8, #0x1234
+    msr contextidr_el1, x8
+    mrs x10, contextidr_el1
+    msr contextidr_el1, x18    // a stolen register as the value
+    mrs x28, contextidr_el1    // and as the destination
+    mov x11, #0x4000
+    msr ttbr0_el1, x11         // the helper (an address-space switch)
+    mrs x12, ttbr0_el1
+    msr ttbr0_el1, xzr
+    mrs x13, dczid_el0
+END p_sysregs2
+
 // The test raises the IRQ line before running; it is masked until DAIFClr.
 PROGRAM p_irq
     SETUP
