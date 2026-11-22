@@ -146,36 +146,80 @@ static void counters(void) {
     check("counters: dispatcher entries counted", after.blocks > before.blocks);
 }
 
+/* How late this host's timed waits (pthread_cond_timedwait_relative_np, as the kicker and WFI sleep) come back after
+   `ticks`, on average in us, at QoS class `qos`: a few us on a Mac or a phone, ~10 ms on the CI's virtual Macs. The
+   timing checks allow for it; whether the kicker works at all is checked by what it counted. */
+struct Overshoot { qos_class_t qos; uint64_t ticks; double us; };
+static void *measure_overshoot(void *arg) {
+    struct Overshoot *o = arg;
+    if (o->qos != QOS_CLASS_DEFAULT) pthread_set_qos_class_self_np(o->qos, 0);
+    pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+    double sum = 0;
+    for (int i = 0; i < 10; i++) {
+        struct timespec ts = {(time_t)(o->ticks / 24000000), (long)(o->ticks % 24000000) * 1000 / 24};
+        uint64_t t0 = mach_absolute_time();
+        pthread_mutex_lock(&mu);
+        pthread_cond_timedwait_relative_np(&cv, &mu, &ts);
+        pthread_mutex_unlock(&mu);
+        uint64_t dt = mach_absolute_time() - t0;
+        sum += dt > o->ticks ? (double)(dt - o->ticks) / 24.0 : 0;
+    }
+    o->us = sum / 10;
+    return NULL;
+}
+static double overshoot_us(qos_class_t qos, uint64_t ticks) {
+    struct Overshoot o = {qos, ticks, 0};
+    pthread_t t;
+    pthread_create(&t, NULL, measure_overshoot, &o);
+    pthread_join(t, NULL);
+    return o.us;
+}
+
 /* O9: timer interrupts 1 ms after they are set, 300 each on four CPUs: two spin in a loop that never leaves by itself
-   (only the kicker gets them out, at their deadline), two wait in WFI. On average well under the 20 ms safety kick. */
+   (only a kick gets them out: the kicker's, at their deadline), two wait in WFI (until their deadline). On time, as
+   far as the host's own timed waits allow; the spinning ones by a kick at nearly every deadline. */
 static void timers(void) {
     const uint64_t n = 300, delay = 24000;
     static const char *const prog[NCPU] = {mp_timer_spin, mp_timer_spin, mp_timer_wfi, mp_timer_wfi};
+    double slack_kicker = overshoot_us(QOS_CLASS_USER_INTERACTIVE, delay), slack_cpu = overshoot_us(QOS_CLASS_DEFAULT, delay);
+    printf("timers: this host's 1 ms timed waits come back %.0f us late (kicker's QoS), %.0f us (CPU threads')\n", slack_kicker, slack_cpu);
     uint64_t kicks0 = m.stats.kicker_kicks;
     kicker_start();
     start(prog, n, delay, NULL);
     for (int i = 0; i < NCPU; i++) pthread_join(threads[i], NULL), threads[i] = 0;
     kicker_end();
+    uint64_t kicks = m.stats.kicker_kicks - kicks0;
     for (int i = 0; i < NCPU; i++) {
         char msg[200];
         double mean = (double)cpus[i].x[22] / (double)n / 24.0, max = (double)cpus[i].x[23] / 24.0;
+        double bound = (i < 2 ? slack_kicker : slack_cpu) + 3000;
         printf("timers: cpu %d (%s): %llu interrupts, late by %.0f us on average, %.0f us at most\n", i, i < 2 ? "spinning" : "in WFI",
                (unsigned long long)cpus[i].x[21], mean, max);
         snprintf(msg, sizeof msg, "timers: cpu %d took all its interrupts and nothing else (x17 %llx esr %llx)", i,
                  (unsigned long long)cpus[i].x[17], (unsigned long long)cpus[i].x[19]);
         check(msg, cpus[i].x[21] == n && cpus[i].x[17] == 0);
-        snprintf(msg, sizeof msg, "timers: cpu %d on time (late by %.0f us on average, under 3 ms)", i, mean);
-        check(msg, mean < 3000);
+        snprintf(msg, sizeof msg, "timers: cpu %d on time (late by %.0f us on average, under %.0f us)", i, mean, bound);
+        check(msg, mean < bound);
         snprintf(msg, sizeof msg, "timers: cpu %d never lost (at most %.0f us late, under 100 ms)", i, max);
-        check(msg, max < 100000);
+        check(msg, max < 100000 + 3 * (i < 2 ? slack_kicker : slack_cpu));
     }
-    check("timers: the kicker kicked CPUs at their deadlines", m.stats.kicker_kicks > kicks0);
+    printf("timers: the kicker kicked %llu CPUs at their deadline for %llu interrupts of the spinning CPUs\n",
+           (unsigned long long)kicks, (unsigned long long)(2 * n));
+    check("timers: the kicker brought the spinning CPUs out at their deadlines (nearly every interrupt)", kicks >= 2 * n * 8 / 10);
 }
 
 /* O9 + GFX-3: CPU 0's refresh deadline. A second with CPU 0 spinning (the kicker brings it out at each refresh and polls
    it every millisecond), then a second with every CPU in WFI (they wake at their own deadlines: the refresh, the 100 ms
    cap; the kicker looks only after those). Every refresh comes (60 a second), and the idle machine wakes rarely. */
 static void refresh_and_idle(void) {
+    const uint64_t period = 24000000 / 60;
+    double slack_kicker = overshoot_us(QOS_CLASS_USER_INTERACTIVE, HV_POLL_BUSY), slack_wfi = overshoot_us(QOS_CLASS_DEFAULT, period);
+    /* What the host's timed waits allow: one refresh per wakeup at most, one wakeup per period plus how late it comes. */
+    double want_asleep = 1e6 / ((double)period / 24.0 + slack_wfi), want_polls = 1e6 / ((double)HV_POLL_BUSY / 24.0 + slack_kicker);
+    if (want_asleep > 60) want_asleep = 60;
+    printf("refresh: this host's timed waits come back %.0f us late after 1 ms (kicker), %.0f us after 16.7 ms (CPU threads)\n",
+           slack_kicker, slack_wfi);
     refresh_on = 1;
     memset(&vclock, 0, sizeof vclock);
     poll_due = 0;
@@ -193,12 +237,14 @@ static void refresh_and_idle(void) {
         printf("refresh, cpu 0 %s: refreshes %.1f/s, device polls %.0f/s, kicker wakeups %.0f/s, WFI wakeups %.0f/s\n",
                phase ? "asleep" : "spinning", r, p, k, w);
         char msg[160];
-        snprintf(msg, sizeof msg, "refresh, cpu 0 %s: every 60 Hz refresh came (%.1f/s)", phase ? "asleep" : "spinning", r);
-        check(msg, r >= 57 && r <= 61.5);
-        if (!phase) {
-            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: devices polled about every millisecond (%.0f/s)", p);
-            check(msg, p >= 300);
-        } else {
+        if (!phase) { /* kicked at each refresh deadline: the kicker wakes far more often than 60 times a second */
+            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: every 60 Hz refresh came (%.1f/s)", r);
+            check(msg, r >= 57 && r <= 61.5);
+            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: devices polled about every millisecond (%.0f/s; %.0f allowed by this host)", p, want_polls);
+            check(msg, p >= 0.5 * want_polls);
+        } else { /* asleep until each refresh deadline: one refresh per wakeup */
+            snprintf(msg, sizeof msg, "refresh, cpu 0 asleep: a refresh at each deadline (%.1f/s; %.1f allowed by this host)", r, want_asleep);
+            check(msg, r >= 0.85 * want_asleep - 1 && r <= 61.5);
             snprintf(msg, sizeof msg, "idle: devices polled at the refreshes only (%.0f/s)", p);
             check(msg, p <= 150);
             snprintf(msg, sizeof msg, "idle: the kicker wakes rarely (%.0f/s; it was 1000)", k);
