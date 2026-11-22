@@ -1,7 +1,9 @@
 #include "harness.h"
 
 #include <fcntl.h>
+#include <mach/mach_time.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -641,6 +643,50 @@ static void test_virtio_balloon(void) {
     wr16(abar + 0x3000, 0);
     check("anonymous: page given back", a->given_back, 1);
     check("anonymous: madvise did not fail", a->failed, 0);
+
+    /* CPU 0's tick polls the devices only when woken for them or at a device deadline (O9): a new balloon target (work
+       no device thread signals) waits for a wake or HV_DEV_SAFETY, not for every tick, e.g. a timer register write. */
+    hv_cpu_wake(&cpu);
+    m.tick(&m, &cpu); /* woken: polls, and the next poll is due HV_DEV_SAFETY from now */
+    hv_virtio_balloon_set_target(b, 2 << 20);
+    uint64_t t0 = mach_absolute_time();
+    uint64_t due = m.tick(&m, &cpu);
+    if (mach_absolute_time() - t0 < HV_DEV_SAFETY / 2) check("a tick without a wake or deadline polls nothing", rd32(bar + 0x2000), 256);
+    check("CPU 0's deadline is the next poll at the latest", due && due <= t0 + HV_DEV_SAFETY, 1);
+    hv_machine_wake(&m);
+    m.tick(&m, &cpu);
+    check("a wake for device work polls", rd32(bar + 0x2000), 512);
+    hv_virtio_balloon_set_target(b, 1 << 20);
+    hv_machine_wake(&m);
+    m.tick(&m, &cpu);
+    rd8(bar + 0x1000); /* the config change in the ISR */
+}
+
+/* M1: guest RAM in a file is read in ahead of the guest, not written (that made the kernel owe the file the whole RAM in
+   writeback to flash): every page comes in, none is dirty. mincore tells dirty pages apart (one written on purpose). */
+static void test_prefault(void) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/hv-test-prefault", work_dir());
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) { check("prefault: test file", 0, 1); return; }
+    unlink(path);
+    const size_t page = (size_t)getpagesize(), n = 64, size = n * page;
+    uint8_t *p = ftruncate(fd, (off_t)size) == 0 ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED;
+    if (p == MAP_FAILED) { check("prefault: test mapping", 0, 1); close(fd); return; }
+    p[size - page] = 1; /* the last page: written */
+    hv_vmapple_prefault(p, size - page);
+    char vec[64];
+    int in = 0, dirty = 0;
+    if (mincore(p, size, vec) == 0) {
+        for (size_t i = 0; i + 1 < n; i++) in += (vec[i] & MINCORE_INCORE) != 0, dirty += (vec[i] & (MINCORE_MODIFIED | MINCORE_MODIFIED_OTHER)) != 0;
+        check("prefault: every page read in", (uint64_t)in, n - 1);
+        if (vec[n - 1] & (MINCORE_MODIFIED | MINCORE_MODIFIED_OTHER)) check("prefault: no page dirtied", (uint64_t)dirty, 0);
+        else printf("prefault: mincore does not report dirty file pages here; %d of %zu read in\n", in, n - 1);
+    } else {
+        check("prefault: mincore", 0, 1);
+    }
+    munmap(p, size);
+    close(fd);
 }
 
 /* FIPS-197 appendix C.1: AES-128, key 000102..0f, plaintext 00112233..ff. */
@@ -748,6 +794,7 @@ int main(void) {
     test_virtio_balloon();
     puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();
+    test_prefault();
     /* MSI frame: valid type register, doorbell pends the INTID */
     check("msi type valid", rd32(VMAPPLE_GIC_MSI + 8) >> 31, 1);
     check("msi base", (rd32(VMAPPLE_GIC_MSI + 8) >> 16) & 0x1fff, VMAPPLE_MSI_BASE);

@@ -610,6 +610,8 @@ static const char install_script[] =
    (launchctl disable of gui/ agents did not survive a log out on the Mac bench, 2026-11-08), so it doesn't try.
    Reduce Motion and Reduce Transparency need System Settings (a script can't write com.apple.universalaccess).
    Nothing reads the script's own stdin (sh is reading the script from it). */
+#define HV_SPINS_LABEL "com.henge.ticketspins"
+#define HV_SPINS_PLIST "/Library/LaunchDaemons/" HV_SPINS_LABEL ".plist"
 static const char lighten_script[] =
     "#!/bin/sh\n"
     "echo 'Making macOS lighter for Henge...'\n"
@@ -649,6 +651,22 @@ static const char lighten_script[] =
     "  for k in AutomaticCheckEnabled AutomaticDownload AutomaticallyInstallMacOSUpdates; do sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate $k -bool false </dev/null; done\n"
     "  sudo defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool false </dev/null\n"
     "  sudo pmset -a powernap 0 </dev/null\n"
+    /* Solstice answers macOS's paravirtual ticket-lock calls (exception.c): a CPU waiting for a lock sleeps until the
+       holder kicks it. macOS spins 100 WFE rounds first (kern.ticket_lock_spins, xnu's LOCK_SNOOP_SPINS), each up to
+       50 us of emulated waiting here: 8 at every boot, by a LaunchDaemon (the sysctl does not persist). */
+    "  sudo tee " HV_SPINS_PLIST " >/dev/null <<'EOF'\n"
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+    "<plist version=\"1.0\"><dict>\n"
+    "<key>Label</key><string>" HV_SPINS_LABEL "</string>\n"
+    "<key>ProgramArguments</key><array><string>/usr/sbin/sysctl</string><string>-w</string><string>kern.ticket_lock_spins=8</string></array>\n"
+    "<key>RunAtLoad</key><true/>\n"
+    "</dict></plist>\n"
+    "EOF\n"
+    "  sudo chown root:wheel " HV_SPINS_PLIST " </dev/null\n"
+    "  sudo chmod 644 " HV_SPINS_PLIST " </dev/null\n"
+    "  sudo launchctl bootout system/" HV_SPINS_LABEL " 2>/dev/null </dev/null\n"
+    "  sudo launchctl bootstrap system " HV_SPINS_PLIST " </dev/null\n"
     "fi\n"
     "W=\"/System/Library/Desktop Pictures/Solid Colors/Black.png\"\n"
     "[ -f \"$W\" ] || W=$(ls \"/System/Library/Desktop Pictures/Solid Colors/\"*.png 2>/dev/null | head -1)\n"
@@ -664,7 +682,7 @@ static const char lighten_script[] =
     "fi\n"
     "killall Dock 2>/dev/null\n"
     "echo 'Done: animations, desktop widgets, the screen saver, a moving wallpaper, Siri and suggestions are off;'\n"
-    "echo 'with the password also Spotlight indexing, Time Machine, automatic updates and Power Nap.'\n"
+    "echo 'with the password also Spotlight indexing, Time Machine, automatic updates and Power Nap, and locks spin less.'\n"
     "echo 'Also turn on Reduce Motion and Reduce Transparency: System Settings, Accessibility.'\n"
     "echo 'Log out and back in for all of it to take effect. To undo: curl -s http://" HV_SHARE_ADDR "/.henge/unlighten | sh'\n";
 
@@ -693,6 +711,9 @@ static const char unlighten_script[] =
     "  for k in AutomaticCheckEnabled AutomaticDownload AutomaticallyInstallMacOSUpdates; do sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate $k -bool true </dev/null; done\n"
     "  sudo defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool true </dev/null\n"
     "  sudo pmset -a powernap 1 </dev/null\n"
+    "  sudo launchctl bootout system/" HV_SPINS_LABEL " 2>/dev/null </dev/null\n"
+    "  sudo rm -f " HV_SPINS_PLIST " </dev/null\n"
+    "  sudo sysctl -w kern.ticket_lock_spins=100 >/dev/null 2>&1 </dev/null\n" /* xnu's default */
     "fi\n"
     "killall Dock 2>/dev/null\n"
     "echo 'Back as it was, apart from the wallpaper (System Settings, Wallpaper).'\n"

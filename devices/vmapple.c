@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <mach/mach.h>
 #include <mach/mach_error.h>
+#include <mach/mach_time.h>
 #include <mach/vm_map.h>
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -196,9 +197,6 @@ static uint8_t *alloc_no_footprint(uint64_t size) {
     return (uint8_t *)base;
 }
 
-/* A mapped file's page is slow to touch the first time and as fast as any other
-   afterwards, so a background thread gets there before the guest does. Adding
-   zero dirties the page without changing it, whatever the guest has written. */
 /* An Apple register block's bytes (64 KB), for saving the machine. */
 uint8_t *hv_vmapple_avp_regs(void *avp) { return avp ? ((AvpRegs *)avp)->regs : NULL; }
 
@@ -207,22 +205,31 @@ struct PrefaultArgs {
     uint64_t size;
 };
 
+/* A mapped file's page is slow to touch the first time and as fast as any other afterwards, so a background thread
+   gets there before the guest does: by reading it, which brings it in without dirtying it (adding zero, as before,
+   made every page dirty, and the kernel owed the file the whole RAM in writeback to flash); the guest's own first
+   write to it is then a cheap fault. Atomic loads: the guest may be writing meanwhile. */
+static volatile uint8_t prefault_sink;
+void hv_vmapple_prefault(uint8_t *ram, uint64_t size) {
+    uint8_t x = 0;
+    for (uint64_t off = 0; off < size; off += 0x4000) x ^= __atomic_load_n(ram + off, __ATOMIC_RELAXED);
+    prefault_sink = x;
+}
+
 static void *prefault_thread(void *arg) {
     struct PrefaultArgs a = *(struct PrefaultArgs *)arg;
     free(arg);
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (uint64_t off = 0; off < a.size; off += 0x4000) __atomic_fetch_add((volatile uint64_t *)(a.ram + off), 0, __ATOMIC_RELAXED);
+    hv_vmapple_prefault(a.ram, a.size);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     fprintf(stderr, "hengevm: guest RAM file ready in %.1f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
     return NULL;
 }
 
-static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
-    HvVmapple *b = m->tick_opaque;
-    uint64_t deadline = hv_timer_update(b->gic, cpu);
-    if (cpu->index != 0) return deadline; /* the others only have their own timers to look after */
+/* CPU 0, device lock held: every device's work. */
+static void poll_locked(HvVmapple *b) {
     hv_pl031_tick(b->rtc);
     if (b->poll) b->poll();
     hv_pvg_lite_poll(b->pvg);
@@ -235,16 +242,28 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     hv_virtio_usb_poll(b->vusb);
     hv_virtio_balloon_poll(b->balloon);
     hv_bdif_poll(b->bdif);
-    return deadline; /* every GIC state change already updated the CPU's lines */
 }
 
-/* Devices and the GIC are shared by the CPUs: one at a time. */
+/* Each CPU's timers (the GIC's lock only; every GIC state change already updated the CPU's lines). CPU 0 also polls the
+   devices, under the device lock (they are shared by the CPUs: one at a time), but only when something woke it for
+   them (hv_cpu_wake: a device thread, an interrupt raised for it, the kicker's poll while it runs) or a device
+   deadline is due: the display's refresh, on its own grid (pvg_lite.c), or poll_period since the last poll. Not for
+   each timer register write, WFE timeout or TLBI kick, as before. Returns the earliest of its deadlines. */
 static uint64_t tick(HvMachine *m, HvCpu *cpu) {
-    if (cpu->index != 0) return hv_timer_update(((HvVmapple *)m->tick_opaque)->gic, cpu); /* its own timer: the GIC's lock only */
-    hv_dev_lock(m);
-    uint64_t deadline = tick_locked(m, cpu);
-    hv_dev_unlock(m);
-    return deadline;
+    HvVmapple *b = m->tick_opaque;
+    if (cpu->index != 0) return hv_timer_update(b->gic, cpu);
+    uint64_t now = mach_absolute_time();
+    uint64_t vb = hv_pvg_lite_next_vblank(b->pvg);
+    if (__atomic_exchange_n(&m->percpu[0].poll_req, 0, __ATOMIC_ACQ_REL) || now >= b->poll_due || (vb && now >= vb)) {
+        hv_dev_lock(m);
+        poll_locked(b);
+        hv_dev_unlock(m);
+        b->poll_due = now + (b->poll_period ? b->poll_period : HV_DEV_SAFETY);
+        vb = hv_pvg_lite_next_vblank(b->pvg);
+        HV_ST(cpu).dev_polls++;
+    }
+    uint64_t deadline = hv_timer_update(b->gic, cpu), dev = vb && vb < b->poll_due ? vb : b->poll_due;
+    return deadline && deadline < dev ? deadline : dev;
 }
 
 int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, uint64_t ram_size, HvDisk *root, HvDisk *aux,

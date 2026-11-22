@@ -159,6 +159,12 @@ static int test_mmio(HvMachine *m) {
     return bad;
 }
 
+static uint64_t chained_total(HvMachine *m) {
+    static HvStats s;
+    hv_stats_total(m, &s);
+    return s.chained;
+}
+
 int main(void) {
     setenv("HV_GROUPS", "1", 0); /* grouped accesses are off by default: test them here */
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -193,7 +199,7 @@ int main(void) {
             run_native(p, &init, &native, reset_data);
             memcpy(native_data, data, DATA_SIZE);
             reset_data();
-            m.stat_slow_mem = 0;
+            uint64_t slow0 = hv_stat_slow_mem(&m);
             int bad = run_jit(&m, p, &init, &jit, mode == 2 ? mmu_on : mode == 3 ? mmu_on_el0 : NULL);
             if (!bad) bad = compare_cpus(p->name, &native, &jit);
             for (size_t off = 0; off < DATA_SIZE && !bad; off += 8)
@@ -206,7 +212,7 @@ int main(void) {
                     bad = 1;
                 }
             printf("%-11s %-18s: %-4s (%llu slow-path accesses)\n", p->name, mode_names[mode], bad ? "FAIL" : "ok",
-                   (unsigned long long)m.stat_slow_mem);
+                   (unsigned long long)(hv_stat_slow_mem(&m) - slow0));
             failed += bad != 0;
         }
     }
@@ -214,7 +220,7 @@ int main(void) {
     m.slow_mem = 0;
     failed += test_mmio(&m);
     printf("%zu programs x 4 modes + mmio, %d failures, %llu chained exits\n", count, failed,
-           (unsigned long long)m.stats.chained);
+           (unsigned long long)chained_total(&m));
     print_code_size("test_mem");
     return failed != 0;
 }

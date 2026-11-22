@@ -51,10 +51,12 @@ int main(void) {
             native = init;
             hv_native_run(&native, p->native);
             double t1 = now_ms();
-            uint64_t b0 = m.stats.blocks, s0 = m.stats.helper[HV_OP_MEM];
+            static HvStats s0, s1;
+            hv_stats_total(&m, &s0);
             if (run_jit(&m, p, &init, &jit, at_el0)) return 1;
-            entries = m.stats.blocks - b0;
-            slow = m.stats.helper[HV_OP_MEM] - s0;
+            hv_stats_total(&m, &s1);
+            entries = s1.blocks - s0.blocks;
+            slow = s1.helper[HV_OP_MEM] - s0.helper[HV_OP_MEM];
             double t2 = now_ms();
             if (t1 - t0 < tn) tn = t1 - t0;
             if (k && t2 - t1 < tj) tj = t2 - t1; /* the first JIT run includes translation */

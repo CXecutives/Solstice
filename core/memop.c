@@ -307,7 +307,7 @@ int hv_vmem_xfer(HvCpu *cpu, uint64_t va, void *buf, uint32_t len, int write, in
                         tag != HV_TLB_INVALID && ((va - tag - HV_TLB_ADJ) >> HV_TLB_PAGE_BITS) == 0 ? 2 : 0;
             if (!had_entry) {
                 int other = t->read_tag != HV_TLB_INVALID || t->write_tag != HV_TLB_INVALID || t->exec_tag != HV_TLB_INVALID;
-                cpu->m->stats.tlb_miss_kind[(el ? 2 : 0) + other]++;
+                HV_ST(cpu).tlb_miss_kind[(el ? 2 : 0) + other]++;
             }
         }
         uint32_t fsc = hv_mmu_access(cpu, va, write ? HV_ACC_WRITE : HV_ACC_READ, el, &pa);
@@ -321,12 +321,12 @@ int hv_vmem_xfer(HvCpu *cpu, uint64_t va, void *buf, uint32_t len, int write, in
             uint64_t inpage = va & ((1ull << HV_TLB_PAGE_BITS) - 1);
             int why = !ram ? 0 : write && ram->code_pages[(pa - ram->pa) >> HV_TLB_PAGE_BITS] ? 1
                     : inpage + len > (1ull << HV_TLB_PAGE_BITS) - HV_TLB_ADJ ? 2 : had_entry == 0 ? 3 : had_entry == 2 ? 5 : 4;
-            cpu->m->stats.slow_why[why]++;
+            HV_ST(cpu).slow_why[why]++;
             if (why == 3) { /* a miss the light refill could not fill: a small guest page? */
                 HvWalk w;
                 hv_mmu_walk(cpu, va, write ? HV_ACC_WRITE : HV_ACC_READ, el, &w);
                 if (!w.fsc && w.block_size < (1ull << HV_TLB_PAGE_BITS)) {
-                    cpu->m->stats.small_pages++;
+                    HV_ST(cpu).small_pages++;
                     uint64_t key = (va >> 20) << 1 | (el ? 1 : 0);
                     for (int i = 0; i < 8; i++) {
                         if (cpu->m->stats.small_at[i].mb == key) { cpu->m->stats.small_at[i].n++; break; }
@@ -646,7 +646,8 @@ static void pred_stat(HvCpu *cpu, const HvMemOp *op, uint64_t va, uint64_t pc, i
 }
 
 int hv_mem_emulate(HvCpu *cpu, uint32_t insn, uint64_t pc) {
-    cpu->m->access_pc = pc;
+    cpu->pc_state->own.access_pc = pc;
+    if (cpu->m->log) cpu->m->access_pc = pc; /* the Mac's PVG trace reads it here */
     HvMemOp op;
     if (hv_mem_decode(insn, &op) != 0) {
         hv_raise_undef(cpu, pc);
