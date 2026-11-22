@@ -30,7 +30,9 @@ import UserNotifications
     static let shared = OnDevicePairing()
 
     /// Shown on the iPhone as "Pair with Henge"; the host identifier is derived from it.
-    static let hostName = "Henge"
+    /// Its own name (as Monolith 51d4d82 found): a pairing replaces any earlier one with the same host name, so a
+    /// shared name would let Henge and Solstice on one device knock out each other's pairing.
+    static let hostName = "Solstice"
     static let timeout: TimeInterval = 300
 
     enum Phase: Equatable {
