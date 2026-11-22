@@ -1091,10 +1091,11 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
         if (len > HV_TLB_ADJ + 1) put_add_imm(e, U, U, len - 1 - HV_TLB_ADJ);
         put(e, UBFM_X(U, U, HV_TLB_PAGE_BITS, 63));
         put(e, CBNZ_X(U));
-        /* A miss: the instructions' plain copy (Group). */
+        /* A miss: the light refill for the whole range, then the check again; if that cannot help (another page, a
+           fault, a device), the instructions' plain copy (Group). Was the copy at once, so a cold TLB ran the copy. */
         put_ool(e, (Ool){.kind = OOL_GROUP, .grp = (uint8_t)(grp - e->grp), .nrestore = 3, .restore = {A, T, U}, .addr = (uint8_t)ch,
-                         .write = grp->store, .table = (uint8_t)g_el, .bytes = (uint16_t)len, .tag_off = gtlb + (grp->store ? 8 : 0),
-                         .retry = retry});
+                         .refill = 1, .recheck = hv_knob[HV_K_RECHECK] && len <= HV_TLB_ADJ + 1, .write = grp->store,
+                         .table = (uint8_t)g_el, .bytes = (uint16_t)len, .tag_off = gtlb + (grp->store ? 8 : 0), .retry = retry});
         put(e, LDR_X(U, T, gtlb + 24));
         put(e, STR_X(U, 28, HV_CPU_GADDEND + 8 * grp->slot));
         put(e, ADD_LSL(A, ch, U, 0)); /* host address of base + lo */
@@ -2040,7 +2041,8 @@ static void plan_groups(Emit *e, const uint32_t *code, uint32_t max, uint64_t va
     }
 }
 
-/* After the block: each live group's plain copy. Returns -1 if they do not fit. */
+/* After the block, in the cold part (they run only when a group's check fails): each live group's plain copy, which
+   goes back to the hot part after the group's end. Returns -1 if they do not fit. */
 static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_t ntrans) {
     e->nogroup = 1;
     for (uint32_t k = 0; k < e->ngrp; k++) {
@@ -2057,7 +2059,7 @@ static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_
             if (translate_one(e, code[i], va + 4ull * i)) return -1; /* cannot happen: groups hold no block ends */
         }
         put(e, B_OP);
-        patch_branch(&e->w[e->n - 1], (int64_t)e->after[end] - (e->n - 1));
+        plink(e, e->n - 1, e->in_cold && !e->flat, e->after[end], 0);
     }
     return 0;
 }
@@ -2065,8 +2067,9 @@ static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_
 static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup, int all_slow);
 
 int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail) {
-    /* HV_GROUPS=1: group accesses (off by default: measured no faster, and the
-       plain copies make the code about 15% bigger, so the JIT region fills sooner). */
+    /* HV_GROUPS=1: group accesses (the app turns it on: EngineTuning.swift). Their plain copies sit in the cold
+       part, and a cold TLB refills for the whole range before falling back to them: the hot part grows by the
+       group checks only (upstream's v1 had the copies in the hot part and measured +15% code, no gain). */
     if (hv_knob[HV_K_GROUPS] && translate_emit(m, b, code, avail, 0, 0) == 0) return 0;
     int r = translate_emit(m, b, code, avail, 1, 0);
     /* -2: a slow path's record could not say how far its retry or join is. That cannot happen (put_slow_record),
@@ -2117,8 +2120,8 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     if (!ended) put_branch_exit(e, b->va + 4ull * i, 1);
     b->ninsns = i;
     uint32_t inline_words = e->n;
-    if (!e->nogroup && e->ngrp && emit_group_copies(e, code, b->va, i) != 0) return -1;
     cold_on(e);
+    if (!e->nogroup && e->ngrp && emit_group_copies(e, code, b->va, i) != 0) return -1;
     emit_ool(e);
     if (m->stats_interval) {
         m->stats.words_inline += inline_words;
