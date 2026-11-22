@@ -32,6 +32,10 @@
 #define CPU_IJC_SALT 0x3d8
 #define CPU_IJC_TAB 0x440
 #define CPU_MISS_SITE 0x3e8
+#define CPU_SPILL0 0x118
+#define CPU_SLOW_INFO 0x518
+#define CPU_TLB 0x580
+#define TLB_ADJ 15
 #define IJC_BITS 18
 
     .text
@@ -40,6 +44,7 @@
     .globl _hv_exit
     .globl _hv_helper_entry
     .globl _hv_helper_thunk
+    .globl _hv_slow_thunk
     .globl _hv_chain_thunk
     .globl _hv_ijc_thunk
     .globl _hv_xjump_thunk
@@ -219,62 +224,165 @@ _hv_helper_entry:
 // reloads guest x0). Everything that goes back to the block goes by RET, popping what
 // the BLR pushed on the CPU's own stack of return addresses.
 _hv_helper_thunk:
-    // A memory access whose op word names refill flags (bits 18..8): try the
-    // light TLB refill (hv_tlb_refill) with x7 = the address before the helper.
-    ldr w15, [x6, #12]
-    ubfx w15, w15, #8, #11
-    cbz w15, 3f
-    tbz w15, #10, 4f              // one that must be aligned (atomics, LDAR, ...)
-    ubfx w15, w15, #3, #6         // bytes - 1
-    and x15, x7, x15
-    cbnz x15, 3f                  // and is not: the helper faults (a refill would bring it straight back)
-    ldr w15, [x6, #12]
-    ubfx w15, w15, #8, #11
-4:  str x30, [x28, #CPU_REFILL_RET]
-    str x6, [x28, #0x130]         // spill[3]: free in a slow path, its registers are back
-    stp x0, x1, [x28, #0]
-    stp x2, x3, [x28, #16]
-    stp x4, x5, [x28, #32]
-    stp x8, x9, [x28, #64]
-    stp x10, x11, [x28, #80]
-    stp x12, x13, [x28, #96]
-    str x14, [x28, #112]
-    stp x16, x17, [x28, #128]
-    mov w2, w15
-    mrs x15, nzcv
-    str x15, [x28, #CPU_NZCV]
+    stp x0, x1, [x28]
+    mov x0, x6
+    b _hv_helper_entry
+
+// hv_slow_thunk: the out-of-line side of a load or store, of a group of them, of IC IVAU,
+// DC ZVA and an EL0 counter read. The block's cold part did `str x30, [x28, #x30]` and
+// `bl` to its chunk's trampoline, which came here through x15: x30 = the record after the
+// BL (translate.c, put_slow_record); every register but x15 is as it was at the miss.
+//   - The exact check of an access in its page's last 15 bytes, which the fast one refuses:
+//     if it passes, back into the fast path (resume) with every register as it was.
+//   - The light TLB refill (hv_tlb_refill): filled, the access again from its start (retry).
+//   - Else hv_helper on {pc, insn, op}, which comes back after the access (join); for a
+//     group of accesses, the group's plain copy instead.
+// The registers the access borrowed (A, T, U, unless x6, x7 or x15) are in cpu->spill in
+// that order: on the ways out to retry, the helper and the copy they get the guest's values
+// back. Works on an image of x0-x30 on the host stack. Calls C with the guest's q0-q31
+// live, as hv_helper_thunk did (tools/simd_gate.py).
+.macro SLOW_UNSPILL shift          // x2: the next spill slot's offset
+    ubfx w0, w21, #\shift, #5
+    lsr w1, w3, w0
+    tbnz w1, #0, 9f                // x6, x7, x15: free scratch, never spilled
+    ldr x1, [x28, x2]
+    str x1, [sp, x0, lsl #3]
+    add x2, x2, #8
+9:
+.endm
+
+.macro SLOW_GUEST_VALUES
+    mov w3, #0x80c0                // x6, x7, x15
+    mov x2, #CPU_SPILL0
+    SLOW_UNSPILL 5
+    SLOW_UNSPILL 10
+    SLOW_UNSPILL 15
+.endm
+
+.macro SLOW_LOAD_X2_X29            // all but x0, x1, x15 and x30
+    ldp x2, x3, [sp, #16]
+    ldp x4, x5, [sp, #32]
+    ldp x6, x7, [sp, #48]
+    ldp x8, x9, [sp, #64]
+    ldp x10, x11, [sp, #80]
+    ldp x12, x13, [sp, #96]
+    ldr x14, [sp, #112]
+    ldp x16, x17, [sp, #128]
+    ldp x19, x20, [sp, #152]
+    ldp x21, x22, [sp, #168]
+    ldp x23, x24, [sp, #184]
+    ldp x25, x26, [sp, #200]
+    ldr x27, [sp, #216]
+    ldr x29, [sp, #232]
+.endm
+
+_hv_slow_thunk:
     mov x15, sp
     str x15, [x28, #CPU_SP]
     ldr x15, [x28, #CPU_HOST_SP]
-    mov sp, x15
+    sub sp, x15, #256              // the image: x(n) at sp + 8n
+    stp x0, x1, [sp, #0]
+    stp x2, x3, [sp, #16]
+    stp x4, x5, [sp, #32]
+    stp x6, x7, [sp, #48]
+    stp x8, x9, [sp, #64]
+    stp x10, x11, [sp, #80]
+    stp x12, x13, [sp, #96]
+    stp x14, x15, [sp, #112]       // x15: nothing
+    stp x16, x17, [sp, #128]
+    stp x19, x20, [sp, #152]
+    stp x21, x22, [sp, #168]
+    stp x23, x24, [sp, #184]
+    stp x25, x26, [sp, #200]
+    str x27, [sp, #216]
+    str x29, [sp, #232]
+    ldr x0, [x28, #240]
+    str x0, [sp, #240]             // x30 as the block had it
+    mov x19, x30                   // the record (x19-x22 outlive the C call)
+    ldr w20, [x19, #12]            // meta
+    ldr w21, [x19, #16]            // registers and distances
+    and w0, w21, #31
+    ldr x22, [sp, x0, lsl #3]      // the address
+    tbz w20, #5, 1f
+    // The exact check, touching no flags (NZCV is still the guest's).
+    ubfx w0, w21, #10, #5
+    ldr x0, [sp, x0, lsl #3]       // T: the TLB entry the fast check read
+    ubfx w1, w20, #7, #4
+    add x0, x0, x1, lsl #3
+    ldr x0, [x0, #CPU_TLB]         // the tag it read
+    sub x0, x22, x0
+    ubfx w1, w20, #11, #13         // bytes - 1
+    add x0, x0, x1
+    sub x0, x0, #TLB_ADJ
+    lsr x0, x0, #14
+    cbnz x0, 1f
+    ldrsw x0, [x19, #20]
+    add x15, x19, x0, lsl #2       // resume (x15 is free there: never A or T)
+    b 5f
+1:  mrs x0, nzcv
+    str x0, [x28, #CPU_NZCV]
+    tbz w20, #1, 3f                // no refill
+    ubfx w1, w20, #11, #13         // bytes - 1
+    tbz w20, #6, 2f
+    tst x22, x1                    // must be aligned and is not: the helper (which faults)
+    b.ne 3f
+2:  and x0, x22, #0x3fff
+    add x0, x0, x1
+    lsr x0, x0, #14
+    cbnz x0, 3f                    // runs into the next page
+    mov w2, #63
+    cmp w1, #63
+    csel w2, w1, w2, lo
+    lsl w2, w2, #3                 // hv_tlb_refill's flags: bytes - 1 (at most 63), the table, write
+    ubfx w3, w20, #2, #3
+    orr w2, w2, w3
     mov x0, x28
-    mov x1, x7
+    mov x1, x22
     bl _hv_tlb_refill
-    mov x7, x0
-    ldr x0, [x28, #CPU_SP]
-    mov sp, x0
+    cbnz w0, 3f
+    ldrsw x0, [x19, #20]
+    ubfx w1, w21, #20, #6
+    sub x0, x0, x1
+    add x15, x19, x0, lsl #2       // retry
+    b 4f
+3:  tbnz w20, #0, 6f               // a group: its plain copy
+    // The helper: {pc, insn, op} where it finds them, guest values in every register.
+    ldr x0, [x19]
+    str x0, [x28, #CPU_SLOW_INFO]
+    ldr w0, [x19, #8]
+    str w0, [x28, #CPU_SLOW_INFO + 8]
+    ubfx w0, w20, #24, #4
+    str w0, [x28, #CPU_SLOW_INFO + 12]
+    ldrsw x0, [x19, #20]
+    ubfx w1, w21, #26, #6
+    add x0, x0, x1
+    add x15, x19, x0, lsl #2       // join
+    SLOW_GUEST_VALUES
+    ldp x0, x1, [sp]
+    stp x0, x1, [x28]
+    ldr x0, [sp, #240]
+    str x0, [x28, #240]
     ldr x0, [x28, #CPU_NZCV]
     msr nzcv, x0
-    ldp x0, x1, [x28, #0]
-    ldp x2, x3, [x28, #16]
-    ldp x4, x5, [x28, #32]
-    ldp x8, x9, [x28, #64]
-    ldp x10, x11, [x28, #80]
-    ldp x12, x13, [x28, #96]
-    ldr x14, [x28, #112]
-    ldp x16, x17, [x28, #128]
-    ldr x30, [x28, #CPU_REFILL_RET]
-    ldr x6, [x28, #0x130]
-    cbnz x7, 3f
-    // Filled: back to the start of the access, (op >> 19) words before where the helper would resume.
-    ldr w15, [x6, #12]
-    lsr w15, w15, #19
-    sub x6, x30, x15, lsl #2
-    ldr x30, [x28, #240]
-    ret x6
-3:  stp x0, x1, [x28]
-    mov x0, x6
+    SLOW_LOAD_X2_X29
+    mov x30, x15
+    ldr x0, [x28, #CPU_SP]
+    mov sp, x0
+    add x0, x28, #CPU_SLOW_INFO
     b _hv_helper_entry
+6:  ldrsw x0, [x19, #8]
+    add x15, x19, x0, lsl #2       // the plain copy
+4:  SLOW_GUEST_VALUES
+    ldr x0, [x28, #CPU_NZCV]
+    msr nzcv, x0
+5:  SLOW_LOAD_X2_X29               // x15: where to
+    ldr x30, [sp, #240]
+    ldr x1, [sp, #8]
+    ldr x0, [x28, #CPU_SP]
+    mov sp, x0
+    ldr x0, [x28, #CPU_HOST_SP]
+    ldur x0, [x0, #-256]
+    ret x15
 
 // hv_chain_thunk: a chainable exit's slow side. The site did `str x30, [x28, #x30]`
 // and `blr`; x30 points at the slot's address (unaligned), and the slot (HV_SLOT) holds

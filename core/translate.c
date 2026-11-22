@@ -41,17 +41,28 @@ typedef struct {
     uint64_t pc;        /* exit target, or the guest PC of the slow-path instruction */
     uint32_t insn;
     uint8_t kind;
+    uint8_t cold;       /* at, join and retry are in the cold part */
     uint8_t nrestore;
-    uint8_t restore[4]; /* scratch registers to reload from cpu->spill first */
-    /* Loads and stores: redo the TLB check exactly (the fast one rejects an
-       access in a page's last HV_TLB_ADJ bytes) and go back if it passes. */
-    uint8_t recheck, addr, t, u, bytes;
-    uint32_t tag_off;
+    uint8_t restore[4]; /* scratch registers to reload from cpu->spill first (slow paths: A, T, U) */
+    /* Loads and stores (and a group's check), for hv_slow_thunk: redo the TLB check exactly (the fast one rejects an
+       access in a page's last HV_TLB_ADJ bytes) and go back if it passes; try the light refill. */
+    uint8_t recheck, refill, write, table, align, addr;
+    uint16_t bytes;
+    uint32_t tag_off;   /* the tag the fast check read, from T */
     uint64_t site;      /* guest PC of the instruction that branches out of line */
-    uint32_t retry;     /* loads and stores: where their translation starts, to run again after a refill */
-    uint32_t rflags;    /* hv_tlb_refill's flags for it (0: no refill, straight to the helper) */
+    uint32_t retry;     /* where the translation starts, to run again after a refill */
+    uint8_t grp;        /* OOL_GROUP: which */
     uint8_t plain;      /* exits: an ordinary branch (see put_branch_exit); 2: one whose exit_req check is done already */
 } Ool;
+
+/* Words hv_translate_place fills in once it knows where both parts went (put_slow_record): a slow path's BL to its
+   chunk's trampoline, and a record's distances (target - record, in words). */
+enum { DREL_TRAMP, DREL_DATA };
+#define MAX_DRELS (3 * MAX_OOL)
+typedef struct {
+    uint32_t at, ref, target;      /* the word; DATA: the record it is in and the word it names */
+    uint8_t kind, at_cold, t_cold; /* which part each is in */
+} DRel;
 
 /* Loads and stores on one base register, close together in a block: the first
    checks the TLB once for the whole range they touch and leaves the page's
@@ -68,6 +79,7 @@ typedef struct {
     uint8_t store, base, slot, live;
     uint16_t first, last, end;
     uint32_t copy_at;
+    uint8_t copy_cold;    /* the copy is in the cold part */
 } Group;
 
 typedef struct {
@@ -79,6 +91,9 @@ typedef struct {
     int flat;           /* HV_K2: all in one, in the order written */
     struct { uint32_t at, target; uint8_t from_cold; } rel[MAX_RELS]; /* a branch in one part to a word in the other */
     uint32_t nrel;
+    DRel drel[MAX_DRELS];
+    uint32_t ndrel;
+    int rec_bad;        /* a record's distance did not fit (cannot happen: see put_slow_record) */
     uint32_t nhot, ncold; /* the finished block's parts in words, ncold with the pool */
     uint64_t pool[MAX_LITS];
     uint32_t npool;
@@ -233,7 +248,16 @@ static void put_lit(Emit *e, int reg, uint64_t value) {
 static void put_ool(Emit *e, Ool o) {
     o.at = e->n - 1; /* the branch just emitted */
     o.site = e->cur_pc;
+    o.cold = (uint8_t)(e->in_cold && !e->flat);
     e->ool[e->nool++] = o;
+}
+
+static void put_drel(Emit *e, int kind, uint32_t at, uint32_t ref, uint32_t target, int t_cold) {
+    if (e->ndrel >= MAX_DRELS) {
+        e->overflow = 1;
+        return;
+    }
+    e->drel[e->ndrel++] = (DRel){at, ref, target, (uint8_t)kind, (uint8_t)(e->in_cold && !e->flat), (uint8_t)t_cold};
 }
 
 /* Guest x0/x1 are saved, x0 = target = cpu->pc. Jumps to the target block
@@ -486,19 +510,45 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
     if (!p0) cold_off(e);
 }
 
-/* Call hv_helper(cpu, info) and continue unless it leaves. */
 /* Call hv_helper: guest x30 saved, a blr to hv_helper_thunk with x6 = its HvHelperInfo,
    and x0 reloaded when it comes back. Host x6 and x15 are clobbered. */
 static void put_helper(Emit *e, uint64_t pc, uint32_t insn, uint32_t op);
 
-/* A memory slow path whose thunk may refill the TLB and resume at `retry`:
-   the op word carries the refill flags (bits 18..8) and how far back retry is
-   from where the helper would resume (bits 31..19, in words). */
-static void put_helper_refill(Emit *e, uint64_t pc, uint32_t insn, uint32_t rflags, uint32_t retry) {
-    put_helper(e, pc, insn, HV_OP_MEM);
-    uint32_t resume = e->n - 1; /* the ldr x0, [x28] the helper comes back to */
-    uint32_t back = resume - retry;
-    if (back < (1u << 13) && rflags < (1u << 11)) e->pool[e->npool - 1] = (uint64_t)insn | (uint64_t)(HV_OP_MEM | rflags << 8 | back << 19) << 32;
+/* A slow path (a load or store's, a group check's, IC IVAU's, DC ZVA's, an EL0 counter read's), in the cold part:
+       str  x30, [x28, #x30]
+       bl   <the chunk's trampoline>     ; ldr x15, =hv_slow_thunk; br x15 (chunk_take)
+       .quad pc                          ; +0
+       .word insn                        ; +8   a group: the plain copy, words from the record
+       .word meta                        ; +12  bit 0 group, 1 refill, 2 write, 4..3 TLB table, 5 recheck, 6 align,
+                                         ;      10..7 (tag offset from T - HV_CPU_TLB) / 8, 23..11 bytes - 1, 27..24 HV_OP_*
+       .word regs                        ; +16  4..0 address, 9..5 A, 14..10 T, 19..15 U, 25..20 resume - retry,
+                                         ;      31..26 join - resume
+       .word resume                      ; +20  the word after the branch that came here, from the record
+   8 words where the code it replaces (a retry branch, the exact recheck, the helper call with its pool entry and
+   the branch back) took 18. hv_slow_thunk (host/enter.S) does what they did; the BL's return address is the record. */
+static void put_slow_record(Emit *e, const Ool *o) {
+    uint32_t resume = o->at + 1, op = o->kind == OOL_SYS ? HV_OP_SYS : o->kind == OOL_MRS ? HV_OP_MRS : HV_OP_MEM;
+    int mem = o->kind == OOL_SLOW || o->kind == OOL_GROUP;
+    uint32_t back = mem ? resume - o->retry : 0, fwd = o->kind == OOL_GROUP ? 0 : o->join - resume;
+    if (back > 63 || fwd > 63) e->rec_bad = 1;
+    uint32_t meta = (o->kind == OOL_GROUP ? 1u : 0) | (uint32_t)(mem && o->refill) << 1 | (uint32_t)o->write << 2 |
+                    (uint32_t)(o->table & 3) << 3 | (uint32_t)(mem && o->recheck) << 5 | (uint32_t)o->align << 6 |
+                    (o->recheck ? (o->tag_off - HV_CPU_TLB) / 8 & 15 : 0) << 7 | (mem ? (uint32_t)(o->bytes - 1) & 0x1fff : 0) << 11 |
+                    op << 24;
+    uint32_t a = o->nrestore > 0 ? o->restore[0] : 6, t = o->nrestore > 1 ? o->restore[1] : 6, u = o->nrestore > 2 ? o->restore[2] : 6;
+    uint32_t regs = (uint32_t)(o->addr & 31) | a << 5 | t << 10 | u << 15 | (back & 63) << 20 | (fwd & 63) << 26;
+    put(e, STR_X(30, 28, HV_CPU_X(30)));
+    put_drel(e, DREL_TRAMP, e->n, 0, 0, 0);
+    put(e, 0x94000000u); /* bl the trampoline */
+    uint32_t rec = e->n;
+    put(e, (uint32_t)o->pc);
+    put(e, (uint32_t)(o->pc >> 32));
+    if (o->kind == OOL_GROUP) put_drel(e, DREL_DATA, e->n, rec, e->grp[o->grp].copy_at, e->grp[o->grp].copy_cold);
+    put(e, o->kind == OOL_GROUP ? 0 : o->insn);
+    put(e, meta);
+    put(e, regs);
+    put_drel(e, DREL_DATA, e->n, rec, resume, o->cold);
+    put(e, 0);
 }
 
 /* The return address is where it goes back to, so the thunk's RET goes where the CPU expects
@@ -554,6 +604,17 @@ static int pick(uint32_t *used) {
         }
     }
     return -1;
+}
+
+/* A, T and U for an access with a slow path: never x15 as A or T, as the way to hv_slow_thunk clobbers it (and the
+   thunk reads A's and T's values). Without HV_K3 these are x6, x7, x15, as pick gives them. */
+static void pick3(uint32_t *used, uint8_t s[3]) {
+    uint32_t had15 = *used & 1u << 15;
+    *used |= 1u << 15;
+    s[0] = (uint8_t)pick(used);
+    s[1] = (uint8_t)pick(used);
+    *used = (*used & ~(1u << 15)) | had15;
+    s[2] = (uint8_t)pick(used);
 }
 
 /* Free scratch registers need no saving; the rest go to cpu->spill in order. */
@@ -998,7 +1059,7 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
     /* Guest x6, x7 and x15 live in the HvCpu: their host registers are as free as ever. */
     if (!hv_knob[HV_K_TEST3]) used &= ~(1u << 6 | 1u << 7 | 1u << 15);
     uint8_t s[3];
-    for (int i = 0; i < 3; i++) s[i] = pick(&used);
+    pick3(&used, s);
     int A = s[0], T = s[1], U = s[2];
     uint32_t retry = e->n; /* a refilled TLB miss runs the access again from here */
     spill(e, s, 3);
@@ -1030,7 +1091,10 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
         if (len > HV_TLB_ADJ + 1) put_add_imm(e, U, U, len - 1 - HV_TLB_ADJ);
         put(e, UBFM_X(U, U, HV_TLB_PAGE_BITS, 63));
         put(e, CBNZ_X(U));
-        put_ool(e, (Ool){.kind = OOL_GROUP, .pc = (uint64_t)(grp - e->grp), .nrestore = 3, .restore = {A, T, U}});
+        /* A miss: the instructions' plain copy (Group). */
+        put_ool(e, (Ool){.kind = OOL_GROUP, .grp = (uint8_t)(grp - e->grp), .nrestore = 3, .restore = {A, T, U}, .addr = (uint8_t)ch,
+                         .write = grp->store, .table = (uint8_t)g_el, .bytes = (uint16_t)len, .tag_off = gtlb + (grp->store ? 8 : 0),
+                         .retry = retry});
         put(e, LDR_X(U, T, gtlb + 24));
         put(e, STR_X(U, 28, HV_CPU_GADDEND + 8 * grp->slot));
         put(e, ADD_LSL(A, ch, U, 0)); /* host address of base + lo */
@@ -1099,18 +1163,14 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
     /* Every form may refill and run again from `retry`: a miss branches out before the access and before any base
        writeback (both come after this check), so nothing has happened yet. Prologues and epilogues (STP/LDP with
        writeback), atomics and vector forms on a fresh page used to go to hv_mem_emulate instead. */
-    int can_refill = op.bytes <= 64 && !e->slow_mem;
-    /* hv_tlb_refill's flags: bit 9 set (so never 0), bit 0 write, bits 2..1 the table, 8..3 bytes - 1; bit 10: must be
-       aligned (the thunk sends a misaligned one to the helper, which faults: a refill would only bring it back). */
-    uint32_t rflags = can_refill ? 1u << 9 | (uint32_t)(op.store ? 1 : 0) | (uint32_t)el_idx << 1 | (op.bytes - 1) << 3 |
-                                       (op.align && op.bytes > 1 ? 1u << 10 : 0)
-                                 : 0;
+    /* align: one that must be aligned and is not goes to the helper, which faults (a refill would only bring it back). */
     put_ool(e, (Ool){.kind = OOL_SLOW, .pc = pc, .insn = insn, .nrestore = 3, .restore = {A, T, U},
-                     /* The exact recheck for a page's last 15 bytes costs 6 words in every access's slow path (on by default,
-                        see machine.c); with HV_RECHECK=0 such an access takes the refill, which sends it to the helper. */
+                     /* The exact recheck of an access in a page's last 15 bytes is the thunk's now, so it costs no code
+                        (HV_RECHECK=0: such an access takes the refill, which sends it to the helper). */
                      .recheck = hv_knob[HV_K_RECHECK] && !(op.align && op.bytes > 1) && op.bytes <= HV_TLB_ADJ + 1, .addr = (uint8_t)addr,
-                     .t = (uint8_t)T, .u = (uint8_t)U, .bytes = (uint8_t)op.bytes,
-                     .tag_off = tlb + (op.store ? 8 : 0), .retry = retry, .rflags = rflags});
+                     .refill = (uint8_t)(op.bytes <= 64 && !e->slow_mem), .write = op.store, .table = (uint8_t)el_idx,
+                     .align = (uint8_t)(op.align && op.bytes > 1), .bytes = (uint16_t)op.bytes,
+                     .tag_off = tlb + (op.store ? 8 : 0), .retry = retry});
     slow = e->nool - 1;
     put(e, LDR_X(U, T, tlb + 24));
     }
@@ -1240,7 +1300,7 @@ static void translate_ic_ivau(Emit *e, uint32_t insn, uint64_t pc) {
     int rt = insn & 0x1f;
     uint32_t used = 1u << rt;
     uint8_t s[3];
-    for (int i = 0; i < 3; i++) s[i] = pick(&used);
+    pick3(&used, s);
     int A = s[0], T = s[1], U = s[2];
     spill(e, s, 3);
     if (is_stolen(rt)) put(e, LDR_X(A, 28, slot_of(rt)));
@@ -1275,7 +1335,7 @@ static void translate_dc_zva(Emit *e, uint32_t insn, uint64_t pc) {
     int rt = insn & 0x1f;
     uint32_t used = 1u << rt;
     uint8_t s[3];
-    for (int i = 0; i < 3; i++) s[i] = pick(&used);
+    pick3(&used, s);
     int A = s[0], T = s[1], U = s[2];
     spill(e, s, 3);
     if (is_stolen(rt)) put(e, LDR_X(A, 28, slot_of(rt)));
@@ -1835,78 +1895,44 @@ static void patch_branch(uint32_t *w, int64_t off) {
     else *w = (op & ~(0x7ffffu << 5)) | (uint32_t)(off & 0x7ffff) << 5; /* B.cond, CBZ, LDR literal */
 }
 
-/* The hot-part branch at `at` to the next cold word. TBZ and TBNZ reach only 32 KB, so they
-   go through one word at the end of the hot part. */
-static uint32_t link_site(Emit *e, uint32_t at) {
-    if (!e->flat && (e->hot[at] & 0x7e000000) == 0x36000000) {
+/* The branch at `at` (in the part o says) to the next cold word. TBZ and TBNZ reach only 32 KB, so a hot one goes
+   through one word at the end of the hot part (a cold one never needs to: only the hot part has them). */
+static uint32_t link_site(Emit *e, const Ool *o) {
+    uint32_t at = o->at;
+    if (!o->cold && !e->flat && (e->hot[at] & 0x7e000000) == 0x36000000) {
         uint32_t v = e->other_n++;
         if (v < MAX_WORDS) e->hot[v] = B_OP;
         patch_branch(&e->hot[at], (int64_t)v - at);
         at = v;
     }
-    link_here(e, at, 0);
+    if (o->cold && (e->cold[at] & 0x7e000000) == 0x36000000 && e->n - at >= (1u << 13)) e->overflow = 1;
+    link_here(e, at, o->cold);
     return at;
 }
 
-/* Written in the cold part; everything it branches back to is in the hot one. */
+/* Written in the cold part (and so is what group copies add, which branches back to the cold part). */
 static void emit_ool(Emit *e) {
-    for (uint32_t i = 0; i < e->nool; i++) {
+    for (uint32_t i = 0; i < e->nool; i++) { /* nool may grow: exits written here add none */
         Ool *o = &e->ool[i];
-        int refill = o->kind == OOL_SLOW && o->rflags;
-        uint32_t retry = o->retry;
-        if (refill && !e->flat) { /* the refill's way back counts words, so a word near it to go on from */
-            retry = e->n;
-            put(e, B_OP);
-            plink(e, retry, 1, o->retry, 0);
-        }
-        uint32_t site_at = link_site(e, o->at);
-        if (o->recheck) { /* the fast check refuses a page's last 15 bytes: check exactly, and go back if it fits */
-            put(e, LDR_X(o->u, o->t, o->tag_off));
-            put(e, SUB_X(o->u, o->addr, o->u));
-            put_add_imm(e, o->u, o->u, (int64_t)o->bytes - 1 - HV_TLB_ADJ);
-            put(e, UBFM_X(o->u, o->u, HV_TLB_PAGE_BITS, 63));
-            put(e, CBNZ_X(o->u) | 2u << 5); /* cbnz u, +2: a real miss */
-            put(e, B_OP);
-            plink(e, e->n - 1, 1, o->at + 1, 0);
-        }
-        if (o->kind == OOL_GROUP) {
-            unspill(e, o->restore, o->nrestore);
-            put(e, B_OP);
-            plink(e, e->n - 1, 1, e->grp[o->pc].copy_at, 0);
-            continue;
-        }
-        if (refill) {
-            /* A TLB miss: hv_helper_thunk tries the light refill first (x7 = the
-               address; x7 is never a guest register) and, if it filled the TLB,
-               comes back to run the access again; else it is the usual helper. */
-            put(e, MOV_X(7, o->addr));
-            unspill(e, o->restore, o->nrestore);
-            put_helper_refill(e, o->pc, o->insn, o->rflags, retry);
-            put(e, B_OP);
-            plink(e, e->n - 1, 1, o->join, 0);
+        uint32_t site_at = link_site(e, o);
+        if (o->kind != OOL_EXIT && o->kind != OOL_MSR_EXIT) {
+            put_slow_record(e, o);
             continue;
         }
         unspill(e, o->restore, o->nrestore);
+        e->cur_pc = o->site;
         if (o->kind == OOL_MSR_EXIT) {
             put_helper(e, o->pc, o->insn, HV_OP_MSR);
-            e->cur_pc = o->site;
             if (e->no_ijc) put_exit(e, o->pc + 4);
             else put_branch_exit(e, o->pc + 4, 0); /* checks exit_req, which the helper set if it flushed */
             continue;
         }
-        if (o->kind == OOL_EXIT) {
-            e->cur_pc = o->site;
-            put_branch_exit(e, o->pc, o->plain); /* branches, and exits for interrupts let through */
-            /* With nothing to do on the way, chaining can take the hot part's own branch there:
-               a taken branch that goes where it means to, like the guest's, in place of two. */
-            if (e->site_direct && !o->nrestore && (e->flat || (e->hot[site_at] & 0x7e000000) != 0x36000000)) {
-                e->site[e->nsite - 1].has_cond = 1;
-                e->site[e->nsite - 1].cond_at = site_at;
-            }
-        } else {
-            put_helper(e, o->pc, o->insn, o->kind == OOL_SYS ? HV_OP_SYS : o->kind == OOL_MRS ? HV_OP_MRS : HV_OP_MEM);
-            put(e, B_OP);
-            plink(e, e->n - 1, 1, o->join, 0);
+        put_branch_exit(e, o->pc, o->plain); /* branches, and exits for interrupts let through */
+        /* With nothing to do on the way, chaining can take the hot part's own branch there:
+           a taken branch that goes where it means to, like the guest's, in place of two. */
+        if (e->site_direct && !o->nrestore && !o->cold && (e->flat || (e->hot[site_at] & 0x7e000000) != 0x36000000)) {
+            e->site[e->nsite - 1].has_cond = 1;
+            e->site[e->nsite - 1].cond_at = site_at;
         }
     }
 }
@@ -2022,6 +2048,7 @@ static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_
         if (!g->live || g->first >= ntrans) continue;
         uint32_t end = g->end < ntrans ? g->end : ntrans - 1;
         g->copy_at = e->n;
+        g->copy_cold = (uint8_t)(e->in_cold && !e->flat);
         for (uint32_t i = g->first; i <= end; i++) {
             if (e->n + WORDS_PER_INSN_MAX * 2 > MAX_WORDS || e->npool + 8 > MAX_LITS || e->nool + 4 > MAX_OOL) return -1;
             e->cur_pc = va + 4ull * i;
@@ -2035,24 +2062,29 @@ static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_
     return 0;
 }
 
-static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup);
+static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup, int all_slow);
 
 int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail) {
     /* HV_GROUPS=1: group accesses (off by default: measured no faster, and the
        plain copies make the code about 15% bigger, so the JIT region fills sooner). */
-    if (hv_knob[HV_K_GROUPS] && translate_emit(m, b, code, avail, 0) == 0) return 0;
-    return translate_emit(m, b, code, avail, 1);
+    if (hv_knob[HV_K_GROUPS] && translate_emit(m, b, code, avail, 0, 0) == 0) return 0;
+    int r = translate_emit(m, b, code, avail, 1, 0);
+    /* -2: a slow path's record could not say how far its retry or join is. That cannot happen (put_slow_record),
+       but if it did, every access through the helper is slow and right, where failing would flush for ever. */
+    if (r == -2) r = translate_emit(m, b, code, avail, 1, 1);
+    return r;
 }
 
-static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup) {
+static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup, int all_slow) {
     Emit *e = &E;
-    e->n = e->other_n = e->npool = e->nfix = e->nool = e->nsite = e->nrel = 0;
+    e->n = e->other_n = e->npool = e->nfix = e->nool = e->nsite = e->nrel = e->ndrel = 0;
+    e->rec_bad = 0;
     e->w = e->hot;
     e->in_cold = 0;
     e->flat = hv_knob[HV_K_TEST2];
     e->overflow = 0;
     e->flags = b->flags;
-    e->slow_mem = m->slow_mem || hv_knob[HV_K_PREDSTAT]; /* HV_PREDSTAT (measuring): every access through hv_mem_emulate */
+    e->slow_mem = m->slow_mem || hv_knob[HV_K_PREDSTAT] || all_slow; /* HV_PREDSTAT (measuring): every access through hv_mem_emulate */
     e->page = b->va & ~((1ull << HV_TLB_PAGE_BITS) - 1);
     e->no_ijc = !m->chain;
     e->m = m;
@@ -2102,6 +2134,7 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     if (e->n & 1) put(e, 0xd503201f);
     if (e->flat) e->ncold = 0, e->nhot = ncold;
     else e->ncold = ncold, e->nhot = e->n;
+    if (e->rec_bad) return -2;
     if (e->nhot > MAX_WORDS || e->ncold > MAX_WORDS || e->overflow) return -1;
 
     for (uint32_t k = 0; k < e->nfix; k++) {
@@ -2130,11 +2163,14 @@ int hv_branch_retarget(uint32_t *w, int64_t off) {
     return 1;
 }
 
-/* Each CPU places code in its own 1 MB at a time. */
+/* Each CPU places code in its own 1 MB at a time. Its first words are the trampoline the slow paths' BLs go to
+   (hv_slow_thunk may be further away than a BL reaches): ldr x15, =hv_slow_thunk; br x15. */
+extern void hv_slow_thunk(void);
+#define TRAMP_WORDS 4
 static __thread struct {
     HvMachine *m;
     uint64_t gen;
-    uint32_t *hot, *cold;
+    uint32_t *hot, *cold, *tramp;
 } chunk;
 
 static int chunk_take(HvMachine *m, uint32_t hot, uint32_t cold, uint32_t **hot_at, uint32_t **cold_at) {
@@ -2142,13 +2178,17 @@ static int chunk_take(HvMachine *m, uint32_t hot, uint32_t cold, uint32_t **hot_
     if (chunk.m != m || chunk.gen != gen || !chunk.hot || (size_t)(chunk.cold - chunk.hot) < (size_t)hot + cold) {
         size_t want = JIT_CHUNK_WORDS;
         if (want > m->jit.capacity) want = m->jit.capacity;
-        if (want < (size_t)hot + cold) want = (size_t)hot + cold;
+        if (want < (size_t)hot + cold + TRAMP_WORDS) want = (size_t)hot + cold + TRAMP_WORDS;
         uint32_t *p = hv_jit_reserve(&m->jit, want);
         if (!p) {
             chunk.hot = NULL;
             return -1;
         }
-        chunk.m = m, chunk.gen = gen, chunk.hot = p, chunk.cold = p + ((want + 1) & ~(size_t)1);
+        uint64_t thunk = (uint64_t)(uintptr_t)hv_slow_thunk;
+        const uint32_t tramp[TRAMP_WORDS] = {0x58000000u | 2u << 5 | 15u, BR_X(15), (uint32_t)thunk, (uint32_t)(thunk >> 32)}; /* ldr x15, #8 */
+        hv_jit_write(&m->jit, p, tramp, sizeof tramp);
+        hv_jit_finish(&m->jit, p, TRAMP_WORDS);
+        chunk.m = m, chunk.gen = gen, chunk.tramp = p, chunk.hot = p + TRAMP_WORDS, chunk.cold = p + ((want + 1) & ~(size_t)1);
     }
     *hot_at = chunk.hot;
     chunk.hot += hot;
@@ -2166,6 +2206,13 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
         uint32_t at = e->rel[k].at, target = e->rel[k].target;
         if (e->rel[k].from_cold) patch_branch(&e->cold[at], (dst + target) - (cold + at));
         else patch_branch(&e->hot[at], (cold + target) - (dst + at));
+    }
+    /* The slow paths' BLs to this chunk's trampoline, and their records' distances. */
+    uint32_t *base[2] = {dst, e->flat ? dst : cold}, *buf[2] = {e->hot, e->flat ? e->hot : e->cold};
+    for (uint32_t k = 0; k < e->ndrel; k++) {
+        const DRel *d = &e->drel[k];
+        if (d->kind == DREL_TRAMP) patch_branch(&buf[d->at_cold][d->at], chunk.tramp - (base[d->at_cold] + d->at));
+        else buf[d->at_cold][d->at] = (uint32_t)(int32_t)((base[d->t_cold] + d->target) - (base[d->at_cold] + d->ref));
     }
     /* Exits in the page to blocks that exist already (or back to this one's
        start) are chained now, in the copy about to be written: no trip through
