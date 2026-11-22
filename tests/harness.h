@@ -108,13 +108,43 @@ _\name\()_end:
 
 #else
 
+#include <dlfcn.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ucontext.h>
+#include <unistd.h>
 
 #include "cpu.h"
 #include "dispatch.h"
 #include "machine.h"
+
+/* SAN=1 builds trap on undefined behaviour (BRK #0x55xx, no runtime library): say in which function and which check
+   before the test dies of it, so the CI log shows where. Other BRKs (a guest program's, run natively) are left alone. */
+static void hv_ub_trap(int sig, siginfo_t *si, void *ctx) {
+    (void)si;
+    ucontext_t *uc = ctx;
+    uint64_t pc = uc->uc_mcontext->__ss.__pc;
+    uint32_t insn = *(const uint32_t *)(uintptr_t)pc;
+    if ((insn & 0xffe0001fu) == 0xd4200000u && ((insn >> 13) & 0xff) == 0x55) {
+        Dl_info di;
+        int named = dladdr((void *)(uintptr_t)pc, &di) && di.dli_sname;
+        char buf[256];
+        int n = snprintf(buf, sizeof buf, "undefined behaviour (check %u) in %s+%#llx\n", (insn >> 5) & 0xff,
+                         named ? di.dli_sname : "?", (unsigned long long)(named ? pc - (uint64_t)(uintptr_t)di.dli_saddr : pc));
+        if (n > 0 && write(2, buf, (size_t)n) < 0) n = 0;
+    }
+    signal(sig, SIG_DFL); /* the BRK again, and the test dies of it as before */
+}
+
+__attribute__((constructor)) static void hv_ub_trap_init(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = hv_ub_trap;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGTRAP, &sa, NULL);
+}
 
 void hv_native_run(HvCpu *cpu, const void *entry);
 

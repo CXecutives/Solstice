@@ -130,8 +130,9 @@ test: all
 # Engine tests only (no restore stack, no Homebrew libslirp): `make core-test T="test_jit test_mem"`,
 # or every engine test when T is empty. Used by CI (tools/check.sh).
 CORE_TESTS = $(if $(T),$(addprefix $(B)/,$(T)),$(TESTS))
-core-test: $(CORE_TESTS)
-	@ulimit -s 65520; for t in $(CORE_TESTS); do echo "== $$t"; $$t || exit 1; done
+core-test: $(CORE_TESTS) # every test runs, then the failed ones are named (one CI run shows them all)
+	@ulimit -s 65520; failed=""; for t in $(CORE_TESTS); do echo "== $$t"; $$t || failed="$$failed $$t"; done; \
+	[ -z "$$failed" ] || { echo "FAILED:$$failed"; exit 1; }
 .PHONY: core-test
 
 $(B):
