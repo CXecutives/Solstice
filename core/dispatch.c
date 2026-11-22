@@ -80,6 +80,8 @@ static void unpark(HvCpu *cpu) {
     }
     __atomic_store_n(&p->tlb_live, 1, __ATOMIC_SEQ_CST);
     hv_cpu_process_requests(cpu); /* what came in while it was parked */
+    /* Running again: the kicker looks after it from now on (it may be asleep for long with every CPU parked). */
+    hv_kicker_note(m, mach_absolute_time() + HV_KICK_CAP);
 }
 
 static uint32_t block_flags(HvCpu *cpu) {
@@ -457,9 +459,11 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what) {
     }
 }
 
-/* WFI: sleep until an interrupt is pending (masked or not) or the next timer
-   event, at most 10 ms. WFI may complete early, so the guest just runs again
-   if nothing happened. */
+/* WFI: sleep until an interrupt is pending (masked or not) or the next deadline
+   (this CPU's timers; for CPU 0 also the devices': the display's refresh, a poll
+   at least every HV_DEV_SAFETY), at most HV_WFI_MAX: anything else that has work
+   for this CPU wakes it (hv_cpu_wake). WFI may complete early, so the guest just
+   runs again if nothing happened. */
 static int wait_for_interrupt(HvCpu *cpu) {
     HvMachine *m = cpu->m;
     uint64_t deadline = m->tick ? m->tick(m, cpu) : 0;
@@ -467,11 +471,12 @@ static int wait_for_interrupt(HvCpu *cpu) {
     if (p->irq_line || p->fiq_line) return 0;
     if (!m->tick) return -1; /* nothing could ever wake us */
     uint64_t now = mach_absolute_time();
-    uint64_t wait_ticks = deadline && deadline > now ? deadline - now : 240000; /* the counter runs at 24 MHz */
-    if (wait_ticks > 240000) wait_ticks = 240000;
+    uint64_t wait_ticks = !deadline ? HV_WFI_MAX : deadline > now ? deadline - now : 0; /* the counter runs at 24 MHz */
+    if (wait_ticks > HV_WFI_MAX) wait_ticks = HV_WFI_MAX;
     uint64_t t0 = mach_absolute_time();
     /* Sleep until the next timer event or until a device thread has work for us. */
     hv_big_unlock(m); /* let the other CPUs run while this one sleeps */
+    __atomic_store_n(&p->wfi_until, t0 + wait_ticks, __ATOMIC_SEQ_CST); /* the kicker looks a little after (machine.c) */
     park(cpu);
     /* A thread on another CPU often has something for this one microseconds later
        (a pipe, a Mach message: macOS is made of these), and waking a sleeping host
@@ -496,7 +501,7 @@ static int wait_for_interrupt(HvCpu *cpu) {
         __asm__ volatile("clrex" ::: "memory");
     }
     pthread_mutex_lock(&p->wake_mu);
-    if (!p->wake_pending) {
+    if (!p->wake_pending && wait_ticks) {
         struct timespec ts = {(time_t)(wait_ticks / 24000000), (long)(wait_ticks % 24000000) * 1000 / 24};
         pthread_cond_timedwait_relative_np(&p->wake_cv, &p->wake_mu, &ts);
     }
@@ -506,7 +511,7 @@ static int wait_for_interrupt(HvCpu *cpu) {
     hv_big_lock(m);
     p->own.stats.wfi++;
     p->own.stats.wfi_ticks += mach_absolute_time() - t0;
-    m->tick(m, cpu);
+    hv_cpu_set_due(cpu, m->tick(m, cpu));
     return 0;
 }
 
@@ -731,6 +736,8 @@ static void print_stats(HvCpu *cpu, int force) {
                 RATE(chained_early), RATE(fast_resumes), RATE(retranslated));
         fprintf(stderr, "  exit requests/s: TLBI posts %.0f, wakes %.0f (of them device work %.0f), kick all %.0f, own %.0f\n",
                 RATE(kick_src[0]), RATE(kick_src[1]), RATE(kick_src[3]), RATE(kick_src[2]), RATE(kick_src[4]));
+        fprintf(stderr, "  kicker: wakeups %.0f/s, CPUs kicked at their deadline %.0f/s, for device polls %.0f/s; device polls %.0f/s\n",
+                RATE(kicker_wakes), RATE(kicker_kicks), RATE(kicker_polls), RATE(dev_polls));
         fprintf(stderr, "  light refills %.0fK/s, light branch-cache fills %.0fK/s, chained to other pages %.0f/s\n", RATE(refills) / 1e3,
                 RATE(ijc_light) / 1e3, RATE(xchained));
         fprintf(stderr, "  process switches: %.0f/s saved, %.0f/s restored, %.0f/s dropped by a TLBI (%.0f entries each)\n", RATE(stash_saves), RATE(stash_hits), RATE(stash_stale),
@@ -854,6 +861,7 @@ static void wait_while_off(HvCpu *cpu) {
     HvMachine *m = cpu->m;
     HvPerCpu *p = cpu->pc_state;
     hv_big_unlock(m);
+    __atomic_store_n(&p->wfi_until, 0, __ATOMIC_SEQ_CST); /* no timeout: CPU_ON wakes it */
     park(cpu);
     pthread_mutex_lock(&p->wake_mu);
     __atomic_store_n(&cpu->parked_off, 1, __ATOMIC_SEQ_CST);
@@ -949,7 +957,6 @@ static int host_pointer_check(HvCpu *cpu, uint64_t prev_pc) {
 static int run_loop(HvCpu *cpu, int one) {
     HvMachine *m = cpu->m;
     uint32_t since_tick = 0;
-    uint64_t next_due = 0; /* host time of this CPU's next timer event, from its last tick (0: none armed) */
     uint64_t last_fault = ~0ull, prev_pc = 0;
     HvBlock *prev_b = NULL;
     uint64_t *pending_chain = NULL;
@@ -973,21 +980,21 @@ static int run_loop(HvCpu *cpu, int one) {
             last_reason = HV_EXIT_EXCEPTION;
             continue;
         }
-        /* Someone asked the CPU to leave (the 1 ms kicker, a device, an invalidation): service devices now. */
-        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED) != 0;
+        /* Someone asked the CPU to leave (the kicker at its deadline, a device, an invalidation): tick now. Acquire: what
+           was asked with it (HvPerCpu.poll_req) is seen. */
+        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_ACQUIRE) != 0;
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */
             cpu->excl_addr = ~0ull;
             hv_big_yield(m);
         }
-        /* Ticks take the device lock, so not every few blocks: on a kick (the 1 ms
-           kicker, a device with work for CPU 0, an interrupt raised for this
-           CPU) or once this CPU's own timer is due. */
-        if (m->tick && (kicked || (++since_tick >= 64 && (since_tick = 0, next_due && mach_absolute_time() >= next_due)))) {
+        /* Ticks may take the device lock, so not every few blocks: on a kick (the
+           kicker at this CPU's deadline, a device with work for CPU 0, an interrupt
+           raised for this CPU) or once this CPU's own deadline is due. */
+        if (m->tick && (kicked || (++since_tick >= 64 && (since_tick = 0, cpu->timer_due && mach_absolute_time() >= cpu->timer_due)))) {
             since_tick = 0;
-            next_due = m->tick(m, cpu);
-            cpu->timer_due = next_due;
+            hv_cpu_set_due(cpu, m->tick(m, cpu));
         }
         int why = pending_chain ? 0 : kicked ? 1 : last_reason != HV_EXIT_BRANCH ? 2 : 5;
         if (hv_check_interrupts(cpu)) {

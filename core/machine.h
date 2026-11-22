@@ -126,6 +126,8 @@ typedef struct HvStats {
     uint64_t tlb_flushes, fetch_walks, exceptions, interrupts;
     uint64_t wfi, wfi_ticks;  /* WFI exits, host ticks spent asleep */
     uint64_t retranslated;    /* blocks made while not live for TLBIs whose page was remapped meanwhile: fetched again */
+    uint64_t kicker_wakes, kicker_kicks, kicker_polls; /* the kicker: wakeups, CPUs made to leave at their deadline, device polls asked of CPU 0 */
+    uint64_t dev_polls;       /* CPU 0's device polls (vmapple.c) */
     /* Not summed: tables of the first few values seen, and debugging rings (per CPU). */
     struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 regions mapped under 16 KB were */
     struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */
@@ -193,6 +195,8 @@ typedef struct HvPerCpu {
     pthread_mutex_t wake_mu;
     pthread_cond_t wake_cv;
     int wake_pending;
+    uint32_t poll_req;           /* CPU 0: woken (hv_cpu_wake) or the kicker's poll: poll the devices at the next tick */
+    uint64_t wfi_until;          /* parked in WFI: when the sleep ends at the latest (0: not asleep on a timeout) */
     /* Work other CPUs ask of this one (only the owner may touch its TLB and
        branch cache while it runs). Posting bumps req_seq; the owner does the
        work at its next dispatcher entry and publishes ack_seq. */
@@ -304,6 +308,12 @@ typedef struct HvMachine {
     /* --profile: host PCs of the CPU thread sampled every millisecond, drained by the stats line. */
     uint64_t *prof;
     uint32_t prof_head, prof_tail;
+    /* The kicker (hv_machine_kicker) sleeps until the earliest deadline of a running CPU: kick_at, 0 while it looks at
+       the CPUs. A CPU whose deadline comes earlier than that wakes it (hv_kicker_note). */
+    pthread_mutex_t kick_mu;
+    pthread_cond_t kick_cv;
+    uint64_t kick_at;
+    int kick_poked, kicker_on;
     /* The host counter when the machine started: every CPU's CNTVOFF, so the guest's virtual counter (its
        mach_absolute_time) starts near 0 as on a Mac or under Virtualization.framework. With the host's own
        count (days of uptime) macOS 12 took the user as idle for that long and put itself to sleep while
@@ -407,5 +417,25 @@ void hv_cpu_kick(HvCpu *cpu);
 /* From any thread: device work is waiting for the CPU thread's tick. Makes a
    running block leave and ends a WFI sleep. */
 void hv_machine_wake(HvMachine *m);
+
+/* Deadlines, in host ticks (24 MHz). Translated code checks no timer, so a running CPU leaves its block only when asked:
+   the kicker asks the CPU that is due, when it is due (its timer_due: the next timer event, and for CPU 0 the devices'
+   next deadline: the display's refresh, a poll), instead of every CPU every millisecond. Idle CPUs sleep in WFI until
+   their own deadline and need it not at all. */
+#define HV_TICKS_MS 24000ull
+#define HV_KICK_CAP (4 * HV_TICKS_MS)     /* longest the kicker sleeps while a CPU runs */
+#define HV_KICK_SAFETY (20 * HV_TICKS_MS) /* every running CPU leaves its block at least this often */
+#define HV_KICK_SLACK (HV_TICKS_MS / 4)   /* a deadline that much before the kicker's wakeup wakes it earlier */
+#define HV_KICK_IDLE (1000 * HV_TICKS_MS) /* no CPU running: until one does (unpark wakes it) */
+#define HV_POLL_BUSY (1 * HV_TICKS_MS)    /* CPU 0 polls the devices this often while it runs (work no device signals) */
+#define HV_DEV_SAFETY (20 * HV_TICKS_MS)  /* and at least this often while it sleeps (vmapple.c) */
+#define HV_WFI_MAX (100 * HV_TICKS_MS)    /* longest WFI sleep with no deadline: wakes come with hv_cpu_wake */
+/* The kicker's thread: until *stop (hv_machine_kicker_poke after setting it). */
+void hv_machine_kicker(HvMachine *m, _Atomic int *stop);
+void hv_machine_kicker_poke(HvMachine *m);
+/* cpu's deadline is now due (0: none): wake the kicker if it would sleep past it. */
+void hv_kicker_note(HvMachine *m, uint64_t due);
+/* After a tick: cpu's next deadline, for the kicker. */
+void hv_cpu_set_due(HvCpu *cpu, uint64_t due);
 
 #endif

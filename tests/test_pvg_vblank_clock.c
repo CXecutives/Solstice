@@ -55,10 +55,44 @@ static void wrap_and_invalid_period(void) {
     assert(hv_vblank_due(&clock, 179, 40));
 }
 
+/* What +0x68 gets (hv_vblank_at) is on the grid of the first refresh, a whole number of periods apart and never after
+   the poll, however irregular and late the polls; hv_vblank_next (CPU 0's device deadline) is the next grid time, after
+   now and at most a period away. Polls exactly at that deadline (as the kicker and WFI make them) send every refresh. */
+static void grid_times_and_deadline(void) {
+    HvVblankClock clock = {0};
+    const uint64_t period = TICKS_PER_SECOND / 60, first = 1000;
+    assert(!hv_vblank_next(&clock));
+    uint64_t now = first, last = 0, origin = 0, s = 12345;
+    unsigned events = 0;
+    for (int i = 0; i < 200000; i++) {
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        now += (s >> 40) % (3 * period); /* 0 to 3 periods: early, on time, and late polls that skip refreshes */
+        if (!hv_vblank_due(&clock, now, period)) continue;
+        uint64_t at = hv_vblank_at(&clock, period), next = hv_vblank_next(&clock);
+        if (!events) origin = at;
+        assert(at <= now && now - at < period);
+        assert((at - origin) % period == 0);
+        assert(!events || at > last);
+        assert(next == at + period && next > now);
+        last = at;
+        events++;
+    }
+    assert(events > 1000);
+    HvVblankClock exact = {0};
+    unsigned n = 0;
+    for (now = 5; now < 10 * TICKS_PER_SECOND;) {
+        n += hv_vblank_due(&exact, now, period);
+        now = hv_vblank_next(&exact);
+    }
+    assert(n == 600);
+    printf("vblank grid: %u refreshes at grid times over random polls; 600 in 10 s polled at each deadline\n", events);
+}
+
 int main(void) {
     cadence(30); cadence(60); cadence(120);
     boundary_and_stall();
     wrap_and_invalid_period();
+    grid_times_and_deadline();
     puts("vblank clock: cadence, exact deadlines, long stalls and counter wrap passed");
     return 0;
 }

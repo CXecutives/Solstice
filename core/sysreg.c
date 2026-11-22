@@ -255,7 +255,7 @@ static int write_reg(HvCpu *cpu, uint32_t reg, uint64_t v) {
     }
     /* Timer outputs follow their registers at once, as in hardware: a masked
        timer must drop its line before the handler's EOI. */
-    if (m->tick) m->tick(m, cpu);
+    if (m->tick) hv_cpu_set_due(cpu, m->tick(m, cpu)); /* and the kicker knows the new deadline */
     return 0;
 other:
     /* PAuth key registers (CRn 2, CRm 1..3): kept, never used, since signing is a no-op. */

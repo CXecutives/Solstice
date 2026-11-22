@@ -13,8 +13,10 @@ typedef struct HvPvgLite HvPvgLite;
 
 HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_t iosfc_pa, int gfx_irq, int iosfc_irq);
 void hv_pvg_lite_destroy(HvPvgLite *p);
-/* Completes doorbells rung since the last call. Device lock held. */
+/* Completes doorbells rung since the last call, and sends the display's refresh when due. Device lock held. */
 void hv_pvg_lite_poll(HvPvgLite *p);
+/* When the next refresh is due (host time, 0: none): a device deadline for CPU 0 (vmapple.c). CPU 0's thread. */
+uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p);
 /* The newest frame, BGRA, width * 4 bytes per row, if drawing has produced one. Returns 0 if so. */
 int hv_pvg_lite_frame(HvPvgLite *p, const uint8_t **pixels, uint32_t *width, uint32_t *height);
 

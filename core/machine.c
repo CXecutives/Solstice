@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "mmu.h"
 #include "sysreg.h"
@@ -72,6 +73,8 @@ static int init_rest(HvMachine *m) {
     pthread_mutex_init(&m->tr_mu, NULL);
     pthread_mutex_init(&m->stw_mu, NULL);
     pthread_cond_init(&m->stw_cv, NULL);
+    pthread_mutex_init(&m->kick_mu, NULL);
+    pthread_cond_init(&m->kick_cv, NULL);
     for (int i = 0; i < HV_MAX_CPUS; i++) {
         pthread_mutex_init(&m->percpu[i].wake_mu, NULL);
         pthread_cond_init(&m->percpu[i].wake_cv, NULL);
@@ -369,6 +372,8 @@ void hv_ret_clear(HvCpu *cpu) {
 }
 
 void hv_cpu_wake(HvCpu *cpu) {
+    HvPerCpu *pw = cpu->pc_state;
+    __atomic_store_n(&pw->poll_req, 1, __ATOMIC_SEQ_CST); /* for CPU 0: its tick polls the devices (vmapple.c) */
     __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_SEQ_CST);
     __asm__ volatile("sev" ::: "memory");
     if (cpu->m->stats_interval) hv_stats_here(cpu->m)->kick_src[1]++;
@@ -406,6 +411,104 @@ void hv_machine_halt(HvMachine *m, enum HvHaltReason reason) {
 void hv_machine_wake(HvMachine *m) {
     if (m->stats_interval) hv_stats_here(m)->kick_src[3]++;
     if (m->cpu) hv_cpu_wake(m->cpu);
+}
+
+void hv_machine_kicker_poke(HvMachine *m) {
+    pthread_mutex_lock(&m->kick_mu);
+    m->kick_poked = 1;
+    pthread_cond_signal(&m->kick_cv);
+    pthread_mutex_unlock(&m->kick_mu);
+}
+
+/* A CPU's deadline (timer_due, stored before this with SEQ_CST) came in. The kicker stores kick_at, then looks at the
+   deadlines once more before it sleeps: either it sees this one, or this sees its kick_at (or 0 while it looks). */
+void hv_kicker_note(HvMachine *m, uint64_t due) {
+    if (!due || !__atomic_load_n(&m->kicker_on, __ATOMIC_SEQ_CST)) return;
+    uint64_t at = __atomic_load_n(&m->kick_at, __ATOMIC_SEQ_CST);
+    if (at && due + HV_KICK_SLACK >= at) return; /* it is awake by then anyway */
+    hv_machine_kicker_poke(m);
+}
+
+void hv_cpu_set_due(HvCpu *cpu, uint64_t due) {
+    __atomic_store_n(&cpu->timer_due, due, __ATOMIC_SEQ_CST);
+    hv_kicker_note(cpu->m, due);
+}
+
+/* The running CPUs' deadlines: kick those due (once per deadline), and return when to look again: the earliest
+   other deadline, CPU 0's next device poll, the safety kick, at most HV_KICK_CAP away. With none running: a little
+   after the first parked one's WFI ends by itself (it may run on then; one woken earlier says so, see unpark), at
+   most HV_KICK_IDLE away. *running: how many run. */
+static uint64_t kicker_pass(HvMachine *m, uint64_t now, uint64_t *kicked, uint64_t *poll, uint64_t safety, int kick, int *running) {
+    uint64_t wake = now + HV_KICK_CAP, idle = now + HV_KICK_IDLE;
+    *running = 0;
+    for (int i = 0; i < m->ncpus && i < HV_MAX_CPUS; i++) {
+        HvCpu *c = __atomic_load_n(&m->cpus[i], __ATOMIC_ACQUIRE);
+        if (!c) continue;
+        if (!__atomic_load_n(&m->percpu[i].active, __ATOMIC_SEQ_CST)) {
+            uint64_t until = __atomic_load_n(&m->percpu[i].wfi_until, __ATOMIC_SEQ_CST);
+            if (until && until + HV_KICK_CAP > now && until + HV_KICK_CAP < idle) idle = until + HV_KICK_CAP;
+            continue;
+        }
+        ++*running;
+        uint64_t due = __atomic_load_n(&c->timer_due, __ATOMIC_SEQ_CST);
+        if (due && due <= now) {
+            if (kick && due != kicked[i]) {
+                kicked[i] = due;
+                hv_cpu_kick(c);
+                m->stats.kicker_kicks++;
+            }
+        } else if (due && due < wake) {
+            wake = due;
+        }
+        if (i == 0) { /* CPU 0 polls the devices while it runs, for work no device signals (vmapple.c) */
+            if (kick && now >= *poll) {
+                __atomic_store_n(&m->percpu[0].poll_req, 1, __ATOMIC_SEQ_CST);
+                hv_cpu_kick(c);
+                *poll = now + HV_POLL_BUSY;
+                m->stats.kicker_polls++;
+            }
+            if (*poll < wake) wake = *poll;
+        }
+    }
+    if (!*running) return idle;
+    return safety < wake ? safety : wake;
+}
+
+/* Instead of every CPU every millisecond: each running CPU when its own deadline is due, CPU 0 for its device polls,
+   all of them every HV_KICK_SAFETY. With every CPU asleep in WFI (they wake themselves at their deadlines) it looks
+   only after one wakes. */
+void hv_machine_kicker(HvMachine *m, _Atomic int *stop) {
+    uint64_t kicked[HV_MAX_CPUS] = {0};
+    uint64_t now = mach_absolute_time();
+    uint64_t safety = now + HV_KICK_SAFETY, poll = now + HV_POLL_BUSY;
+    __atomic_store_n(&m->kicker_on, 1, __ATOMIC_SEQ_CST);
+    while (!atomic_load(stop)) {
+        now = mach_absolute_time();
+        if (now >= safety) {
+            hv_machine_kick_all(m);
+            safety = now + HV_KICK_SAFETY;
+        }
+        if (!__atomic_load_n(&m->percpu[0].active, __ATOMIC_SEQ_CST)) poll = now + HV_POLL_BUSY; /* asleep: its own tick polls */
+        int running;
+        uint64_t wake = kicker_pass(m, now, kicked, &poll, safety, 1, &running);
+        __atomic_store_n(&m->kick_at, wake, __ATOMIC_SEQ_CST);
+        /* Once more, as a CPU's deadline or a CPU coming back may have been missed by the pass (see hv_kicker_note). */
+        int running2;
+        uint64_t wake2 = kicker_pass(m, now, kicked, &poll, safety, 0, &running2);
+        pthread_mutex_lock(&m->kick_mu);
+        if (!m->kick_poked && !atomic_load(stop) && running2 <= running && wake2 + HV_KICK_SLACK >= wake) {
+            uint64_t t = mach_absolute_time(), left = wake > t ? wake - t : 0;
+            if (left) {
+                struct timespec ts = {(time_t)(left / 24000000), (long)(left % 24000000) * 1000 / 24};
+                pthread_cond_timedwait_relative_np(&m->kick_cv, &m->kick_mu, &ts);
+            }
+        }
+        m->kick_poked = 0;
+        __atomic_store_n(&m->kick_at, 0, __ATOMIC_SEQ_CST);
+        pthread_mutex_unlock(&m->kick_mu);
+        m->stats.kicker_wakes++;
+    }
+    __atomic_store_n(&m->kicker_on, 0, __ATOMIC_SEQ_CST);
 }
 
 void hv_machine_free(HvMachine *m) {
@@ -448,6 +551,8 @@ void hv_machine_free(HvMachine *m) {
         pthread_mutex_destroy(&m->tr_mu);
         pthread_mutex_destroy(&m->stw_mu);
         pthread_cond_destroy(&m->stw_cv);
+        pthread_mutex_destroy(&m->kick_mu);
+        pthread_cond_destroy(&m->kick_cv);
     }
     memset(m, 0, sizeof *m);
 }

@@ -91,6 +91,7 @@ struct HvPvgLite {
     int metal_tried;
     uint32_t stamps_pending; /* channels Metal finished, for the next poll */
     uint64_t vblanks;        /* refresh events sent (HV_PVG_VBLANK) */
+    HvVblankClock vclock;    /* the refreshes' grid: also CPU 0's device deadline (hv_pvg_lite_next_vblank) */
     uint64_t mapper_seen;    /* mapper entries handed over already (their unmaps given to Metal) */
     uint32_t mapper_waiting; /* mapper completions waiting for the GPU (do_mapper) */
 };
@@ -748,23 +749,36 @@ void hv_pvg_lite_mapper_done(HvPvgLite *p, uint64_t index) {
    by <uptime>s" in bursts, its display timer re-arms at once, and the Mac spends minutes at a time switching threads
    (on an iPhone, 20-48K interrupts and 40-80K process switches a second where a calm Mac has 3-7K). Without event 8
    a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ). HV_PVG_VBLANK=0: neither, as before. */
-static void vblank(HvPvgLite *p) {
+/* Host ticks (24 MHz) between refreshes; 0: none (HV_PVG_VBLANK=0). */
+static uint64_t vblank_period(void) {
     static int on = -1;
     static uint64_t period;
-    static HvVblankClock clock;
     if (on < 0) {
-        on = !getenv("HV_PVG_VBLANK") || atoi(getenv("HV_PVG_VBLANK"));
         const char *hz = getenv("HV_HZ");
         uint64_t r = hz && atoi(hz) > 0 ? (uint64_t)atoi(hz) : 60;
-        period = 24000000ull / r; /* host counter ticks (24 MHz) */
+        period = 24000000ull / r;
+        on = !getenv("HV_PVG_VBLANK") || atoi(getenv("HV_PVG_VBLANK"));
     }
-    if (!on || !p->display_pa) return;
+    return on ? period : 0;
+}
+
+/* The next refresh (host time), for CPU 0's deadline: the kicker and WFI wake it then, so the refreshes keep their
+   grid whatever else polls the devices. 0 before the guest named its display page. */
+uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
+    if (!p || !p->display_pa || !vblank_period()) return 0;
+    return hv_vblank_next(&p->vclock);
+}
+
+static void vblank(HvPvgLite *p) {
+    uint64_t period = vblank_period();
+    if (!period || !p->display_pa) return;
     uint8_t *d = hv_phys_ptr(p->m, p->display_pa, 0x4000);
     if (!d) return;
     uint64_t now = mach_absolute_time();
-    if (!hv_vblank_due(&clock, now, period)) return;
-    /* The time on the guest's own clock (its virtual counter, as mach_absolute_time reads it there), before the event. */
-    __atomic_store_n((uint64_t *)(d + 0x68), now - p->m->cntvoff, __ATOMIC_RELEASE);
+    if (!hv_vblank_due(&p->vclock, now, period)) return;
+    /* The refresh's time on its grid (missed ones skipped), on the guest's own clock (its virtual counter, as
+       mach_absolute_time reads it there), before the event: a period apart however late this poll came. */
+    __atomic_store_n((uint64_t *)(d + 0x68), hv_vblank_at(&p->vclock, period) - p->m->cntvoff, __ATOMIC_RELEASE);
     if (!(__atomic_load_n((uint32_t *)(d + 0x104), __ATOMIC_ACQUIRE) & 8)) return;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 8, __ATOMIC_RELEASE);
     p->vblanks++;
