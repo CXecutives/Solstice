@@ -286,6 +286,7 @@ typedef struct HvWalk {
 - (BOOL)hasDisplayLayer;
 - (void)kickPresenter:(BOOL)fresh;
 - (void)present:(uint64_t)mapping;
+- (void)screenChanged;
 - (void)cursorChanged;
 - (void)targetChanged;
 @end
@@ -2925,6 +2926,16 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
     screen_tex = surface->scanout, screen_half = half, screen_w = surface->surface_w, screen_h = surface->surface_h;
     screen_dirty = YES;
     [self kickPresenter:YES];
+    os_unfair_lock_unlock(&screen_lock);
+}
+
+/* The frame as it is, drawn again (the colour probe: another mode, a post-shader capture). */
+- (void)screenChanged {
+    os_unfair_lock_lock(&screen_lock);
+    if (screen_tex) {
+        screen_dirty = YES;
+        [self kickPresenter:YES];
+    }
     os_unfair_lock_unlock(&screen_lock);
 }
 
