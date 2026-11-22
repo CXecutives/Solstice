@@ -21,8 +21,10 @@
 
 /* 1080p shrunk onto a phone would make a normal pointer a few dots across; an iPad's screen needs less. */
 /* The pointer's settings, read at most once a second: the presenter asks for them every frame. */
+/* And the screen's brightness (Details › Display), in thousandths: the presenter dims the frame itself, so the layer
+   can be opaque and the system compositor need not blend it. */
 static _Atomic uint64_t cursor_settings_next;
-static _Atomic int cursor_saved_scale, cursor_sharp = 1;
+static _Atomic int cursor_saved_scale, cursor_sharp = 1, screen_brightness = 1000;
 static void cursor_settings_refresh(void) {
     uint64_t now = mach_absolute_time();
     if (now < atomic_load_explicit(&cursor_settings_next, memory_order_relaxed)) return;
@@ -31,6 +33,16 @@ static void cursor_settings_refresh(void) {
     atomic_store(&cursor_saved_scale, (int)[d integerForKey:@"henge.cursor.scale"]);
     NSNumber *sharp = [d objectForKey:@"henge.cursor.sharp"];
     atomic_store(&cursor_sharp, !sharp || sharp.boolValue);
+    id bright = [d objectForKey:@"henge.display.brightness"];
+    double b = [bright isKindOfClass:[NSNumber class]] ? [bright doubleValue] : 1;
+    b = b >= 0.4 ? (b <= 1 ? b : 1) : 0.4; /* the range the app's slider has */
+    atomic_store(&screen_brightness, (int)(b * 1000 + 0.5));
+}
+/* Read the settings again at the next use: the app changed one and wants the screen shown again. */
+static void cursor_settings_now(void) { atomic_store_explicit(&cursor_settings_next, 0, memory_order_relaxed); }
+static float brightness_now(void) {
+    cursor_settings_refresh();
+    return atomic_load(&screen_brightness) / 1000.0f;
 }
 static int cursor_scale(void) {
 #if TARGET_OS_IPHONE
@@ -131,6 +143,8 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     NSData *planar_desc;
     NSString *planar_want;
     BOOL planar_compact;
+    /* The command its pages were last checked against the guest's table in (refresh_pages): once is enough. */
+    uint32_t checked;
 }
 @end
 
@@ -145,13 +159,40 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
 
 @class HvContext;
 
+/* A task's objects by ref: each draw names 5 to 15 of them, so a lookup is an index, not two dictionary searches.
+   Slots come in pages of OBJ_PAGE, made as refs are met; a ref indexes the task's object list (12 bytes an entry),
+   so they are dense. */
+#define HV_TASKS 512        /* task ids, as pvg_lite keeps them */
+#define OBJ_PAGE 512
+#define OBJ_REFS (1u << 22) /* past this a ref is not the guest's: that object list would be 48 MB */
+typedef struct HvTaskObjects {
+    HvObject *__strong **page; /* page[ref / OBJ_PAGE][ref % OBJ_PAGE] */
+    uint32_t pages;
+} HvTaskObjects;
+
+/* Task memory pages found while one command runs (task_page): its tables are walked once per page, not once per
+   object lookup. Only for that command: the guest may map its memory differently by the next. */
+#define HV_WALK 64
+typedef struct HvWalk {
+    uint64_t vpn;
+    uint8_t *host;
+    uint32_t task, epoch;
+} HvWalk;
+
 @interface HvReplay : NSObject {
 @public
     HvPvgLite *lite;
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     dispatch_queue_t worker;
-    NSMutableDictionary<NSNumber *, NSMutableDictionary<NSNumber *, HvObject *> *> *tasks;
+    HvTaskObjects task_objs[HV_TASKS]; /* worker only */
+    HvWalk walk[HV_WALK];
+    uint32_t walk_epoch; /* the command running, for walk and HvObject.checked */
+    /* Reused scratch: a command buffer that is not in one piece in host memory, and a range's page numbers. */
+    uint8_t *cmd_scratch;
+    size_t cmd_cap;
+    uint32_t *pages_scratch;
+    uint64_t pages_cap;
     NSMutableDictionary<NSNumber *, id<MTLTexture>> *mapped_textures;
     NSMutableDictionary<NSNumber *, HvObject *> *surfaces;
     /* Multi-plane surfaces' host IOSurfaces by the guest memory they stand for: each process maps a surface
@@ -207,6 +248,20 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     uint64_t pipes_hit, pipes_compiled, pipes_unsaved, pipes_unsaveable;
     double compile_ms, hit_ms;
     id<MTLTexture> cursor_tex;
+    /* The pointer as a layer over the screen's layer, so that moving it needs no pass over the whole screen on the GPU
+       and no new drawable. cursor_layer_ok (screen_lock) says it is laid out for the target as it is now. Until then,
+       and for a moment after the target or its size changes (a layout that may still be animating, which a sublayer
+       would not follow), the presenter draws the pointer into the frame as before. The layers are the cursor queue's. */
+    dispatch_queue_t cursor_queue;
+    CALayer *overlay_box, *overlay_glyph; /* the screen's area in the target (clips), the pointer in it */
+    __weak CAMetalLayer *overlay_parent;
+    uint64_t overlay_seq;     /* the image it shows: cursor_seq and how it was made */
+    int overlay_bright, overlay_matched;
+    BOOL cursor_layer_ok, overlay_hold, cursor_queued, overlay_never;
+    uint64_t cursor_seq;      /* screen_lock: a new pointer image */
+    double cursor_next;       /* screen_lock: the next layer update, at most one a refresh */
+    double present_every;     /* 1 / HV_HZ: frames go out no faster than macOS draws them */
+    __weak CAMetalLayer *opaque_layer; /* presenter: the target made opaque, once a frame of its own was on it */
     id<MTLSamplerState> screen_sampler, cursor_sampler;
     uint64_t on_screen; /* the mapping showing */
     _Atomic uint64_t gpu_frames;
@@ -232,6 +287,8 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
 - (void)kickPresenter:(BOOL)fresh;
 - (void)present:(uint64_t)mapping;
 - (void)screenChanged;
+- (void)cursorChanged;
+- (void)targetChanged;
 @end
 
 /* What Metal asks while it reads a serialized pipeline. */
@@ -308,6 +365,99 @@ static float hv_half_shown(float v, int mode) { /* what the screen shows for a h
 
 #include "pvg_colorprobe.h" /* HV_COLOR_PROBE: what the display is told and shown, for chasing colour problems */
 
+/* The slot for a task's ref, made if asked for; NULL for a ref past OBJ_REFS (or no memory). Slots never move once
+   made, so one stays valid while making its object looks up others. */
+static HvObject *__strong *obj_slot(HvTaskObjects *t, uint32_t ref, BOOL make) {
+    if (ref >= OBJ_REFS) return NULL;
+    uint32_t p = ref / OBJ_PAGE;
+    if (p >= t->pages) {
+        if (!make) return NULL;
+        uint32_t n = t->pages ? t->pages : 8;
+        while (n <= p) n *= 2;
+        HvObject *__strong **grown = (HvObject *__strong **)realloc(t->page, n * sizeof *grown);
+        if (!grown) return NULL;
+        memset(grown + t->pages, 0, (n - t->pages) * sizeof *grown);
+        t->page = grown, t->pages = n;
+    }
+    if (!t->page[p]) {
+        if (!make) return NULL;
+        t->page[p] = (HvObject *__strong *)calloc(OBJ_PAGE, sizeof(HvObject *));
+        if (!t->page[p]) return NULL;
+    }
+    return &t->page[p][ref % OBJ_PAGE];
+}
+
+/* All of a task's objects let go (the task ended, or the replay did). */
+static void obj_clear(HvTaskObjects *t) {
+    for (uint32_t p = 0; p < t->pages; p++) {
+        if (!t->page[p]) continue;
+        for (uint32_t i = 0; i < OBJ_PAGE; i++) t->page[p][i] = nil;
+        free(t->page[p]);
+    }
+    free(t->page);
+    t->page = NULL, t->pages = 0;
+}
+
+/* An object already made for a ref, or nil. */
+static HvObject *obj_known(HvReplay *r, uint32_t task, uint32_t ref) {
+    if (task >= HV_TASKS) return nil;
+    HvObject *__strong *s = obj_slot(&r->task_objs[task], ref, NO);
+    return s ? *s : nil;
+}
+
+/* A new command on the worker: the walk memo and the page checks start over. */
+static void new_command(HvReplay *r) {
+    if (++r->walk_epoch == 0) {
+        memset(r->walk, 0, sizeof r->walk);
+        r->walk_epoch = 1;
+    }
+}
+
+/* The host page under task page vpn, or NULL: walked once per page and command. */
+static uint8_t *task_page(HvReplay *r, uint32_t task, uint64_t vpn) {
+    HvWalk *w = &r->walk[(vpn ^ (uint64_t)task * 0x9e3779b1u) % HV_WALK];
+    if (w->epoch == r->walk_epoch && w->vpn == vpn && w->task == task) return w->host;
+    uint32_t page = hv_pvg_lite_task_page(r->lite, task, vpn << 14);
+    w->host = page ? hv_pvg_lite_page(r->lite, page) : NULL;
+    w->vpn = vpn, w->task = task, w->epoch = r->walk_epoch;
+    return w->host;
+}
+
+/* n bytes of task memory copied out; 0, or -1 if a page of it is not there. */
+static int task_copy(HvReplay *r, uint32_t task, uint64_t off, void *to, uint64_t n) {
+    uint8_t *d = to;
+    while (n) {
+        uint8_t *page = task_page(r, task, off >> 14);
+        if (!page) return -1;
+        uint64_t in = off & 0x3fff, c = 0x4000 - in < n ? 0x4000 - in : n;
+        memcpy(d, page + in, c);
+        d += c, off += c, n -= c;
+    }
+    return 0;
+}
+
+/* n bytes of task memory where they are, if they are in one piece in host memory: in one page, or in pages that follow
+   each other there (guest RAM is one mapping, and the guest's allocator mostly hands out runs). NULL if not. */
+static const uint8_t *task_span(HvReplay *r, uint32_t task, uint64_t off, uint64_t n) {
+    if (!n) return NULL;
+    uint64_t vpn = off >> 14, last = (off + n - 1) >> 14;
+    uint8_t *first = task_page(r, task, vpn);
+    if (!first) return NULL;
+    for (uint64_t v = vpn + 1; v <= last; v++)
+        if (task_page(r, task, v) != first + ((v - vpn) << 14)) return NULL;
+    return first + (off & 0x3fff);
+}
+
+/* Room for n page numbers, kept for the next time. */
+static uint32_t *pages_scratch(HvReplay *r, uint64_t n) {
+    if (n > r->pages_cap) {
+        free(r->pages_scratch);
+        r->pages_scratch = malloc(n * 4);
+        r->pages_cap = r->pages_scratch ? n : 0;
+    }
+    return r->pages_scratch;
+}
+
 /* A contiguous view of a task's guest pages; holes are left as zero pages. */
 /* A range of task memory at one address, page by page. Metal pins a buffer's
    pages when the buffer is made, so a mapping never changes under a buffer: when
@@ -338,6 +488,7 @@ static BOOL map_pages(HvReplay *r, uint32_t task, HvObject *o) {
     free(o->pages);
     o->pages = pages;
     o->mapped = (uint8_t *)base;
+    o->checked = r->walk_epoch;
     return YES;
 }
 
@@ -351,16 +502,16 @@ static id<MTLBuffer> buffer_over_mapping(HvReplay *r, HvObject *o) {
     return b;
 }
 
-/* The guest's table for this range against what is mapped: a change means a new mapping. */
+/* The guest's table for this range against what is mapped: a change means a new mapping. Once a command: one exec
+   names the same buffer many times (each resource, each texture made from it, each info query). */
 static void refresh_pages(HvReplay *r, uint32_t task, HvObject *o) {
-    if (!o->mapped) return;
+    if (!o || !o->mapped || o->checked == r->walk_epoch) return;
     uint64_t n = (o->length + 0x3fff) >> 14;
-    uint32_t stack[256];
-    uint32_t *now = n <= 256 ? stack : malloc(n * 4);
+    uint32_t *now = pages_scratch(r, n);
+    if (!now) return;
+    o->checked = r->walk_epoch;
     hv_pvg_lite_task_pages(r->lite, task, o->vpage, n, now);
-    BOOL same = memcmp(now, o->pages, n * 4) == 0;
-    if (now != stack) free(now);
-    if (same) return;
+    if (memcmp(now, o->pages, n * 4) == 0) return;
     uint8_t *old = o->mapped;
     BOOL old_in_buffer = o->mapping_in_buffer;
     if (!map_pages(r, task, o)) return;
@@ -465,6 +616,12 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
 @end
 
 @implementation HvReplay
+
+- (void)dealloc {
+    for (uint32_t t = 0; t < HV_TASKS; t++) obj_clear(&task_objs[t]);
+    free(cmd_scratch);
+    free(pages_scratch);
+}
 
 - (void)complain:(NSString *)what {
     if ([complaints containsObject:what]) return;
@@ -1429,13 +1586,16 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
 }
 
 - (HvObject *)object:(uint32_t)ref task:(uint32_t)task {
-    if (!ref) return nil;
+    if (!ref || task >= HV_TASKS) return nil;
     uint64_t list = hv_pvg_lite_task_objects(lite, task);
     uint32_t e[3];
-    if (!list || hv_pvg_lite_task_read(lite, task, list + (uint64_t)ref * 12, e, 12)) return nil;
-    NSMutableDictionary *objs = tasks[@(task)];
-    if (!objs) tasks[@(task)] = objs = [NSMutableDictionary new];
-    HvObject *o = objs[@(ref)];
+    if (!list || task_copy(self, task, list + (uint64_t)ref * 12, e, 12)) return nil;
+    HvObject *__strong *slot = obj_slot(&task_objs[task], ref, YES);
+    if (!slot) {
+        [self complain:[NSString stringWithFormat:@"task %u names object %u, past any object list", task, ref]];
+        return nil;
+    }
+    HvObject *o = *slot;
     if (o && !memcmp(o->entry, e, 12)) {
         /* macOS 14's driver names a surface before it writes the surface's description: try again a while.
            And it reuses surface ids: a texture over a surface that has since been replaced is made again. */
@@ -1448,7 +1608,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
             HvObject *again = [HvObject new];
             memcpy(again->entry, e, 12);
             again->retries = tries;
-            objs[@(ref)] = again;
+            *slot = again;
             uint64_t at = (uint64_t)e[2] << 32 | e[1];
             [self makeMappedTexture:again at:at task:task];
             static int told;
@@ -1461,7 +1621,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
     }
     o = [HvObject new];
     memcpy(o->entry, e, 12);
-    objs[@(ref)] = o;
+    *slot = o;
     uint32_t type = e[0] & 0xff, size = e[0] >> 8;
     uint64_t at = (uint64_t)e[2] << 32 | e[1];
     switch (type) {
@@ -1552,11 +1712,10 @@ static BOOL has_guest_pages(HvObject *o) {
     if (n < 8) return;
     uint32_t task = a[0], count = a[1];
     if (n < 8 + count * 4ull) return;
-    NSMutableDictionary *objs = tasks[@(task)];
     id<MTLCommandBuffer> cb = nil;
     id<MTLBlitCommandEncoder> blit = nil;
     for (uint32_t i = 0; i < count; i++) {
-        HvObject *o = objs[@(a[2 + i])];
+        HvObject *o = obj_known(self, task, a[2 + i]);
         if (!o || !o->guest_backed || !o->host_valid) continue;
         if (!cb) cb = [queue commandBuffer];
         [self page:o toGuest:YES task:task blit:&blit commandBuffer:cb];
@@ -1572,10 +1731,9 @@ static BOOL has_guest_pages(HvObject *o) {
 /* {task, count, {ref, host invalid, host valid, guest invalid, guest valid}}. */
 - (void)invalidate:(const uint32_t *)a length:(uint32_t)n {
     if (n < 8 || n < 8 + a[1] * 8ull) return;
-    NSMutableDictionary *objs = tasks[@(a[0])];
     const uint8_t *e = (const uint8_t *)(a + 2);
     for (uint32_t i = 0; i < a[1]; i++, e += 8) {
-        HvObject *o = objs[@(*(const uint32_t *)e)];
+        HvObject *o = obj_known(self, a[0], *(const uint32_t *)e);
         if (!o) continue;
         if (e[6]) o->guest_stale = YES;
         if (e[7]) o->guest_stale = NO;
@@ -2458,9 +2616,19 @@ typedef struct {
         memcpy(&off, bufs + b * 16, 8);
         memcpy(&blen, bufs + b * 16 + 8, 8);
         if (blen > (64u << 20) || blen < 8) continue;
-        NSMutableData *copy = [NSMutableData dataWithLength:(NSUInteger)blen];
-        if (hv_pvg_lite_task_read(lite, task, off, copy.mutableBytes, (uint32_t)blen)) { [self complain:@"command buffer unreadable"]; continue; }
-        const uint8_t *p = copy.bytes, *end = p + blen;
+        /* Read where it is when it is in one piece (nearly always: the guest is waiting for this exec and does not
+           touch it meanwhile), else copied once into a buffer kept for the next. */
+        const uint8_t *p = task_span(self, task, off, blen);
+        if (!p) {
+            if (blen > cmd_cap) {
+                free(cmd_scratch);
+                cmd_scratch = malloc((size_t)blen);
+                cmd_cap = cmd_scratch ? (size_t)blen : 0;
+            }
+            if (!cmd_scratch || task_copy(self, task, off, cmd_scratch, blen)) { [self complain:@"command buffer unreadable"]; continue; }
+            p = cmd_scratch;
+        }
+        const uint8_t *end = p + blen;
         uint32_t seglen, info;
         memcpy(&seglen, p, 4), memcpy(&info, p + 4, 4);
         p += 8;
@@ -2518,6 +2686,10 @@ typedef struct {
         if (!more && e) { [e endEncoding]; e = nil; }
     }
     if (e) [e endEncoding];
+    if (cmd_cap > (4u << 20)) { /* a big one, rare: not kept */
+        free(cmd_scratch);
+        cmd_scratch = NULL, cmd_cap = 0;
+    }
     if (sync_after) { /* the guest wants these back as soon as this is done */
         id<MTLBlitCommandEncoder> back = nil;
         for (uint32_t i = 0; i < nres; i++) {
@@ -2583,6 +2755,7 @@ static const uint8_t *half_to_byte(void) {
     os_unfair_lock_lock(&screen_lock);
     cursor = bits, cursor_w = w, cursor_h = h, cursor_stride = (uint32_t)stride, cursor_hot_x = hx, cursor_hot_y = hy;
     cursor_tex = glyph;
+    cursor_seq++;
     os_unfair_lock_unlock(&screen_lock);
     if (getenv("HV_PVG_CURSOR_LOG")) fprintf(stderr, "pvgcursor glyph %ux%u hot %d,%d stride %u first alpha %u\n", w, h, hx, hy, (uint32_t)stride, bits[(size_t)(h / 2) * stride + (size_t)(w / 2) * 4 + 3]);
     [self drawCursor];
@@ -2598,7 +2771,7 @@ static const uint8_t *half_to_byte(void) {
 /* Puts back what the pointer covered, and draws it where the shared page says it is now. */
 - (void)drawCursor {
     if ([self hasDisplayLayer]) {
-        [self screenChanged];
+        [self cursorChanged];
         return;
     }
     if (!frame || !base) return;
@@ -2645,14 +2818,15 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
     "vertex V screen_v(uint i [[vertex_id]], constant float4 &rect [[buffer(0)]]) {\n"
     "  float2 c = float2(i & 1, (i >> 1) & 1);\n"
     "  V o; o.at = float4(rect.xy + c * rect.zw, 0, 1); o.uv = float2(c.x, 1 - c.y); return o; }\n"
-    "fragment float4 screen_plain(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-    "  return float4(t.sample(s, v.uv).rgb, 1); }\n"
-    "fragment float4 screen_linear(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant uint &mode [[buffer(0)]]) {\n"
+    "fragment float4 screen_plain(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float &bright [[buffer(1)]]) {\n"
+    "  return float4(t.sample(s, v.uv).rgb * bright, 1); }\n"
+    "fragment float4 screen_linear(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant uint &mode [[buffer(0)]],\n"
+    "                              constant float &bright [[buffer(1)]]) {\n"
     "  float3 c = saturate(t.sample(s, v.uv).rgb);\n"
     "  if (mode == 1) c = select(1.055 * powr(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);\n"
-    "  return float4(c, 1); }\n"
-    "fragment float4 screen_cursor(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-    "  return t.sample(s, v.uv); }\n";
+    "  return float4(c * bright, 1); }\n"
+    "fragment float4 screen_cursor(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float &bright [[buffer(1)]]) {\n"
+    "  float4 c = t.sample(s, v.uv); return float4(c.rgb * bright, c.a); }\n";
 
 - (BOOL)prepareScreenForLayer:(CAMetalLayer *)target {
     if (!screen_pipe || !linear_pipe || !cursor_pipe) {
@@ -2748,13 +2922,14 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
         if (!surface->scanout) { [self complain:[NSString stringWithFormat:@"no scanout for surface %llu, row %llu", mapping, surface->row]]; return; }
     }
     os_unfair_lock_lock(&screen_lock);
+    if (screen_tex && (screen_w != surface->surface_w || screen_h != surface->surface_h)) [self targetChanged]; /* a new mode */
     screen_tex = surface->scanout, screen_half = half, screen_w = surface->surface_w, screen_h = surface->surface_h;
     screen_dirty = YES;
     [self kickPresenter:YES];
     os_unfair_lock_unlock(&screen_lock);
 }
 
-/* The pointer moved or changed: the screen again, with no need to go through the GPU queue's worker. */
+/* The frame as it is, drawn again (the colour probe: another mode, a post-shader capture). */
 - (void)screenChanged {
     os_unfair_lock_lock(&screen_lock);
     if (screen_tex) {
@@ -2762,6 +2937,169 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
         [self kickPresenter:YES];
     }
     os_unfair_lock_unlock(&screen_lock);
+}
+
+/* The pointer moved or changed, with no need to go through the GPU queue's worker: its layer moves, or, while that is
+   not laid out, the screen is drawn again with the pointer in it. */
+- (void)cursorChanged {
+    os_unfair_lock_lock(&screen_lock);
+    if (cursor_layer_ok) [self queueCursorUpdate];
+    else if (screen_tex) {
+        screen_dirty = YES;
+        [self kickPresenter:YES];
+    }
+    os_unfair_lock_unlock(&screen_lock);
+}
+
+/* One layer update on its way, at most one a refresh: the newest position is read when it runs. screen_lock held. */
+- (void)queueCursorUpdate {
+    if (cursor_queued || atomic_load(&stopping) || !cursor_queue) return;
+    cursor_queued = YES;
+    double wait = cursor_next - now_seconds();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, wait > 0 ? (int64_t)(wait * NSEC_PER_SEC) : 0), cursor_queue, ^{ [self updateCursorLayer]; });
+}
+
+/* The target, or its size, changed (the app lays its view out again, or another screen takes over): the pointer goes
+   back into the frame until the layout has settled, then onto its layer again (enableCursorLayer). screen_lock held,
+   with the new target's generation. */
+- (void)targetChanged {
+    if (!cursor_queue) return;
+    cursor_layer_ok = NO;
+    overlay_hold = YES;
+    [self queueCursorUpdate]; /* hides it, or takes it off a target that went */
+    if (overlay_never || !layer) return;
+    uint64_t generation = layer_generation;
+    /* SwiftUI's layout animations here take 0.25 s, a rotation about 0.35 s. */
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 450 * NSEC_PER_MSEC), cursor_queue, ^{ [self enableCursorLayer:generation]; });
+}
+
+- (void)enableCursorLayer:(uint64_t)generation {
+    os_unfair_lock_lock(&screen_lock);
+    BOOL settled = layer_generation == generation && layer && !atomic_load(&stopping);
+    if (settled) {
+        cursor_layer_ok = YES;
+        overlay_hold = YES; /* shown once a frame without the pointer in it is on screen */
+        if (screen_tex) {
+            screen_dirty = YES;
+            [self kickPresenter:YES];
+        }
+    }
+    os_unfair_lock_unlock(&screen_lock);
+}
+
+/* A frame drawn without the pointer is on screen: the layer can show it now. */
+- (void)releaseCursorHold:(uint64_t)generation {
+    os_unfair_lock_lock(&screen_lock);
+    if (layer_generation == generation && cursor_layer_ok && overlay_hold) {
+        overlay_hold = NO;
+        [self queueCursorUpdate];
+    }
+    os_unfair_lock_unlock(&screen_lock);
+}
+
+/* The pointer's image for its layer: premultiplied BGRA as the guest gave it, dimmed as the screen is (colour times
+   brightness, alpha kept, which is what drawing it into the dimmed frame gave). */
+static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint32_t stride, int bright, CGColorSpaceRef space) {
+    size_t row = (size_t)w * 4;
+    NSMutableData *d = [NSMutableData dataWithLength:row * h];
+    uint8_t *out = d.mutableBytes;
+    for (uint32_t y = 0; y < h; y++) {
+        const uint8_t *in = bits + (size_t)y * stride;
+        uint8_t *o = out + (size_t)y * row;
+        for (size_t x = 0; x < row; x += 4) {
+            for (int c = 0; c < 3; c++) o[x + c] = (uint8_t)((in[x + c] * bright + 500) / 1000);
+            o[x + 3] = in[x + 3];
+        }
+    }
+    CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)d);
+    CGImageRef img = dp ? CGImageCreate(w, h, 8, 32, row, space, (CGBitmapInfo)kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+                                        dp, NULL, false, kCGRenderingIntentDefault) : NULL;
+    CGDataProviderRelease(dp);
+    return img;
+}
+
+/* Cursor queue: the pointer's layer where the guest's shared page says the pointer is now. Off the main thread, in a
+   transaction of its own: Core Animation takes layer changes from any thread. */
+- (void)updateCursorLayer {
+    /* Nothing of Core Animation's under screen_lock: the main thread takes that lock while it lays out layers. */
+    int bright = (int)(brightness_now() * 1000 + 0.5f);
+    CGFloat scale = cursor_scale();
+    os_unfair_lock_lock(&screen_lock);
+    cursor_queued = NO;
+    cursor_next = now_seconds() + present_every;
+    CAMetalLayer *target = atomic_load(&stopping) ? nil : layer;
+    BOOL visible = target && cursor_layer_ok && !overlay_hold && cursor && screen_w && screen_h;
+    uint32_t W = screen_w, H = screen_h, cw = cursor_w, ch = cursor_h, stride = cursor_stride;
+    int hx = cursor_hot_x, hy = cursor_hot_y;
+    BOOL shown = cursor_shown;
+    uint64_t seq = cursor_seq;
+    NSData *bits = visible && (seq != overlay_seq || bright != overlay_bright || overlay_matched < 0)
+                       ? [NSData dataWithBytes:cursor length:(size_t)stride * ch] : nil;
+    os_unfair_lock_unlock(&screen_lock);
+    int matched = target && target.colorspace != NULL;
+    if (visible && !bits && matched != overlay_matched) { /* only the colour matching changed */
+        os_unfair_lock_lock(&screen_lock);
+        if (cursor && cursor_seq == seq) bits = [NSData dataWithBytes:cursor length:(size_t)stride * ch];
+        os_unfair_lock_unlock(&screen_lock);
+        if (!bits) visible = NO; /* a new image is on its way, with its own update */
+    }
+    const uint8_t *page = target && lite ? hv_pvg_lite_display_page(lite) : NULL; /* target: not stopping */
+    uint32_t where = page ? __atomic_load_n((const uint32_t *)(page + 0xe00), __ATOMIC_ACQUIRE) : 0xffffffff;
+    if (where == 0xffffffff || !(shown || page[0xe04])) visible = NO;
+    CGRect bounds = target ? target.bounds : CGRectZero;
+    NSString *gravity = target.contentsGravity;
+    CGRect content = bounds;
+    if (W && H && bounds.size.width > 0 && bounds.size.height > 0 && ![gravity isEqualToString:kCAGravityResize]) {
+        CGFloat sx = bounds.size.width / W, sy = bounds.size.height / H;
+        CGFloat s = [gravity isEqualToString:kCAGravityResizeAspectFill] ? MAX(sx, sy) : MIN(sx, sy);
+        content = CGRectMake(bounds.origin.x + (bounds.size.width - W * s) / 2, bounds.origin.y + (bounds.size.height - H * s) / 2, W * s, H * s);
+        if (![gravity isEqualToString:kCAGravityResizeAspect] && ![gravity isEqualToString:kCAGravityResizeAspectFill]) visible = NO;
+    }
+    if (content.size.width <= 0 || content.size.height <= 0) visible = NO;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (!overlay_box && target) {
+        overlay_box = [CALayer layer];
+        overlay_box.masksToBounds = YES;
+        overlay_box.anchorPoint = CGPointZero;
+        overlay_glyph = [CALayer layer];
+        overlay_glyph.anchorPoint = CGPointZero;
+        [overlay_box addSublayer:overlay_glyph];
+    }
+    CAMetalLayer *parent = overlay_parent;
+    if (overlay_box && parent != target) {
+        [overlay_box removeFromSuperlayer];
+        if (target) [target addSublayer:overlay_box];
+        overlay_parent = target;
+    }
+    if (overlay_box) overlay_box.hidden = !visible;
+    if (visible && overlay_box) {
+        if (bits) {
+            CGColorSpaceRef space = matched ? CGColorSpaceRetain(target.colorspace) : CGColorSpaceCreateDeviceRGB();
+            CGImageRef img = cursor_image(bits.bytes, cw, ch, stride, bright, space);
+            CGColorSpaceRelease(space);
+            overlay_glyph.contents = (__bridge_transfer id)img;
+            overlay_seq = seq, overlay_bright = bright, overlay_matched = matched;
+        }
+        /* Where the presenter would draw it: the place in the display mode's pixels (the surface can be smaller,
+           a scaled resolution), the size from the guest's image times the pointer scale. */
+        uint32_t MW = W, MH = H;
+        hv_pvg_lite_mode(&MW, &MH);
+        if (!MW || !MH) MW = W, MH = H;
+        CGFloat x = ((CGFloat)(where & 0xffff) - hx * scale) / MW, y = ((CGFloat)(where >> 16) - hy * scale) / MH;
+        CGFloat w = cw * scale / MW, h = ch * scale / MH;
+#if !TARGET_OS_IPHONE
+        y = 1 - y - h; /* a Mac's layers count from the bottom */
+#endif
+        overlay_box.bounds = CGRectMake(0, 0, content.size.width, content.size.height);
+        overlay_box.position = content.origin;
+        overlay_glyph.frame = CGRectMake(x * content.size.width, y * content.size.height, w * content.size.width, h * content.size.height);
+        NSString *filter = atomic_load(&cursor_sharp) ? kCAFilterNearest : kCAFilterLinear;
+        overlay_glyph.magnificationFilter = filter;
+        overlay_glyph.minificationFilter = filter;
+    }
+    [CATransaction commit];
+    [CATransaction flush];
 }
 
 - (void)presentLoop {
@@ -2832,6 +3170,7 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
         os_unfair_lock_lock(&screen_lock);
         tex = screen_tex, half = screen_half, ctex = cursor_tex, shown = cursor_shown;
         cw0 = cursor_w, ch0 = cursor_h, hx = cursor_hot_x, hy = cursor_hot_y;
+        BOOL pointer_in_frame = !cursor_layer_ok, hold = overlay_hold; /* else its layer shows it */
         BOOL same_target = layer_generation == generation && layer == target;
         BOOL same_size = screen_w == W && screen_h == H;
         if (same_target && same_size) {
@@ -2860,10 +3199,12 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             uint32_t half_mode = (uint32_t)hv_half_mode_get();
             [e setFragmentBytes:&half_mode length:sizeof half_mode atIndex:0];
         }
+        float bright = brightness_now();
+        [e setFragmentBytes:&bright length:sizeof bright atIndex:1];
         [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         const uint8_t *page = hv_pvg_lite_display_page(lite);
         uint32_t where = page ? __atomic_load_n((const uint32_t *)(page + 0xe00), __ATOMIC_ACQUIRE) : 0xffffffff;
-        if (ctex && where != 0xffffffff && (shown || page[0xe04])) {
+        if (pointer_in_frame && ctex && where != 0xffffffff && (shown || page[0xe04])) {
             const float scale = cursor_scale();
             float x = (float)(where & 0xffff) - hx * scale, y = (float)(where >> 16) - hy * scale;
             float cw = cw0 * scale, ch = ch0 * scale;
@@ -2907,11 +3248,36 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             }];
         }
 #endif
+        /* Once this frame is on screen: the pointer's layer may show (it was waiting for a frame without the pointer
+           drawn in), and a target with a frame of its own on it is opaque from then on (the compositor need not blend
+           it with what is behind; before its first frame what is behind is the boot screen). */
+        BOOL first_here = opaque_layer != target;
+        if ((!pointer_in_frame && hold) || first_here) {
+            __weak CAMetalLayer *weak_target = target;
+            [drawable addPresentedHandler:^(id<MTLDrawable> shown_drawable) {
+                (void)shown_drawable;
+                /* never a lock of ours on the thread presenting it: queued */
+                if (!pointer_in_frame && hold) dispatch_async(self->cursor_queue, ^{ [self releaseCursorHold:generation]; });
+                if (first_here) dispatch_async(self->presenter, ^{
+                    CAMetalLayer *t = weak_target;
+                    if (!t) return;
+                    self->opaque_layer = t;
+                    if (t.opaque) return;
+                    [CATransaction begin];
+                    [CATransaction setDisableActions:YES];
+                    t.opaque = YES;
+                    [CATransaction commit];
+                    [CATransaction flush];
+                });
+            }];
+        }
         // Serialize the final check and commit with set_layer: a switch that has
         // returned must not be followed by a commit to its old target.
         os_unfair_lock_lock(&screen_lock);
         if (layer_generation == generation && layer == target) {
-            [cb presentDrawable:drawable];
+            /* No faster than macOS draws (HV_HZ): a ProMotion panel stays at that rate instead of following every
+               change, and three drawables queue at most that far ahead. */
+            [cb presentDrawable:drawable afterMinimumDuration:present_every];
             [cb commit];
             gpu_frames++;
         } else {
@@ -3021,8 +3387,15 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->queue = [dev newCommandQueueWithMaxCommandBufferCount:64];
         r->worker = dispatch_queue_create("hengevm.pvg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+        r->cursor_queue = dispatch_queue_create("hengevm.cursor", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+        const char *hz = getenv("HV_HZ");
+        int rate = hz && atoi(hz) >= 30 && atoi(hz) <= 120 ? atoi(hz) : 60;
+        r->present_every = 1.0 / rate;
+        r->overlay_matched = -1;
+        /* Screenshots of the drawable (the GPU test, the colour probe) want the pointer in it. */
+        r->overlay_never = getenv("HV_PVG_GPU_TEST") || getenv("HV_COLOR_PROBE");
         r->screen_lock = OS_UNFAIR_LOCK_INIT;
-        r->tasks = [NSMutableDictionary new];
+        r->walk_epoch = 1;
         r->mapped_textures = [NSMutableDictionary new];
         r->surfaces = [NSMutableDictionary new];
         r->planar = [NSMutableDictionary new];
@@ -3067,6 +3440,14 @@ void hv_pvg_metal_destroy(HvPvgMetal *m) {
            stopping before touching guest memory; already queued work drains. */
         dispatch_sync(r->worker, ^{ r->late = NO; });
         dispatch_sync(r->presenter, ^{});
+        dispatch_sync(r->cursor_queue, ^{ /* later pointer updates see stopping and touch nothing of the guest's */
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            [r->overlay_box removeFromSuperlayer];
+            [CATransaction commit];
+            [CATransaction flush];
+            r->overlay_parent = nil;
+        });
         id<MTLCommandBuffer> fence = [r->queue commandBuffer];
         [fence commit];
         [fence waitUntilCompleted];
@@ -3075,7 +3456,7 @@ void hv_pvg_metal_destroy(HvPvgMetal *m) {
         dispatch_sync(r->worker, ^{
             [r saveArchive];
             r->lite = NULL;
-            r->tasks = nil;
+            for (uint32_t t = 0; t < HV_TASKS; t++) obj_clear(&r->task_objs[t]);
             r->surfaces = nil;
             r->mapped_textures = nil;
             r->planar = nil;
@@ -3098,6 +3479,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
     HvReplay *r = (__bridge HvReplay *)m;
     dispatch_async(r->worker, ^{
         @autoreleasepool {
+            new_command(r);
             uint32_t op = cmd[0] & 0xffff, skip = (cmd[0] >> 16) * 8; /* the barriers come first */
             const uint32_t *args = (const uint32_t *)((const uint8_t *)cmd + 12 + skip);
             uint32_t n = len > 12 + skip ? len - 12 - skip : 0;
@@ -3121,7 +3503,8 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                     } else [r complain:[NSString stringWithFormat:@"command 0x37 of %u bytes: %u resources, %u buffers do not fit", n, nres, nbuf]];
                 } else if ((op == 0x25 || op == 0x28) && n >= 8) { /* {task, ref} or {task, tag, size, ref} */
                     uint32_t ref = op == 0x25 ? args[1] : (n >= 16 ? args[3] : 0);
-                    [r->tasks[@(args[0])] removeObjectForKey:@(ref)];
+                    HvObject *__strong *slot = args[0] < HV_TASKS ? obj_slot(&r->task_objs[args[0]], ref, NO) : NULL;
+                    if (slot) *slot = nil;
                 } else if (op == 0x35 || op == 0x3e) {
                     [r synchronize:args length:n];
                 } else if (op == 0x34) {
@@ -3134,7 +3517,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                        flag in bit 0 (Apple's host: -[PGFIFO CmdDeleteTask] passes p[0] to deleteTaskID: as it is). Shifted here,
                        an ended process kept its objects and the next one given its id got its functions wherever an object-list
                        entry read the same: a vertex function in a fragment slot, and the GPU driver died (issue 102). */
-                    [r->tasks removeObjectForKey:@(args[0])];
+                    if (args[0] < HV_TASKS) obj_clear(&r->task_objs[args[0]]);
                 } else {
                     hv_pvg_lite_command(lite, cmd, len);
                     if (op == 8 && n >= 16) {
@@ -3165,6 +3548,7 @@ void hv_pvg_metal_set_layer(HvPvgMetal *m, void *layer) {
     if (!m) return;
     HvReplay *r = (__bridge HvReplay *)m;
     CAMetalLayer *l = (__bridge CAMetalLayer *)layer;
+    cursor_settings_now(); /* the app may have changed the brightness: it shows the screen again for that */
     // Invalidate immediately, even when the guest GPU worker has a backlog.
     os_unfair_lock_lock(&r->screen_lock);
     r->layer_generation++; /* reattaching the same layer also wakes a stopped presenter */
@@ -3172,6 +3556,7 @@ void hv_pvg_metal_set_layer(HvPvgMetal *m, void *layer) {
     r->drawable_retry_pending = NO;
     r->drawable_retry_deadline = r->drawable_retry_cooldown = 0;
     r->screen_dirty = YES;
+    [r targetChanged];
     [r kickPresenter:YES];
     os_unfair_lock_unlock(&r->screen_lock);
     dispatch_async(r->worker, ^{
@@ -3187,7 +3572,7 @@ void hv_pvg_metal_cursor_moved(HvPvgMetal *m) {
     if (!m) return;
     HvReplay *r = (__bridge HvReplay *)m;
     if ([r hasDisplayLayer]) { /* no need to queue behind the guest's GPU work */
-        [r screenChanged];
+        [r cursorChanged];
         return;
     }
     static _Atomic int queued;
@@ -3312,17 +3697,19 @@ void hv_pvg_metal_quiesce(HvPvgMetal *m) {
             id<MTLCommandBuffer> cb = nil;
             id<MTLBlitCommandEncoder> blit = nil;
             unsigned copied = 0;
-            for (NSNumber *task in r->tasks) {
-                NSMutableDictionary<NSNumber *, HvObject *> *objs = r->tasks[task];
-                for (NSNumber *ref in objs) {
-                    HvObject *o = objs[ref];
-                    if (!o->guest_backed || !o->host_valid || !o->guest_stale) continue;
-                    if (o->parent && o->parent->heap_whole) continue;
-                    if (!cb) cb = [r->queue commandBuffer];
-                    [r page:o toGuest:YES task:task.unsignedIntValue blit:&blit commandBuffer:cb];
-                    o->guest_stale = NO;
-                    copied++;
-                }
+            new_command(r);
+            for (uint32_t task = 0; task < HV_TASKS; task++) {
+                HvTaskObjects *objs = &r->task_objs[task];
+                for (uint32_t p = 0; p < objs->pages; p++)
+                    for (uint32_t i = 0; objs->page[p] && i < OBJ_PAGE; i++) {
+                        HvObject *o = objs->page[p][i];
+                        if (!o || !o->guest_backed || !o->host_valid || !o->guest_stale) continue;
+                        if (o->parent && o->parent->heap_whole) continue;
+                        if (!cb) cb = [r->queue commandBuffer];
+                        [r page:o toGuest:YES task:task blit:&blit commandBuffer:cb];
+                        o->guest_stale = NO;
+                        copied++;
+                    }
             }
             [blit endEncoding];
             if (cb) {
@@ -3385,6 +3772,7 @@ void hv_pvg_metal_set_display_state(HvPvgMetal *m, const void *in, size_t len) {
                 r->cursor = copy, r->cursor_w = d.cursor_w, r->cursor_h = d.cursor_h, r->cursor_stride = d.cursor_stride;
                 r->cursor_hot_x = d.hot_x, r->cursor_hot_y = d.hot_y;
                 r->cursor_tex = glyph;
+                r->cursor_seq++;
             }
             r->cursor_shown = d.cursor_shown != 0;
             os_unfair_lock_unlock(&r->screen_lock);

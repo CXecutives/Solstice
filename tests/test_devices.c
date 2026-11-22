@@ -398,6 +398,146 @@ static void test_virtio_blk(HvDisk *aux) {
     rd8(bar + 0x1000);
 }
 
+/* The main disk. A request's buffers go to the file in one call and come back across other boundaries; a batch with
+   flushes in it keeps its order with eight requests in flight (a write after a flush never lands before it, a read
+   after it sees the last write); a flush with nothing written since does not reach the file system; a discard and a
+   write-zeroes read back as zeros, the edges exactly, and the whole blocks in between become holes in the image. */
+static void test_virtio_blk_root(HvDisk *root) {
+    int slot = (int)find_slot(0x106b, 0x1a00, 1);
+    check("Apple virtio-blk (root) enumerated", slot >= 0 && slot < 32, 1);
+    if (slot < 0 || slot >= 32) return;
+    uint64_t bar = VMAPPLE_PCIE_MMIO + 0x400000;
+    uint64_t ring = setup_virtio(slot, bar, VMAPPLE_MEM + 0x600000);
+    HvVirtioBlk *blk = board.root_blk;
+    const uint64_t base = VMAPPLE_MEM + 0x700000, data = base + 0x10000;
+#define HDR(i) (base + (uint64_t)(i) * 0x40)
+#define ST(i) (base + 0x400 + (uint64_t)(i) * 0x10)
+    uint16_t used = used_idx(ring);
+    static uint8_t want[4096], back[4096];
+
+    /* A write in three buffers of 100, 1948 and 2048 bytes, apart in guest memory... */
+    for (int i = 0; i < 4096; i++) want[i] = (uint8_t)(i * 31 + 7) ^ (uint8_t)(i >> 8);
+    uint32_t h[4] = {1, 0, 100, 0};
+    memcpy(ram(HDR(0)), h, 16);
+    memcpy(ram(data), want, 100);
+    memcpy(ram(data + 0x1000), want + 100, 1948);
+    memcpy(ram(data + 0x2000), want + 2048, 2048);
+    put_desc(ring, 0, HDR(0), 16, 1, 1);
+    put_desc(ring, 1, data, 100, 1, 2);
+    put_desc(ring, 2, data + 0x1000, 1948, 1, 3);
+    put_desc(ring, 3, data + 0x2000, 2048, 1, 4);
+    put_desc(ring, 4, ST(0), 1, 2, 0);
+    ram(ST(0))[0] = 0xff;
+    offer(ring, 0);
+    wr16(bar + 0x3000, 0);
+    hv_virtio_blk_drain(blk);
+    check("scattered write status", ram(ST(0))[0], 0);
+    hv_disk_read(root, 100 * 512, back, 4096);
+    check("scattered write reached the file whole", memcmp(back, want, 4096), 0);
+    /* ...read back into buffers of 1000, 3000 and 96 bytes. */
+    h[0] = 0;
+    memcpy(ram(HDR(0)), h, 16);
+    memset(ram(data + 0x4000), 0, 0x3000);
+    put_desc(ring, 1, data + 0x4000, 1000, 1 | 2, 2);
+    put_desc(ring, 2, data + 0x5000, 3000, 1 | 2, 3);
+    put_desc(ring, 3, data + 0x6000, 96, 1 | 2, 4);
+    ram(ST(0))[0] = 0xff;
+    offer(ring, 0);
+    wr16(bar + 0x3000, 0);
+    hv_virtio_blk_drain(blk);
+    check("scattered read status", ram(ST(0))[0], 0);
+    int same = !memcmp(ram(data + 0x4000), want, 1000) && !memcmp(ram(data + 0x5000), want + 1000, 3000) &&
+               !memcmp(ram(data + 0x6000), want + 4000, 96);
+    check("scattered read: the same bytes across other boundaries", same, 1);
+    check("two requests used", (uint16_t)(used_idx(ring) - used), 2);
+
+    /* Write A, flush, write B to the same sector, flush, read it: all handed over at once, twenty times. */
+    uint64_t syncs = root->syncs;
+    int order_ok = 1, status_ok = 1;
+    for (int k = 0; k < 20; k++) {
+        uint8_t a = (uint8_t)(2 * k + 1), b = (uint8_t)(2 * k + 2);
+        uint32_t wr[4] = {1, 0, 200, 0}, fl[4] = {4, 0, 0, 0}, rd[4] = {0, 0, 200, 0};
+        memcpy(ram(HDR(1)), wr, 16), memcpy(ram(HDR(2)), fl, 16), memcpy(ram(HDR(3)), wr, 16), memcpy(ram(HDR(4)), fl, 16);
+        memcpy(ram(HDR(5)), rd, 16);
+        memset(ram(data + 0x8000), a, 512), memset(ram(data + 0x9000), b, 512), memset(ram(data + 0xa000), 0, 512);
+        put_desc(ring, 0, HDR(1), 16, 1, 1), put_desc(ring, 1, data + 0x8000, 512, 1, 2), put_desc(ring, 2, ST(1), 1, 2, 0);
+        put_desc(ring, 3, HDR(2), 16, 1, 4), put_desc(ring, 4, ST(2), 1, 2, 0);
+        put_desc(ring, 5, HDR(3), 16, 1, 6), put_desc(ring, 6, data + 0x9000, 512, 1, 7), put_desc(ring, 7, ST(3), 1, 2, 0);
+        put_desc(ring, 8, HDR(4), 16, 1, 9), put_desc(ring, 9, ST(4), 1, 2, 0);
+        put_desc(ring, 10, HDR(5), 16, 1, 11), put_desc(ring, 11, data + 0xa000, 512, 1 | 2, 12), put_desc(ring, 12, ST(5), 1, 2, 0);
+        for (int i = 1; i <= 5; i++) ram(ST(i))[0] = 0xff;
+        offer(ring, 0), offer(ring, 3), offer(ring, 5), offer(ring, 8), offer(ring, 10);
+        wr16(bar + 0x3000, 0);
+        hv_virtio_blk_drain(blk);
+        for (int i = 1; i <= 5; i++) status_ok &= ram(ST(i))[0] == 0;
+        hv_disk_read(root, 200 * 512, back, 512);
+        for (int i = 0; i < 512; i++) order_ok &= back[i] == b && ram(data + 0xa000)[i] == b;
+    }
+    check("batches with flushes: every status OK", status_ok, 1);
+    check("batches with flushes: the later write wins, the read after the flush sees it", order_ok, 1);
+    check("each flush after a write reached the file system", root->syncs - syncs, 40);
+    /* A flush with nothing written since: answered at once. */
+    syncs = root->syncs;
+    put_desc(ring, 0, HDR(2), 16, 1, 1), put_desc(ring, 1, ST(2), 1, 2, 0);
+    ram(ST(2))[0] = 0xff;
+    offer(ring, 0);
+    wr16(bar + 0x3000, 0);
+    hv_virtio_blk_drain(blk);
+    check("flush with nothing new: OK", ram(ST(2))[0], 0);
+    check("flush with nothing new: no file system flush", root->syncs - syncs, 0);
+
+    /* Discard sectors 65-192 of a written range, unaligned at both ends. */
+    wr32(bar + 0x00, 0);
+    check("root offers DISCARD and WRITE_ZEROES", rd32(bar + 0x04) & (3u << 13), 3u << 13);
+    blk->vio.driver_features |= 3ull << 13;
+    static uint8_t ones[128 << 10], got[128 << 10];
+    static const uint8_t zero[128 << 10];
+    memset(ones, 0xab, sizeof ones);
+    hv_disk_write(root, 64 * 512, ones, sizeof ones); /* sectors 64-319 */
+    fsync(root->fd);
+    uint32_t dh[4] = {11, 0, 0, 0}, range[4] = {65, 0, 128, 0};
+    memcpy(ram(HDR(6)), dh, 16);
+    memcpy(ram(data + 0xb000), range, 16);
+    put_desc(ring, 0, HDR(6), 16, 1, 1), put_desc(ring, 1, data + 0xb000, 16, 1, 2), put_desc(ring, 2, ST(6), 1, 2, 0);
+    ram(ST(6))[0] = 0xff;
+    offer(ring, 0);
+    wr16(bar + 0x3000, 0);
+    hv_virtio_blk_drain(blk);
+    check("root discard status", ram(ST(6))[0], 0);
+    hv_disk_read(root, 64 * 512, got, sizeof got);
+    check("the sector before the discard kept", memcmp(got, ones, 512), 0);
+    check("discarded sectors read as zeros", memcmp(got + 512, zero, 128 * 512), 0);
+    check("the sectors after the discard kept", memcmp(got + 129 * 512, ones, sizeof got - 129 * 512), 0);
+    uint64_t hb = root->hole, from = 65 * 512, to = (65 + 128) * 512;
+    check("the test disk's file system makes holes", hb != 0, 1);
+    if (hb) {
+        uint64_t first = (from + hb - 1) / hb * hb, last = to / hb * hb;
+        off_t hole = lseek(root->fd, (off_t)from, SEEK_HOLE);
+        check("discarded blocks are a hole in the image", hole >= (off_t)first && hole < (off_t)last, 1);
+    }
+    /* Write-zeroes, sectors 250-259. */
+    dh[0] = 13, range[0] = 250, range[2] = 10;
+    memcpy(ram(HDR(6)), dh, 16);
+    memcpy(ram(data + 0xb000), range, 16);
+    ram(ST(6))[0] = 0xff;
+    offer(ring, 0);
+    wr16(bar + 0x3000, 0);
+    hv_virtio_blk_drain(blk);
+    check("root write-zeroes status", ram(ST(6))[0], 0);
+    hv_disk_read(root, 249 * 512, got, 12 * 512);
+    check("write-zeroes: zeros, neighbours kept", !memcmp(got, ones, 512) && !memcmp(got + 512, zero, 10 * 512) && !memcmp(got + 11 * 512, ones, 512), 1);
+    /* A flush after a discard has something to make safe. */
+    syncs = root->syncs;
+    put_desc(ring, 0, HDR(2), 16, 1, 1), put_desc(ring, 1, ST(2), 1, 2, 0);
+    offer(ring, 0);
+    wr16(bar + 0x3000, 0);
+    hv_virtio_blk_drain(blk);
+    check("flush after a discard reached the file system", root->syncs - syncs, 1);
+    rd8(bar + 0x1000);
+#undef HDR
+#undef ST
+}
+
 static uint8_t sent[2048];
 static uint32_t sent_len;
 static void capture_tx(void *opaque, const uint8_t *frame, uint32_t len) {
@@ -649,8 +789,10 @@ int main(void) {
     test_simple_devices();
     test_bdif(&root, &aux);
     test_virtio_blk(&aux);
+    test_virtio_blk_root(&root);
     test_virtio_net();
     test_virtio_balloon();
+    puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();
     test_prefault();
     /* MSI frame: valid type register, doorbell pends the INTID */
@@ -667,7 +809,19 @@ int main(void) {
     check("gpio edge raises SPI 5", board.gic->level[32 + VMAPPLE_IRQ_GPIO], 1);
     wr32(VMAPPLE_GPIO + 0x41c, 1u << 3);
     check("gpio interrupt cleared", board.gic->level[32 + VMAPPLE_IRQ_GPIO], 0);
+    /* The guest programs run on the JIT, whose own tests (test_jit, test_mem) cover it under SAN=1; here they are the
+       devices' interrupts seen from a guest. */
+#if defined(__has_feature)
+#if __has_feature(undefined_behavior_sanitizer)
+#define TEST_UB_TRAPS 1
+#endif
+#endif
+#ifdef TEST_UB_TRAPS
+    puts("guest programs: left to the JIT's own tests under undefined-behaviour traps");
+#else
+    puts("guest programs");
     test_guest_programs();
+#endif
 
     hv_disk_close(&root);
     hv_disk_close(&aux);

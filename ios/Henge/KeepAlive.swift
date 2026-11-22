@@ -168,6 +168,32 @@ enum MemoryRelief {
         HengeLog.log("memory", "asking the Mac for \(want) MB of its \(ram) MB back (it had given \(held) MB)")
     }
 
+    /// Henge goes into the background with a Mac that is to wait there paused (InstantResume.rest): it is asked for
+    /// about 1 GB more first, within the same half of its memory. The MB asked for, or nil (no balloon, nothing more
+    /// to ask for).
+    private static var askedForBackground = false
+    static func beforeBackgroundPause() -> Int? {
+        guard henge_vm_state() == 1 else { return nil }
+        let held = henge_vm_balloon(-1)
+        guard held >= 0 else { return nil }
+        let ram = Int(henge_vm_ram_mb()), most = max(ram / 2, 0)
+        let want = min(max(targetMB, Int(held)) + 1024, most)
+        guard want > Int(held) else { return nil }
+        askedForBackground = true
+        _ = henge_vm_balloon(want)
+        HengeLog.log("memory", "into the background: asking the Mac for \(want) MB of its \(ram) MB before it pauses")
+        return want
+    }
+
+    /// Back in the foreground: what was asked for only for the background goes back; what pressure asked for stays.
+    static func afterBackground() {
+        guard askedForBackground else { return }
+        askedForBackground = false
+        guard henge_vm_state() == 1 || henge_vm_state() == 4 else { return }
+        _ = henge_vm_balloon(targetMB)
+        HengeLog.log("memory", "back in the foreground: the Mac keeps \(targetMB) MB handed over")
+    }
+
     /// Every 2 s: with no pressure for two minutes, 256 MB goes back to the Mac each minute.
     static func tick() {
         guard targetMB > 0 else { return }

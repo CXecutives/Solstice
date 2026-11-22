@@ -101,12 +101,16 @@ private struct GPUScreen: UIViewRepresentable {
         private let role: DisplayTargetSelection.Role
         private var attached = false
         private var lastSize: CGSize = .zero
+        /// The brightness the engine last drew with: it dims the frame itself (the layer stays opaque).
+        var shownBrightness: Double?
 
         init(display: DisplayRouter, role: DisplayTargetSelection.Role, surface: UUID) {
             self.id = surface
             self.display = display
             self.role = role
             super.init(frame: .zero)
+            // Clear until the engine's first frame is on it (the boot screen shows through); the engine makes the
+            // layer opaque then, so the system compositor does not blend it, and puts the pointer on a sublayer.
             backgroundColor = .clear
             isOpaque = false
             layer.contentsGravity = .resizeAspect
@@ -145,12 +149,19 @@ private struct GPUScreen: UIViewRepresentable {
         }
     }
 
-    private func setColorSpace(_ view: Screen) {
+    @MainActor private func setColorSpace(_ view: Screen) {
         let metalLayer = view.layer as! CAMetalLayer
         // The guest's display profile is sRGB, and the presenter writes sRGB
         // values. A nil colorspace skips matching on wide-gamut iPad screens.
         metalLayer.colorspace = matchScreenColors ? Self.srgb : nil
-        view.alpha = CGFloat(min(max(brightness, 0.4), 1))
+        // Brightness: the engine reads henge.display.brightness and dims the frame as it draws it (an opaque
+        // layer needs no blending by the system compositor, where a dimmed view did). A change draws it again.
+        if view.shownBrightness == nil {
+            view.shownBrightness = brightness
+        } else if view.shownBrightness != brightness {
+            view.shownBrightness = brightness
+            display.refresh()
+        }
     }
 
     func makeUIView(context: Context) -> Screen {

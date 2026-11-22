@@ -25,7 +25,7 @@ typedef struct HvVblkReq {
     int pushed;          /* in the used ring (the slot is free once all before it are too) */
 } HvVblkReq;
 
-#define HV_VBLK_WORKERS 4 /* requests in flight at once: the guest queues many, and each waits on the host disk */
+#define HV_VBLK_WORKERS 8 /* requests in flight at once: the guest queues many, each waits on the host disk, and flash reads scale well past 4 */
 
 typedef struct HvVirtioBlk {
     HvVirtio vio;
