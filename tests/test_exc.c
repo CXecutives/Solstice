@@ -123,8 +123,10 @@ int main(void) {
     }
     static const TestProgram sr2 = TEST_PROGRAM(p_sysregs2);
     m.stats_interval = 1000000; /* count helper calls (never prints) */
-    uint64_t msr0 = m.stats.helper[HV_OP_MSR], mrs0 = m.stats.helper[HV_OP_MRS];
+    HvStats t0, t1;
+    hv_stats_total(&m, &t0);
     if (!run(&sr2, &c, 0)) {
+        hv_stats_total(&m, &t1);
         check("sysregs2", "SCTLR EnIA written inline", c.x[3], c.x[2]);
         check("sysregs2", "SCTLR fixups (ITD set, CP15BEN clear)", c.x[5], c.x[1]);
         check("sysregs2", "SCTLR WXN through the helper", c.x[6], c.x[1] | 1u << 19);
@@ -137,8 +139,8 @@ int main(void) {
         check("sysregs2", "CNTKCTL's EL0 enables for translated counter reads", c.el0_cnt, 2);
         check("sysregs2", "MDSCR", c.x[16], 0x1234);
         check("sysregs2", "CNTV_CVAL read", c.x[27], 0x777);
-        check("sysregs2", "MSRs through the helper (VBAR, SCTLR twice, TTBR0 twice, CNTV_CVAL)", m.stats.helper[HV_OP_MSR] - msr0, 6);
-        check("sysregs2", "MRSs through the helper", m.stats.helper[HV_OP_MRS] - mrs0, 0);
+        check("sysregs2", "MSRs through the helper (VBAR, SCTLR twice, TTBR0 twice, CNTV_CVAL)", t1.helper[HV_OP_MSR] - t0.helper[HV_OP_MSR], 6);
+        check("sysregs2", "MRSs through the helper", t1.helper[HV_OP_MRS] - t0.helper[HV_OP_MRS], 0);
     }
     m.stats_interval = 0;
 
