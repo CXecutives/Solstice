@@ -33,12 +33,17 @@ static inline uint64_t hv_exec_key(uint64_t page_va, int64_t addend) {
 #define HV_TLB_PAGE_BITS 14
 #define HV_TLB_ADJ 15
 #define HV_TLB_INVALID 0x8080808080808080ull /* what memset(0x80) leaves */
-#define HV_TLB_BITS 14 /* 16384 entries per EL: 256 MB of 16 KB pages (xnu's working set overflowed 64 MB) */
+/* 8192 entries per EL: 128 MB of 16 KB pages (xnu's working set overflowed 64 MB). Was 16384: a phone's profile put
+   27% of translated-code samples on the first load of a TLB entry, and the tables (2 MB a CPU) missed the caches;
+   these are half that (Tomba247 2797ea5). -DHV_TLB_BITS=14 builds the old size. */
+#ifndef HV_TLB_BITS
+#define HV_TLB_BITS 13
+#endif
 #define HV_TLB_SIZE (1u << HV_TLB_BITS)
 #define HV_IJC_TABLES 16
 #define HV_RET_BITS 13 /* entries in a return table */
 #define HV_RET_TAB_BYTES ((1u << HV_RET_BITS) * 16)
-#define HV_CPU_RET_TAB 0x201000 /* just past the TLB */
+#define HV_CPU_RET_TAB ((0x580 + HV_TLB_SIZE * 4 * 32 + 0xfff) & ~0xfffu) /* just past the TLB, at a multiple of 4 KB */
 
 /* Guest CPU state. While a translated block runs, host x28 points here and the
    guest's x0..x17, x19..x27, x29 and x30 live in the same host registers.
@@ -98,6 +103,7 @@ typedef struct HvCpu {
        Bits 63..48, as ijc_salt; a new value empties that half of the tables. */
     uint64_t ret_salt[2] __attribute__((aligned(128)));
     uint64_t helper_came_from; /* 0x510: where hv_helper_entry was called from, to tell if it goes back there */
+    uint64_t slow_info[2];   /* 0x518: the HvHelperInfo hv_slow_thunk hands hv_helper (a slow path's record is unaligned) */
     /* 0x580: [0] EL0 and unprivileged accesses, [1] EL1, [2] EL1 with PSTATE.PAN set,
        so toggling PAN (the kernel does it around every user copy) flushes nothing.
        [slot][EL0, EL1, EL1 with PAN, unused]: a slot's three in one 128-byte cache line. */
@@ -221,6 +227,7 @@ typedef struct HvCpu {
 #define HV_CPU_TCR_EL1     0x4e8
 #define HV_CPU_PAR_EL1     0x4f0
 #define HV_CPU_CNTVOFF     0x4f8
+#define HV_CPU_SLOW_INFO   0x518
 
 /* Indirect-branch cache: one table per block-flags value, 64K entries of 16 bytes,
    indexed by ((va ^ va >> 16) >> 2) so code at the same offset in different pages spreads out. */
@@ -245,6 +252,7 @@ _Static_assert(offsetof(HvCpu, ret_salt) == HV_CPU_RET_SALT, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, tcr_el1) == HV_CPU_TCR_EL1, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, cntvoff) == HV_CPU_CNTVOFF, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, par_el1) == HV_CPU_PAR_EL1, "HvCpu layout");
+_Static_assert(offsetof(HvCpu, slow_info) == HV_CPU_SLOW_INFO, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, ret_tab) == HV_CPU_RET_TAB, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, gaddend) == HV_CPU_GADDEND, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, xjump_thunk) == HV_CPU_XJUMP_THUNK, "HvCpu layout");

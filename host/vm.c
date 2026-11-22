@@ -225,7 +225,7 @@ static void on_ill(int sig, siginfo_t *info, void *ctx) {
             if (!found) fprintf(stderr, "  no direct branch in %llu MB of code leads there\n", (unsigned long long)(used >> 20));
             /* Which slot or cache entry holds it? */
             for (uint32_t k = 0; k < m.max_slots; k++)
-                if (m.slots && m.slots[k] == pc) fprintf(stderr, "  chain slot %u holds it\n", k);
+                if (m.slots && *HV_SLOT(&m, k) == pc) fprintf(stderr, "  chain slot %u holds it\n", k);
         }
         fflush(stderr);
     }

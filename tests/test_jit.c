@@ -10,6 +10,7 @@ DECLARE_PROGRAM(bl_sub);
 DECLARE_PROGRAM(simd_fp);
 DECLARE_PROGRAM(stolen);
 DECLARE_PROGRAM(pcrel);
+DECLARE_PROGRAM(adrp_add);
 DECLARE_PROGRAM(long_block);
 DECLARE_PROGRAM(pstate_bits);
 DECLARE_PROGRAM(pac);
@@ -18,7 +19,7 @@ extern const char jit_programs_begin[], jit_programs_finish[];
 static const TestProgram programs[] = {
     TEST_PROGRAM(arith),   TEST_PROGRAM(loop),   TEST_PROGRAM(condbr),
     TEST_PROGRAM(csel_ops), TEST_PROGRAM(bl_sub), TEST_PROGRAM(simd_fp),
-    TEST_PROGRAM(stolen),  TEST_PROGRAM(pcrel),  TEST_PROGRAM(long_block), TEST_PROGRAM(pstate_bits),
+    TEST_PROGRAM(stolen),  TEST_PROGRAM(pcrel),  TEST_PROGRAM(long_block), TEST_PROGRAM(pstate_bits), TEST_PROGRAM(adrp_add),
 };
 
 int main(void) {
@@ -91,5 +92,6 @@ int main(void) {
         printf("with a 1 KB JIT region: %llu flushes\n", (unsigned long long)small.stats.block_flushes);
     }
     printf("%zu programs x 2 seeds, %d failures, %d blocks translated\n", count, failed, m.nblocks);
+    print_code_size("test_jit");
     return failed != 0;
 }
