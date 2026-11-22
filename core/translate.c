@@ -2150,12 +2150,17 @@ uint32_t hv_translate_last_words(void) { return E.flat ? E.pool_at : E.nhot; } /
 
 HvXlateCounts hv_xlate_counts;
 
-/* A B, B.cond, CBZ or CBNZ now going off words away, if it reaches. 1 if it does. */
+/* A B, B.cond, CBZ, CBNZ, TBZ or TBNZ now going off words away, if it reaches. 1 if it does. */
 int hv_branch_retarget(uint32_t *w, int64_t off) {
     uint32_t op = *w;
     if ((op & 0x7c000000) == B_OP) {
         if (off < -(1 << 25) || off >= (1 << 25)) return 0;
         *w = (op & 0xfc000000) | (off & 0x3ffffff);
+        return 1;
+    }
+    if ((op & 0x7e000000) == 0x36000000) { /* TBZ/TBNZ: 14 bits (HV_K2's one part chains them directly; this treated them as CBZ) */
+        if (off < -(1 << 13) || off >= (1 << 13)) return 0;
+        *w = (op & ~(0x3fffu << 5)) | (uint32_t)(off & 0x3fff) << 5;
         return 1;
     }
     if (off < -(1 << 18) || off >= (1 << 18)) return 0;
