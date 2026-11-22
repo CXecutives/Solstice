@@ -215,5 +215,6 @@ int main(void) {
     failed += test_mmio(&m);
     printf("%zu programs x 4 modes + mmio, %d failures, %llu chained exits\n", count, failed,
            (unsigned long long)m.stats.chained);
+    print_code_size("test_mem");
     return failed != 0;
 }

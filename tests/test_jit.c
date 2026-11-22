@@ -91,5 +91,6 @@ int main(void) {
         printf("with a 1 KB JIT region: %llu flushes\n", (unsigned long long)small.stats.block_flushes);
     }
     printf("%zu programs x 2 seeds, %d failures, %d blocks translated\n", count, failed, m.nblocks);
+    print_code_size("test_jit");
     return failed != 0;
 }

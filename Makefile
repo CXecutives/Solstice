@@ -17,7 +17,8 @@ ENGINE = $(CORE) $(HOST)
 METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -framework IOSurface -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
-        $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown
+        $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
+        $(B)/test_fuzz
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 

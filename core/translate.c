@@ -2022,6 +2022,8 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
 
 uint32_t hv_translate_last_words(void) { return E.flat ? E.pool_at : E.nhot; } /* hot words (no pool) of this thread's last block */
 
+HvXlateCounts hv_xlate_counts;
+
 /* A B, B.cond, CBZ or CBNZ now going off words away, if it reaches. 1 if it does. */
 int hv_branch_retarget(uint32_t *w, int64_t off) {
     uint32_t op = *w;
@@ -2106,6 +2108,11 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
     }
     hv_jit_finish2(&m->jit, dst, e->nhot, e->flat ? NULL : cold, e->flat ? 0 : e->ncold); /* one wait for both parts */
     b->code = dst;
+    __atomic_fetch_add(&hv_xlate_counts.blocks, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&hv_xlate_counts.insns, b->ninsns, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&hv_xlate_counts.hot, e->flat ? e->pool_at : e->nhot, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&hv_xlate_counts.cold, e->flat ? 0 : e->pool_at, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&hv_xlate_counts.pool, e->npool * 2, __ATOMIC_RELAXED);
     for (uint32_t k = 0; k < e->nsite; k++) {
         m->slot_site[e->site[k].slot] = (e->site[k].cold ? cold : dst) + e->site[k].at;
         m->slot_stub[e->site[k].slot] = (e->site[k].stub_cold ? cold : dst) + e->site[k].stub;

@@ -39,6 +39,12 @@ int hv_translate_block(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t 
 int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail);
 int hv_translate_place(HvMachine *m, HvBlock *b);
 uint32_t hv_translate_last_words(void);
+/* Totals over every block placed, for code size per guest instruction (tests and test_bench print them). */
+typedef struct HvXlateCounts {
+    uint64_t blocks, insns;
+    uint64_t hot, cold, pool; /* words: the hot part, the cold part's code, the literal pool */
+} HvXlateCounts;
+extern HvXlateCounts hv_xlate_counts;
 
 int hv_branch_retarget(uint32_t *w, int64_t off);
 
