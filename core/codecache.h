@@ -6,7 +6,8 @@
 
 /* The code cache in segments (codecache.c). The JIT region is cut into equal segments that two streams of blocks fill
    in turn: young blocks, and tenured ones (blocks translated again soon after an eviction dropped them: the working
-   set). When only one free segment is left, the oldest full segment of one stream is condemned: nothing new may lead
+   set), which may hold about three quarters and are evicted only when they hold more. When only one free segment is
+   left, the oldest full segment of one stream is condemned: nothing new may lead
    into it, the chained exits into it go back to their stubs, its blocks leave the hash, and every CPU is asked to empty
    its branch caches. Once every CPU has been back at the top of its dispatcher loop since then (or was parked), nothing
    can reach its code any more, and it is freed for new code. No CPU stops for it. A full flush (every CPU stopped) is

@@ -74,9 +74,10 @@ static void geometry(HvMachine *m) {
     if (n < 4 || cc->too_big) n = 0;
     cc->seg_shift = shift;
     cc->nseg = (uint32_t)n;
-    /* Half the segments at most for tenured code, less the young stream's open segment: the young keep at least
-       about half, minus the one kept free. */
-    cc->tenure_max = n ? (uint32_t)n / 2 - 1 : 0;
+    /* Tenured code may hold about three quarters (half, with few segments): the working set should fit, and the
+       young stream need only hold code until it is evicted and marked (a block wanted again within two laps of that
+       comes back tenured). A starting point, to be set from the stats line of long device sessions. */
+    cc->tenure_max = n >= 8 ? (uint32_t)n * 3 / 4 - 1 : n ? (uint32_t)n / 2 - 1 : 0;
 }
 
 void hv_cc_reset(HvMachine *m) {
