@@ -187,7 +187,7 @@ int hv_mem_decode(uint32_t insn, HvMemOp *op) {
         } else {
             op->size = opc ? 3 : 2;
         }
-        op->imm = sext((insn >> 15) & 0x7f, 7) << op->size;
+        op->imm = sext((insn >> 15) & 0x7f, 7) * (1 << op->size); /* * not <<: a negative offset shifted is undefined */
         op->mode = mode == 1 ? HV_ADDR_POST : mode == 3 ? HV_ADDR_PRE : HV_ADDR_OFFSET;
         op->bytes = 2u << op->size;
         return 0;

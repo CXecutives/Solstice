@@ -824,7 +824,7 @@ static void put_hoisted_check(Emit *e, uint32_t bare, uint64_t target, uint64_t 
 /* Ends the block (returns 1), or 0 for a conditional branch the block goes on past. */
 static int translate_branch(Emit *e, uint32_t insn, uint64_t pc) {
     if ((insn & 0x7c000000) == 0x14000000) { /* B, BL */
-        uint64_t target = pc + (sext(insn & 0x3ffffff, 26) << 2);
+        uint64_t target = pc + (uint64_t)(sext(insn & 0x3ffffff, 26) * 4); /* * not <<: a negative offset shifted is undefined */
         if (insn >> 31) {
             if (use_ras(e)) put_call(e, pc + 4);
             else put_const_to(e, 30, pc + 4);
@@ -833,7 +833,7 @@ static int translate_branch(Emit *e, uint32_t insn, uint64_t pc) {
         return 1;
     }
     if ((insn & 0xff000000) == 0x54000000) { /* B.cond, BC.cond */
-        uint64_t target = pc + (sext((insn >> 5) & 0x7ffff, 19) << 2);
+        uint64_t target = pc + (uint64_t)(sext((insn >> 5) & 0x7ffff, 19) * 4);
         uint32_t cond = insn & 0xf;
         if (cond >= 14) {
             put_branch_exit(e, target, 1);
@@ -849,7 +849,7 @@ static int translate_branch(Emit *e, uint32_t insn, uint64_t pc) {
     }
     /* CBZ/CBNZ (imm19) and TBZ/TBNZ (imm14) */
     int tb = (insn & 0x7e000000) == 0x36000000;
-    uint64_t target = pc + (tb ? sext((insn >> 5) & 0x3fff, 14) << 2 : sext((insn >> 5) & 0x7ffff, 19) << 2);
+    uint64_t target = pc + (uint64_t)(tb ? sext((insn >> 5) & 0x3fff, 14) * 4 : sext((insn >> 5) & 0x7ffff, 19) * 4);
     uint32_t bare = tb ? insn & ~(0x3fffu << 5) : insn & ~(0x7ffffu << 5);
     int rt = insn & 0x1f;
     if (!is_stolen(rt)) {
