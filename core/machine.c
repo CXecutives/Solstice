@@ -122,7 +122,9 @@ static int init_rest(HvMachine *m) {
     m->slot_xa = calloc(m->max_slots, sizeof *m->slot_xa);
     m->slot_xpa = calloc(m->max_slots, sizeof *m->slot_xpa);
     m->slot_xnext = calloc(m->max_slots, sizeof *m->slot_xnext);
-    if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->slot_xnext) return -1;
+    m->slot_xprev = calloc(m->max_slots, sizeof *m->slot_xprev);
+    if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->slot_xnext || !m->slot_xprev) return -1;
+    if (hv_cc_init(m) != 0) return -1; /* the JIT region's segments: after the limit and the tables above */
     for (int i = 0; i < HV_MAX_CPUS; i++) { /* untouched pages cost nothing, so every CPU gets its tables now */
         HvPerCpu *p = &m->percpu[i];
         p->ijc = calloc(HV_IJC_TABLES * HV_IJC_TABLE_BYTES / 8, 8);
@@ -410,6 +412,8 @@ void hv_machine_free(HvMachine *m) {
     free(m->slot_xa);
     free(m->slot_xpa);
     free(m->slot_xnext);
+    free(m->slot_xprev);
+    hv_cc_free(m);
     if (m->locks_initialized) {
         pthread_mutex_destroy(&m->big_mu);
         pthread_cond_destroy(&m->big_cv);
@@ -488,7 +492,7 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
     for (uint32_t k = r->xhead[pg]; k;) {
         uint32_t idx = k - 1;
         k = m->slot_xnext[idx];
-        m->slot_xnext[idx] = 0;
+        m->slot_xnext[idx] = m->slot_xprev[idx] = 0;
         m->slot_xpa[idx] = 0;
         __atomic_store_n(&m->slots[idx], 0, __ATOMIC_RELEASE);
         uint32_t *site = m->slot_site[idx];

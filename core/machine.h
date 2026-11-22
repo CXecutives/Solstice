@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdint.h>
 
+#include "codecache.h"
 #include "cpu.h"
 #include "jit_region.h"
 
@@ -43,6 +44,7 @@ typedef struct HvMmio {
 
 typedef struct HvBlock {
     uint32_t jit_gen; /* full flushes when it was made */
+    uint32_t stag;    /* its code-cache segment's tag when placed (codecache.h): another now, and it is gone */
     uint64_t va, pa;
     uint32_t flags;      /* HV_BLOCK_* state the translation depends on */
     uint32_t ninsns;
@@ -210,6 +212,8 @@ typedef struct HvPerCpu {
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
+    uint32_t cc_seen;            /* the code cache's epoch this CPU caught up with (hv_cc_service; read by others) */
+    uint32_t cc_work;            /* HV_CC_NEED, HV_CC_JOB: code-cache work at the top of its loop (its own thread only) */
 } HvPerCpu;
 
 enum { HV_PHASE_RUN, HV_PHASE_TRANSLATE, HV_PHASE_HELPER, HV_PHASE_SYNC, HV_PHASE_FLUSH };
@@ -225,6 +229,7 @@ typedef struct HvMachine {
     int nmmio;
 
     HvJitRegion jit;
+    HvCodeCache cc;          /* the JIT region's segments and their evictions (codecache.c) */
     HvBlock *hash[HV_BLOCK_HASH];
     HvBlock *blocks;
     int nblocks;
@@ -266,6 +271,7 @@ typedef struct HvMachine {
        HvRam.xhead through slot_xnext (slot + 1, 0 at the end); a slot is on one at a time, until the page's code changes. */
     uint64_t *slot_xa, *slot_xpa;
     uint32_t *slot_xnext, nxchained;
+    uint32_t *slot_xprev;    /* the list the other way (slot + 1), so an evicted exit leaves it at once; slot_xnext also links freed slots (codecache.c) */
     uint32_t nslots;
     HvCpu *cpu;              /* CPU 0: the one that polls devices */
     HvCpu *cpus[HV_MAX_CPUS]; /* every CPU, so device and invalidation code can ask them to leave */
@@ -302,10 +308,16 @@ static inline uint32_t hv_block_hash(uint64_t va, uint64_t pa, uint32_t flags) {
     return (uint32_t)(h ^ (h >> 29)) & (HV_BLOCK_HASH - 1);
 }
 
-/* Lock-free: blocks are only added (release store) until a flush, which stops every CPU. */
+/* A block of a code-cache segment that was condemned is gone, whatever else matches (codecache.c). */
+static inline int hv_block_live(const HvMachine *m, const HvBlock *b) {
+    return __atomic_load_n(&m->cc.tag[(b->stag >> 24) & (HV_CC_MAX_SEGS - 1)], __ATOMIC_RELAXED) == b->stag;
+}
+
+/* Lock-free: blocks are added with a release store; a condemned segment's leave the hash, their records kept as they
+   were until every CPU has been back at the top of its loop (codecache.c); a full flush stops every CPU. */
 static inline HvBlock *hv_block_find(HvMachine *m, uint32_t h, uint64_t va, uint64_t pa, uint32_t flags, uint32_t gen) {
     for (HvBlock *b = __atomic_load_n(&m->hash[h], __ATOMIC_ACQUIRE); b; b = __atomic_load_n(&b->next, __ATOMIC_ACQUIRE))
-        if (b->va == va && b->pa == pa && b->flags == flags && b->gen == gen) return b;
+        if (b->va == va && b->pa == pa && b->flags == flags && b->gen == gen && hv_block_live(m, b)) return b;
     return NULL;
 }
 

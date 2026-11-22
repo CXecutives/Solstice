@@ -13,12 +13,14 @@ DECLARE_PROGRAM(pcrel);
 DECLARE_PROGRAM(long_block);
 DECLARE_PROGRAM(pstate_bits);
 DECLARE_PROGRAM(pac);
+DECLARE_PROGRAM(hop);
 extern const char jit_programs_begin[], jit_programs_finish[];
 
 static const TestProgram programs[] = {
     TEST_PROGRAM(arith),   TEST_PROGRAM(loop),   TEST_PROGRAM(condbr),
     TEST_PROGRAM(csel_ops), TEST_PROGRAM(bl_sub), TEST_PROGRAM(simd_fp),
     TEST_PROGRAM(stolen),  TEST_PROGRAM(pcrel),  TEST_PROGRAM(long_block), TEST_PROGRAM(pstate_bits),
+    TEST_PROGRAM(hop),
 };
 
 int main(void) {
@@ -89,6 +91,43 @@ int main(void) {
             failed += bad != 0;
         }
         printf("with a 1 KB JIT region: %llu flushes\n", (unsigned long long)small.stats.block_flushes);
+    }
+    /* Again with a 512 KB code cache, four segments, and the programs' pages invalidated after every round so they are
+       translated again: segments condemned and freed in the middle of programs, with exits from blocks that stay
+       chained into them (HV_JIT_POISON: freed segments zeroed and checked unreachable). No full flush. */
+    {
+        static HvMachine ring;
+        setenv("HV_JIT_POISON", "1", 1);
+        int ok = hv_machine_init(&ring, 512 << 10) == 0;
+        unsetenv("HV_JIT_POISON");
+        if (!ok) return 1;
+        hv_machine_add_ram(&ring, (uint64_t)(uintptr_t)jit_programs_begin, jit_programs_finish - jit_programs_begin,
+                           (void *)jit_programs_begin, 1);
+        hv_machine_add_ram(&ring, (uint64_t)(uintptr_t)stack, 65536, stack, 0);
+        int bad_rounds = 0;
+        for (int round = 0; round < 128; round++) {
+            for (size_t i = 0; i < count; i++) {
+                static HvCpu init, native, jit;
+                memset(&init, 0, sizeof init);
+                seed_cpu(&init, i * 2 + 1 + (size_t)round, sp);
+                run_native(&programs[i], &init, &native, NULL);
+                int bad = run_jit(&ring, &programs[i], &init, &jit, NULL);
+                if (!bad) bad = compare_cpus(programs[i].name, &native, &jit);
+                if (bad) printf("%-12s with a segmented code cache, round %d: FAIL\n", programs[i].name, round);
+                bad_rounds += bad != 0;
+            }
+            uint64_t from = (uint64_t)(uintptr_t)jit_programs_begin, to = (uint64_t)(uintptr_t)jit_programs_finish;
+            for (uint64_t pa = from; pa < to; pa += 16384) hv_invalidate_code(&ring, pa);
+        }
+        printf("with a 512 KB code cache of %u segments: %llu evictions (%llu blocks dropped, %llu exits unchained), "
+               "%llu full flushes, %llu checks failed\n", ring.cc.nseg, (unsigned long long)ring.cc.evictions,
+               (unsigned long long)ring.cc.evict_blocks, (unsigned long long)ring.cc.evict_unchained,
+               (unsigned long long)ring.stats.block_flushes, (unsigned long long)ring.cc.check_bad);
+        if (ring.cc.nseg != 4 || !ring.cc.evictions || ring.stats.block_flushes || ring.cc.check_bad) {
+            printf("segmented code cache: expected four segments, evictions, no full flush, no failed check: FAIL\n");
+            bad_rounds++;
+        }
+        failed += bad_rounds;
     }
     printf("%zu programs x 2 seeds, %d failures, %d blocks translated\n", count, failed, m.nblocks);
     return failed != 0;

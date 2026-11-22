@@ -135,14 +135,8 @@ static void prof_sample(thread_act_t th) {
     HvMachine *hm = hv_vm_machine();
     pthread_mutex_lock(&prof_mu);
     prof_total++;
-    if (pc >= hm->jit.base && pc < hm->jit.base + hm->jit.capacity && hm->nblocks) {
-        int lo = 0, hi = hm->nblocks - 1;
-        while (lo < hi) {
-            int mid = (lo + hi + 1) / 2;
-            if (hm->blocks[mid].code && hm->blocks[mid].code <= pc) lo = mid;
-            else hi = mid - 1;
-        }
-        HvBlock *b = &hm->blocks[lo];
+    HvBlock *b = pc >= hm->jit.base && pc < hm->jit.base + hm->jit.capacity ? hv_block_at(hm, pc) : NULL;
+    if (b) {
         int el = (b->flags & HV_BLOCK_EL1) ? 1 : 0;
         {
             ptrdiff_t off = b->code && pc >= b->code ? pc - b->code : -1;

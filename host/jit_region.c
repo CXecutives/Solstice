@@ -91,6 +91,32 @@ void hv_jit_finish(HvJitRegion *region, uint32_t *start, size_t words) {
     if (start && words) sys_icache_invalidate(start, words * sizeof(uint32_t));
 }
 
+void hv_jit_finish_words(HvJitRegion *region, uint32_t *const *words, size_t n) {
+    (void)region;
+#if TARGET_OS_OSX
+    if (!region->rw_diff) pthread_jit_write_protect_np(1);
+#endif
+    /* As sys_icache_invalidate does for a range (DSB, IC IVAU per line with a DSB after every 20, DSB, ISB). */
+    __asm__ volatile("dsb ish" ::: "memory");
+    uintptr_t last = 0;
+    for (size_t k = 0, n_ic = 0; k < n; k++) {
+        uintptr_t a = (uintptr_t)words[k] & ~(uintptr_t)63;
+        if (a == last) continue;
+        last = a;
+        __asm__ volatile("ic ivau, %0" ::"r"(a) : "memory");
+        if (++n_ic % 20 == 0) __asm__ volatile("dsb ish" ::: "memory");
+    }
+    __asm__ volatile("dsb ish\n\tisb" ::: "memory");
+}
+
+void hv_jit_poison(HvJitRegion *region, uint32_t *start, size_t words) {
+#if TARGET_OS_OSX
+    if (!region->rw_diff) pthread_jit_write_protect_np(0); /* MAP_JIT: a write faults until this */
+#endif
+    memset((uint8_t *)start + region->rw_diff, 0, words * sizeof(uint32_t));
+    hv_jit_finish(region, start, words);
+}
+
 /* As sys_icache_invalidate does it (libsystem_platform: DSB, IC IVAU per 64-byte line with a DSB after every 20 for
    the CPUs that need one, DSB, ISB), over both ranges. */
 static void ic_lines(uint32_t *start, size_t words, int *n) {

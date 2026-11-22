@@ -397,10 +397,9 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
     uint32_t slot_index = ~0u;
     int same_page = (target & ~((1ull << HV_TLB_PAGE_BITS) - 1)) == e->page;
     uint64_t xa = same_page ? 0 : cross_addend(e, target);
-    if (same_page || xa) {
-        slot_index = __atomic_fetch_add(&e->m->nslots, 1, __ATOMIC_RELAXED); /* translations run in parallel */
-        if (slot_index >= e->m->max_slots) slot_index = ~0u; /* out of slots until the next flush: no chaining */
-    }
+    /* Only an exit the block keeps a site for gets a slot: an eviction knows a slot is free again by its site. */
+    if ((same_page || xa) && e->nsite < MAX_OOL)
+        slot_index = hv_cc_slot_take(e->m); /* translations run in parallel; ~0u: none left until an eviction, no chaining */
     if (slot_index == ~0u) {
         /* Another page may be remapped under us, so look it up by VA instead of chaining. */
         if (!same_page && use_xjump()) put_xjump(e, target, check);
@@ -413,9 +412,11 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
     uint64_t *slot = &e->m->slots[slot_index];
     *slot = 0;
     e->m->slot_site[slot_index] = NULL; /* until placed: what it held is a dropped block's */
+    e->m->slot_stub[slot_index] = NULL;
     e->m->slot_cond[slot_index] = NULL;
     e->m->slot_xa[slot_index] = xa;
     e->m->slot_xpa[slot_index] = 0;
+    e->m->slot_xnext[slot_index] = e->m->slot_xprev[slot_index] = 0; /* (a freed slot's link to the next free one) */
     uint32_t to_exit = ~0u;
     if (check) {
         put(e, 0xb9400000u | (HV_CPU_EXIT_REQ / 4) << 10 | 28 << 5 | 15); /* ldr w15, [x28, #exit_req] */
@@ -1947,8 +1948,30 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
 int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail) {
     /* HV_GROUPS=1: group accesses (off by default: measured no faster, and the
        plain copies make the code about 15% bigger, so the JIT region fills sooner). */
-    if (hv_knob[HV_K_GROUPS] && translate_emit(m, b, code, avail, 0) == 0) return 0;
-    return translate_emit(m, b, code, avail, 1);
+    if (hv_knob[HV_K_GROUPS]) {
+        if (translate_emit(m, b, code, avail, 0) == 0) return 0;
+        hv_translate_discard_slots(m); /* the exits it took slots for */
+    }
+    if (translate_emit(m, b, code, avail, 1) == 0) return 0;
+    hv_translate_discard_slots(m);
+    return -1;
+}
+
+uint32_t hv_translate_nsites(void) { return E.nsite; }
+uint32_t hv_translate_site_slot(uint32_t k) { return E.site[k].slot; }
+
+/* This thread's last translation is dropped: its exits' slots back for others (chained as placed, or not). */
+void hv_translate_discard_slots(HvMachine *m) {
+    Emit *e = &E;
+    for (uint32_t k = 0; k < e->nsite; k++) {
+        uint32_t idx = e->site[k].slot;
+        __atomic_store_n(&m->slot_site[idx], NULL, __ATOMIC_RELAXED);
+        __atomic_store_n(&m->slots[idx], 0, __ATOMIC_RELAXED);
+        m->slot_stub[idx] = m->slot_cond[idx] = NULL;
+        m->slot_xa[idx] = m->slot_xpa[idx] = 0;
+        hv_cc_slot_put(m, idx);
+    }
+    e->nsite = 0;
 }
 
 static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup) {
@@ -2035,30 +2058,36 @@ int hv_branch_retarget(uint32_t *w, int64_t off) {
     return 1;
 }
 
-/* Each CPU places code in its own 1 MB at a time. */
+/* Each CPU places code in its own 1 MB at a time (a quarter of a code-cache segment, if that is less), one such
+   chunk per stream (codecache.h): a block's hot part from the start, its cold part from the end. */
 static __thread struct {
     HvMachine *m;
     uint64_t gen;
     uint32_t *hot, *cold;
-} chunk;
+    uint32_t stag;      /* the segment's tag then: once it moves on, what is left of the chunk is gone */
+} chunk[2];
 
-static int chunk_take(HvMachine *m, uint32_t hot, uint32_t cold, uint32_t **hot_at, uint32_t **cold_at) {
+static int chunk_take(HvMachine *m, int kind, uint32_t hot, uint32_t cold, uint32_t **hot_at, uint32_t **cold_at, uint32_t *stag) {
+    __typeof__(chunk[0]) *c = &chunk[kind];
     uint64_t gen = __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST);
-    if (chunk.m != m || chunk.gen != gen || !chunk.hot || (size_t)(chunk.cold - chunk.hot) < (size_t)hot + cold) {
+    if (c->m != m || c->gen != gen || !c->hot || (size_t)(c->cold - c->hot) < (size_t)hot + cold ||
+        __atomic_load_n(&m->cc.tag[(c->stag >> 24) & (HV_CC_MAX_SEGS - 1)], __ATOMIC_RELAXED) != c->stag) {
         size_t want = JIT_CHUNK_WORDS;
+        if (m->cc.nseg && want > ((size_t)1 << m->cc.seg_shift) / 4) want = ((size_t)1 << m->cc.seg_shift) / 4;
         if (want > m->jit.capacity) want = m->jit.capacity;
         if (want < (size_t)hot + cold) want = (size_t)hot + cold;
-        uint32_t *p = hv_jit_reserve(&m->jit, want);
+        uint32_t *p = hv_cc_reserve(m, kind, want, &c->stag);
         if (!p) {
-            chunk.hot = NULL;
+            c->hot = NULL;
             return -1;
         }
-        chunk.m = m, chunk.gen = gen, chunk.hot = p, chunk.cold = p + ((want + 1) & ~(size_t)1);
+        c->m = m, c->gen = gen, c->hot = p, c->cold = p + ((want + 1) & ~(size_t)1);
     }
-    *hot_at = chunk.hot;
-    chunk.hot += hot;
-    chunk.cold -= cold;
-    *cold_at = chunk.cold;
+    *hot_at = c->hot;
+    c->hot += hot;
+    c->cold -= cold;
+    *cold_at = c->cold;
+    *stag = c->stag;
     return 0;
 }
 
@@ -2066,7 +2095,8 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
     Emit *e = &E;
     uint32_t pad = hv_knob[HV_K_TEST1] & ~1u; /* HV_K1: words of nothing after each block's hot part, to see what density is worth */
     uint32_t *dst, *cold;
-    if (chunk_take(m, e->nhot + pad, e->ncold, &dst, &cold) != 0) return -1;
+    int kind = hv_cc_kind(m, b->va, b->pa, b->flags); /* dropped by an eviction and wanted again: tenured */
+    if (chunk_take(m, kind, e->nhot + pad, e->ncold, &dst, &cold, &b->stag) != 0) return -1;
     for (uint32_t k = 0; k < e->nrel; k++) {
         uint32_t at = e->rel[k].at, target = e->rel[k].target;
         if (e->rel[k].from_cold) patch_branch(&e->cold[at], (dst + target) - (cold + at));
@@ -2107,9 +2137,10 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
     hv_jit_finish2(&m->jit, dst, e->nhot, e->flat ? NULL : cold, e->flat ? 0 : e->ncold); /* one wait for both parts */
     b->code = dst;
     for (uint32_t k = 0; k < e->nsite; k++) {
-        m->slot_site[e->site[k].slot] = (e->site[k].cold ? cold : dst) + e->site[k].at;
         m->slot_stub[e->site[k].slot] = (e->site[k].stub_cold ? cold : dst) + e->site[k].stub;
         m->slot_cond[e->site[k].slot] = e->site[k].has_cond ? dst + e->site[k].cond_at : NULL;
+        /* The site last: an eviction's scan takes an exit as placed by it (codecache.c). */
+        __atomic_store_n(&m->slot_site[e->site[k].slot], (e->site[k].cold ? cold : dst) + e->site[k].at, __ATOMIC_RELEASE);
     }
     return 0;
 }
