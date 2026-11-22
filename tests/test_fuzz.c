@@ -120,7 +120,7 @@ static uint32_t adr(int bytes, int d) { return 0x10000000u | ((uint32_t)bytes & 
 #define MRS_FPCR 0xd53b4400u
 #define MRS_FPSR 0xd53b4420u
 #define DC_ZVA 0xd50b7420u
-#define CLREX 0xd503305fu
+#define CLREX 0xd5033f5fu
 
 static int check_encoders(void) {
     const uint32_t mine[] = {
