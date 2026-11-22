@@ -46,18 +46,27 @@ Siehe `PLAN.md`. Zusätzlich: Air 4 bekommt 2 GB/2 vCPUs/Large-Screen über die 
 - Log-Empfänger nach Neustart neu starten: `py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log`
   (PC-Adresse <PC-ADDRESS>, Port 7777).
 
-## Stand 23.11. ~00:20 (zweiter Neustart, frischer Start fürs Sideloading)
-- Alle Apple-/Sideload-Programme samt Treibern, Ordnern, Registry, Autostart, Firewall-Regeln und gespeicherten
-  Apple-ID-Daten entfernt (Skript im Scratchpad `cleanup-apple.ps1`). Grund: iPhone war für den Apple-Dienst nur
-  ~10 s sichtbar und verschwand wieder (USB blieb verbunden) → frisch neu einrichten.
-- Neu-Installation nach Neustart, in dieser Reihenfolge: Apple-Geräte (Store, winget `9NP83LWLPZ9K`) öffnen →
-  iPhone anstecken, „Vertrauen“ → ListDevices-Probe muss 30 s stabil 1 zeigen → iloader (winget `nabdev.iloader`)
-  → SideStore → Solstice + GetMoreRam.
-- Helfer alle pausiert und gepusht: translator `3c84f83`, mp-power `98e48fb`, codecache `5bf3888`;
-  gpu-io ist in `main` gemergt. Nach Neustart: Helfer per Nachricht fortsetzen.
+## Stand 23.11. ~01:00 (Wellen 1 komplett in `main`)
+- In `main` gemergt: gpu-io, translator, mp-power, codecache (segmentierter Cache ohne Stillstand). Helfer-Worktrees
+  und gemergte lokale Branches gelöscht. `HV_GROUPS=1` (Groups v2) ist Standard (`EngineTuning.swift`).
+- Merge-Folgen behoben: Tests lasen Zähler aus `m.stats`, die jetzt pro CPU liegen → `hv_stats_total` /
+  `hv_stat_slow_mem`. `test_mp` prüft „ein Poll pro Kicker-Wecken“ statt der Timer-Rate des CI-Hosts (wackelte).
+- `tools/check.sh` ersetzt nur noch die IPA in `out/` (vorher löschte es `out/` samt GetMoreRam.ipa).
+- `out/`: `Solstice.ipa` (aus `tools/check-all.sh`), `GetMoreRam.ipa` (hugeBlack nightly 2026-09-12).
+
+## Sideloading auf diesem PC (gelöst)
+- Ursache: Apples UMDF-Filter `AppleUsbFilter.dll` (Treiber 552 von Windows Update) stürzt am **Chipsatz-USB**
+  (AMD USB 3.20, PCI DEV_43F7) ab → iPhone nach ~10 s weg.
+- Lösung: iPhone **hinten an einen Port des Prozessor-USB** (AMD USB 3.10, DEV_15B6) + Apple-Treiber **538.0.0.0**
+  aus dem Microsoft Update Catalog (amd64-Cab, `pnputil /add-driver AppleUsb.inf /install`). 45 s stabil.
+- Installiert: Apple Mobile Device Support 19.4 + iTunes 12.13 (winget), iloader 2.4.2 (winget `nabdev.iloader`).
+  Nach erfolgreichem Sideloading kann alles Apple-/iloader-Zeug wieder runter (SideStore frischt auf dem iPhone auf).
+- Ablauf: iloader → SideStore (Stable) → Entwickler vertrauen → Entwicklermodus → SideStore anmelden →
+  GetMoreRam (IML an `com.henge.app.<TEAM>`) → Solstice → in SideStore „Reinstall“ → JIT-Kopplung auf dem iPhone.
 
 ## Als Nächstes
-1. Grüner Build → `picks` nach `main`, IPA nach `out/Solstice.ipa`.
-2. Besitzer: Einrichtung (PLAN.md „Einrichtung“), IPA über AltStore auf iPhone 16 Pro und iPad Air 4,
-   Log-Stream in den Einstellungen auf den PC (`py -3 tools/henge-log-listen.py`).
-3. Log auswerten (IML an? largest mapping? Jetsam? Flushes? TLBI-Warten?), dann Block 2 (Übersetzer).
+1. Solstice + GetMoreRam aufs iPhone 16 Pro, macOS installieren, Log-Stream an PC
+   (`py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log`, PC <PC-ADDRESS>:7777).
+2. Log auswerten (IML, largest mapping, Jetsam, Flushes, „code cache:“-Zeile, TLBI-Warten), Startwerte justieren.
+3. iPad Air 4 einrichten (gleicher Weg).
+4. Aufräumen: gemergte Remote-Branches (`picks`, `solstice/*`), lokale `pr-*`-Kopien, Apple-Software nach Sideload.
