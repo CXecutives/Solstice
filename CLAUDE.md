@@ -20,5 +20,5 @@ AltStore Classic 2.3. Plan und Blöcke: `PLAN.md`; Detailwissen: `docs/solstice/
 - Engine-Standardwerte nur in `ios/Henge/EngineTuning.swift`, Geräte-Werte nur in der Gerätetabelle
   in `ios/Henge/Hardware.swift`.
 - Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`
-  heraus kein memset/memcpy/SIMD (CI-Gate `tools/simd_gate.sh`).
+  heraus kein memset/memcpy/SIMD (CI-Gate `tools/simd_gate.py`).
 - Sprache im Repo: Englisch (Code, Kommentare, Commits); mit dem Besitzer: Deutsch.

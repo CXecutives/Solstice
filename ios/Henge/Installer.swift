@@ -199,8 +199,9 @@ final class Installer: NSObject, ObservableObject {
     static func diskBytes(freeing: Int64) -> Int64 {
         let free = (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
             .volumeAvailableCapacityForImportantUsage ?? 0
-        let fits = (free + freeing - (8 << 30)) >> 30 << 30
-        return min(64 << 30, max(40 << 30, fits))
+        let gb: Int64 = 1 << 30
+        let fits = (free + freeing - 8 * gb) / gb * gb
+        return min(64 * gb, max(40 * gb, fits))
     }
 
     private func prepare(name: String, ramMB: Int, rom: URL, diskBytes: Int64) throws -> VirtualMac {

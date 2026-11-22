@@ -43,11 +43,12 @@ def main(build_dir):
     objs = sorted(Path(build_dir).glob("core/*.o")) + sorted(Path(build_dir).glob("host/*.o"))
     if not objs:
         sys.exit(f"simd_gate: no objects under {build_dir}; run `make ios-lib` first")
-    graph, simd = {}, {}
+    graph, simd, insns_of = {}, {}, {}
     for obj in objs:
         funcs, at = disassemble(obj)
         for f, insns in funcs.items():
             key = f if f.startswith("_") else f"{obj.name}:{f}"
+            insns_of[key] = insns
             callees = []
             for mn, ops in insns:
                 if mn in CALLS:
@@ -79,6 +80,11 @@ def main(build_dir):
         todo += graph[f]
 
     reached = sorted(seen - externals)
+    # All inlined is fine; an empty or missing root means the parse went wrong, not that all is well.
+    sizes = {r: len(insns_of.get(r, [])) for r in ROOTS}
+    print("simd_gate: instructions checked: " + ", ".join(f"{r} {n}" for r, n in sizes.items()))
+    if any(n == 0 for n in sizes.values()):
+        sys.exit("simd_gate: a root has no instructions: the disassembly was not parsed")
     bad = sorted(externals - allow)
     hits = [f"{f}: {i}" for f in reached for i in simd.get(f, [])[:3]]
     print(f"simd_gate: {len(reached)} engine functions reached from {', '.join(ROOTS)}: {', '.join(reached)}")
