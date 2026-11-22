@@ -7,12 +7,13 @@ cd "$(dirname "$0")/.."
 export GH_REPO=CXecutives/Solstice # never the upstream remote
 tests="${*:-all}"
 ipa="${SOLSTICE_IPA:-false}"
+san="${SOLSTICE_SAN:-false}" # SOLSTICE_SAN=true: the tests again with undefined-behaviour traps
 branch="$(git rev-parse --abbrev-ref HEAD)"
 git push -q origin "$branch"
-gh workflow run build-henge.yml --ref "$branch" -f tests="$tests" -f ipa="$ipa"
+gh workflow run build-henge.yml --ref "$branch" -f tests="$tests" -f ipa="$ipa" -f san="$san"
 sleep 5
 run="$(gh run list --workflow build-henge.yml --branch "$branch" --limit 1 --json databaseId -q '.[0].databaseId')"
-echo "run $run: tests=$tests ipa=$ipa"
+echo "run $run: tests=$tests ipa=$ipa san=$san"
 gh run watch "$run" --exit-status --interval 30 > /dev/null || {
   gh run view "$run" --log-failed | tail -60
   exit 1

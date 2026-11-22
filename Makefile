@@ -1,7 +1,12 @@
 # Light build: one clang call per file, no parallel jobs needed.
 CC = clang
 CFLAGS = -std=c11 -Wall -Wextra -O2 -g -Icore -Ihost -Idevices
-B = build
+# SAN=1: undefined behaviour traps (brk, no runtime library, so safe on the paths that must not call libc).
+ifeq ($(SAN),1)
+CFLAGS += -fsanitize=undefined -fsanitize-trap=undefined -fno-sanitize=alignment
+B = build-san
+endif
+B ?= build
 
 CORE = $(B)/classify.o $(B)/operands.o $(B)/translate.o $(B)/dispatch.o $(B)/mmu.o $(B)/memop.o \
        $(B)/exception.o $(B)/sysreg.o $(B)/machine.o

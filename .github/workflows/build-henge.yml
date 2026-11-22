@@ -19,6 +19,10 @@ on:
         description: Build the IPA
         type: boolean
         default: true
+      san:
+        description: Run the engine tests a second time with undefined-behaviour traps
+        type: boolean
+        default: false
 
 concurrency:
   group: build-${{ github.ref }}
@@ -56,6 +60,15 @@ jobs:
         run: |
           [ "$TESTS" = all ] && TESTS=""
           make -j4 core-test T="$TESTS"
+
+      - name: Engine tests with undefined-behaviour traps
+        if: inputs.tests != 'none' && inputs.san
+        working-directory: Henge
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          [ "$TESTS" = all ] && TESTS=""
+          make -j4 core-test SAN=1 T="$TESTS"
 
       - name: Check out Husk (pinned)
         if: inputs.ipa
