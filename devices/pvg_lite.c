@@ -35,6 +35,7 @@
 #include <os/lock.h>
 #include <stdatomic.h>
 #include "pvg_lite.h"
+#include "pvg_vblank_clock.h"
 #include <mach/mach_time.h>
 
 int hv_pvg_trace_on(void) {
@@ -749,7 +750,8 @@ void hv_pvg_lite_mapper_done(HvPvgLite *p, uint64_t index) {
    a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ). HV_PVG_VBLANK=0: neither, as before. */
 static void vblank(HvPvgLite *p) {
     static int on = -1;
-    static uint64_t period, next;
+    static uint64_t period;
+    static HvVblankClock clock;
     if (on < 0) {
         on = !getenv("HV_PVG_VBLANK") || atoi(getenv("HV_PVG_VBLANK"));
         const char *hz = getenv("HV_HZ");
@@ -760,8 +762,7 @@ static void vblank(HvPvgLite *p) {
     uint8_t *d = hv_phys_ptr(p->m, p->display_pa, 0x4000);
     if (!d) return;
     uint64_t now = mach_absolute_time();
-    if (now < next) return;
-    next = now + period;
+    if (!hv_vblank_due(&clock, now, period)) return;
     /* The time on the guest's own clock (its virtual counter, as mach_absolute_time reads it there), before the event. */
     __atomic_store_n((uint64_t *)(d + 0x68), now - p->m->cntvoff, __ATOMIC_RELEASE);
     if (!(__atomic_load_n((uint32_t *)(d + 0x104), __ATOMIC_ACQUIRE) & 8)) return;
