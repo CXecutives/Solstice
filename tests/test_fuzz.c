@@ -955,8 +955,10 @@ int main(void) {
     printf("code per guest instruction: hot %.2f cold %.2f pool %.2f total %.2f words (%llu blocks)\n",
            (double)(x.hot - x0.hot) / insns, (double)(x.cold - x0.cold) / insns, (double)(x.pool - x0.pool) / insns,
            (double)(x.hot - x0.hot + x.cold - x0.cold + x.pool - x0.pool) / insns, (unsigned long long)(x.blocks - x0.blocks));
-    printf("slow paths: %llu helper accesses, %llu refills, %llu chained\n", (unsigned long long)m.stat_slow_mem,
-           (unsigned long long)m.stats.refills, (unsigned long long)m.stats.chained);
+    static HvStats tot; /* the machine's counters and every CPU's own */
+    hv_stats_total(&m, &tot);
+    printf("slow paths: %llu helper accesses, %llu refills, %llu chained\n", (unsigned long long)hv_stat_slow_mem(&m),
+           (unsigned long long)tot.refills, (unsigned long long)tot.chained);
     printf("%d sequences in %.1f s, %d failures (%d of them the native run's)\n", ran, dt, failed, native_bad);
     return failed != 0;
 }
