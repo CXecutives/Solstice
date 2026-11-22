@@ -7,7 +7,7 @@
    (x6, x7, x15, x18, x28, SP); a second data area 256 MB from the first shares its TLB
    slots, so refills keep happening. Each sequence runs under one of several ways of
    translating (groups, MMU on at EL0 and EL1, the C path, a tiny JIT region, ...).
-   FUZZ_SEQS=n sequences (default 6000), FUZZ_SECONDS=s at most (default 50),
+   FUZZ_SEQS=n sequences (default 20000), FUZZ_SECONDS=s at most (default 50),
    FUZZ_SEED=s, FUZZ_ONLY=k: only configuration k. */
 #include "harness.h"
 
@@ -478,7 +478,8 @@ static void gen_burst(void) {
             off &= ~(int64_t)(scale - 1);
         }
         uint32_t avoid = sp ? 0 : 1u << b; /* a load into the base ends the group, and the address with it */
-        int t = vec ? (int)rn(32) : pick_gpr_zr(avoid), t2 = vec ? (int)rn(32) : pick_gpr_zr(avoid | (t == 31 ? 0 : 1u << t));
+        /* t2 != t, XZR too: Apple's CPUs make LDP xzr, xzr (Rt == Rt2) undefined */
+        int t = vec ? (int)rn(32) : pick_gpr_zr(avoid), t2 = vec ? (int)rn(32) : pick_gpr_zr(avoid | 1u << t);
         if (vec && load && t == t2) t2 = (t + 1) & 31;
         if (pair) {
             int opc = vec ? (scale == 16 ? 2 : 1) : (scale == 8 ? 2 : 0);
@@ -660,11 +661,13 @@ static void snap_mem(uint8_t *out) {
 
 static sigjmp_buf fault_jmp;
 static volatile sig_atomic_t native_running;
+static void *volatile fault_addr;
 
 static void on_fault(int sig, siginfo_t *si, void *ctx) {
-    (void)si, (void)ctx;
+    (void)ctx;
     if (native_running) {
         native_running = 0;
+        fault_addr = si->si_addr;
         siglongjmp(fault_jmp, sig);
     }
     signal(sig, SIG_DFL);
@@ -690,6 +693,7 @@ static int same_regs(const HvCpu *a, const HvCpu *b) {
 }
 
 static uint8_t mem_a[MEM_TOTAL], mem_b[MEM_TOTAL], mem_j[MEM_TOTAL];
+static int native_reports;
 
 /* Darwin may clear x18 when it preempts the native run (and a base in x18 then faults): run until two runs agree. */
 static int run_native_twice(const TestProgram *p, const HvCpu *init, HvCpu *out) {
@@ -697,7 +701,13 @@ static int run_native_twice(const TestProgram *p, const HvCpu *init, HvCpu *out)
     for (int tries = 0; tries < 12; tries++) {
         int s1 = native_once(p, init, out, mem_a), s2 = native_once(p, init, &b, mem_b);
         if (!s1 && !s2 && same_regs(out, &b) && !memcmp(mem_a, mem_b, MEM_TOTAL)) return 0;
-        if (tries == 11) printf("  native runs never agreed (signals %d, %d)\n", s1, s2);
+        if (tries == 11 && native_reports++ < 4) {
+            uintptr_t at = (uintptr_t)fault_addr, c0 = (uintptr_t)code;
+            printf("  native runs never agreed (signals %d, %d", s1, s2);
+            if ((s1 || s2) && at - c0 < CODE_SIZE) printf("; the last at word %u: %08x", (unsigned)((at - c0) / 4), cbuf[(at - c0) / 4]);
+            else if (s1 || s2) printf("; the last at %p", fault_addr);
+            printf(")\n");
+        }
     }
     return 1;
 }
@@ -838,7 +848,7 @@ static int one(int seq, uint64_t seed, Conf *c, int report) {
     init.x[22] = (uint64_t)(uintptr_t)far_mem;
     init.x[23] = 2;
     init.nzcv = (seed & 15) << 28;
-    if (run_native_twice(&p, &init, &native)) return 1;
+    if (run_native_twice(&p, &init, &native)) return 1; /* the program, not the JIT */
     HvMachine *mm = c->tiny ? &tiny : &m;
     memcpy(hv_knob, base_knob, sizeof hv_knob);
     if (c->knob >= 0) hv_knob[c->knob] = c->value;
@@ -863,7 +873,7 @@ static int one(int seq, uint64_t seed, Conf *c, int report) {
                 bad++;
             }
     }
-    return bad != 0;
+    return bad ? 2 : 0;
 }
 
 int main(void) {
@@ -872,7 +882,7 @@ int main(void) {
         printf("test_fuzz: encoders disagree with the assembler\n");
         return 1;
     }
-    int nseq = getenv("FUZZ_SEQS") ? atoi(getenv("FUZZ_SEQS")) : 6000;
+    int nseq = getenv("FUZZ_SEQS") ? atoi(getenv("FUZZ_SEQS")) : 20000;
     double budget = getenv("FUZZ_SECONDS") ? atof(getenv("FUZZ_SECONDS")) : 50;
     uint64_t seed0 = getenv("FUZZ_SEED") ? strtoull(getenv("FUZZ_SEED"), NULL, 0) : 1;
     int only = getenv("FUZZ_ONLY") ? atoi(getenv("FUZZ_ONLY")) : -1;
@@ -908,26 +918,29 @@ int main(void) {
     pthread_create(&wd, NULL, watchdog, NULL);
 
     double t0 = now_s();
-    int failed = 0, ran = 0, first_bad = -1;
+    int failed = 0, ran = 0, native_bad = 0, reported = 0;
     HvXlateCounts x0 = hv_xlate_counts;
     for (int seq = 0; seq < nseq; seq++) {
         if (now_s() - t0 > budget) break;
         int k = only >= 0 ? only % NCONF : seq % NCONF;
+        uint64_t seed = seed0 + (uint64_t)seq;
         cur_seq = seq, cur_conf = k;
-        int bad = one(seq, seed0 + (uint64_t)seq, &confs[k], failed < 3);
+        int bad = one(seq, seed, &confs[k], 0);
         confs[k].runs++;
         ran++;
         progress++;
-        if (bad) {
-            confs[k].fails++;
-            if (failed < 3) {
-                logging = 1;
-                gen_program(seed0 + (uint64_t)seq);
-                logging = 0;
-                printf("  seq %d (%s, seed %llu) ops: %s\n", seq, confs[k].name, (unsigned long long)(seed0 + (uint64_t)seq), oplog);
-            }
-            if (first_bad < 0) first_bad = seq;
-            failed++;
+        if (!bad) continue;
+        confs[k].fails++;
+        failed++;
+        native_bad += bad == 1;
+        if (reported < 6 && (bad == 2 || reported < 2)) { /* the JIT's differences first: again, saying what they are */
+            reported++;
+            if (bad == 2) one(seq, seed, &confs[k], 1);
+            logging = 1;
+            gen_program(seed);
+            logging = 0;
+            printf("  seq %d (%s, FUZZ_SEED=%llu FUZZ_ONLY=%d FUZZ_SEQS=1): %s ops: %s\n", seq, confs[k].name, (unsigned long long)seed, k,
+                   bad == 1 ? "native fault" : "JIT differs", oplog);
         }
     }
     double dt = now_s() - t0;
@@ -941,6 +954,6 @@ int main(void) {
            (double)(x.hot - x0.hot + x.cold - x0.cold + x.pool - x0.pool) / insns, (unsigned long long)(x.blocks - x0.blocks));
     printf("slow paths: %llu helper accesses, %llu refills, %llu chained\n", (unsigned long long)m.stat_slow_mem,
            (unsigned long long)m.stats.refills, (unsigned long long)m.stats.chained);
-    printf("%d sequences in %.1f s, %d failures%s\n", ran, dt, failed, first_bad >= 0 ? " (FUZZ_SEED and FUZZ_ONLY repeat one)" : "");
+    printf("%d sequences in %.1f s, %d failures (%d of them the native run's)\n", ran, dt, failed, native_bad);
     return failed != 0;
 }
