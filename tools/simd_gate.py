@@ -4,64 +4,90 @@
 host/enter.S's helper thunks save only x0-x17 and NZCV before calling hv_tlb_refill and
 hv_ijc_resolve. Anything those reach must not touch SIMD/FP registers, and must not call into
 libc (memset, memcpy, calloc ... use SIMD). This walks the call graph of the built iOS objects
-from those roots and fails on any external call not in tools/simd_gate.allow, or on any SIMD
-register in a reached function. Run after `make ios-lib`:  python3 tools/simd_gate.py build/ios
+from those roots (calls by name, and by address to static functions in the same object) and
+fails on any external call not in tools/simd_gate.allow, or on any SIMD register in a reached
+function. Run after `make ios-lib`:  python3 tools/simd_gate.py build/ios
 """
 import re, subprocess, sys
 from pathlib import Path
 
 ROOTS = ["_hv_tlb_refill", "_hv_ijc_resolve"]
-CALL = re.compile(r"^\s*(?:[0-9a-f]+\s+)?(?:bl|b)\s+(_[A-Za-z0-9_$.]+)\s*$")
-SIMD = re.compile(r"\b[vqdsbh](?:[0-9]|[12][0-9]|3[01])\b(?:\.[0-9]*[bhsd])?")
-LABEL = re.compile(r"^(_[A-Za-z0-9_$.]+):\s*$")
+LINE = re.compile(r"^([0-9a-f]{8,16})\s+(\S+)\s*(.*)$")
+LABEL = re.compile(r"^(_?[A-Za-z0-9_$.]+):\s*$")
+SIMD = re.compile(r"(?<![\w.])[vqdsbh](?:[0-9]|[12][0-9]|3[01])(?![\w])")
+CALLS = {"bl", "b"}
 
 
-def disassemble(objs):
-    out = subprocess.run(["otool", "-tV", *map(str, objs)], capture_output=True, text=True, check=True).stdout
-    funcs, cur = {}, None
+def disassemble(obj):
+    """{function: [(mnemonic, operands)]} and {address: function} for one object."""
+    out = subprocess.run(["otool", "-tV", str(obj)], capture_output=True, text=True, check=True).stdout
+    funcs, at, cur, pending = {}, {}, None, None
     for line in out.splitlines():
         m = LABEL.match(line)
-        if m:
+        if m and not line.startswith(str(obj)) and "(__TEXT" not in line:
             cur = m.group(1)
             funcs.setdefault(cur, [])
+            pending = cur
             continue
-        if cur is not None and line.strip():
-            funcs[cur].append(line)
-    return funcs
+        m = LINE.match(line)
+        if m and cur is not None:
+            addr = int(m.group(1), 16)
+            if pending:
+                at[addr] = pending
+                pending = None
+            funcs[cur].append((m.group(2), m.group(3).split(";")[0].strip()))
+    return funcs, at
 
 
 def main(build_dir):
     objs = sorted(Path(build_dir).glob("core/*.o")) + sorted(Path(build_dir).glob("host/*.o"))
     if not objs:
         sys.exit(f"simd_gate: no objects under {build_dir}; run `make ios-lib` first")
-    funcs = disassemble(objs)
+    graph, simd = {}, {}
+    for obj in objs:
+        funcs, at = disassemble(obj)
+        for f, insns in funcs.items():
+            key = f if f.startswith("_") else f"{obj.name}:{f}"
+            callees = []
+            for mn, ops in insns:
+                if mn in CALLS:
+                    tgt = ops.split()[0] if ops else ""
+                    if tgt.startswith("_"):
+                        callees.append(tgt)
+                    elif tgt.startswith("0x"):
+                        name = at.get(int(tgt, 16))
+                        if name and name != f:
+                            callees.append(name if name.startswith("_") else f"{obj.name}:{name}")
+                elif SIMD.search(ops) and not mn.startswith(("prfm", "hint")):
+                    simd.setdefault(key, []).append(f"{mn} {ops}")
+            if key in graph:  # same global name in two objects: keep both edge sets
+                graph[key] += callees
+            else:
+                graph[key] = callees
     allow_file = Path(__file__).with_name("simd_gate.allow")
     allow = {l.split("#")[0].strip() for l in allow_file.read_text().splitlines()} - {""}
 
-    seen, todo, externals, simd = set(), list(ROOTS), set(), []
+    seen, todo, externals = set(), list(ROOTS), set()
     while todo:
         f = todo.pop()
         if f in seen:
             continue
         seen.add(f)
-        if f not in funcs:
+        if f not in graph:
             externals.add(f)
             continue
-        for line in funcs[f]:
-            m = CALL.match(line)
-            if m:
-                todo.append(m.group(1))
-            elif SIMD.search(line.split(";")[0].split("\t", 2)[-1]):
-                simd.append(f"{f}: {line.strip()}")
+        todo += graph[f]
 
+    reached = sorted(seen - externals)
     bad = sorted(externals - allow)
-    print(f"simd_gate: {len(seen - externals)} engine functions reached from {', '.join(ROOTS)}")
+    hits = [f"{f}: {i}" for f in reached for i in simd.get(f, [])[:3]]
+    print(f"simd_gate: {len(reached)} engine functions reached from {', '.join(ROOTS)}: {', '.join(reached)}")
     print("simd_gate: external calls reached: " + (", ".join(sorted(externals)) or "none"))
-    if simd:
-        print("simd_gate: SIMD registers in reached functions:\n  " + "\n  ".join(simd[:20]))
+    if hits:
+        print("simd_gate: SIMD registers in reached functions:\n  " + "\n  ".join(hits[:30]))
     if bad:
         print("simd_gate: NOT ALLOWED (would clobber the guest's q0-q31): " + ", ".join(bad))
-    sys.exit(1 if bad or simd else 0)
+    sys.exit(1 if bad or hits else 0)
 
 
 if __name__ == "__main__":

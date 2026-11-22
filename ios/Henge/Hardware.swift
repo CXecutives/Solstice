@@ -34,12 +34,39 @@ enum Device {
         return (Int((Double(s.width) / 264 * 25.4).rounded()), Int((Double(s.height) / 264 * 25.4).rounded()))
     }
 
-    /// How much memory to suggest for a new Mac: what leaves this device room for iOS.
-    static var suggestedRAMGB: Int {
-        let mb = ProcessInfo.processInfo.physicalMemory >> 20
-        // m4 fork: an 8 GB iPad (7.4 GB usable) thrashes and kills the Mac at 6 GB: 16 GB devices only.
-        // A 6 GB device (5.7 GB usable) could not build a 4 GB Mac, and installed a 3 GB one (#70); 4 GB devices, 2.
-        return mb >= 14_000 ? 8 : mb >= 10_000 ? 6 : mb >= 7_000 ? 4 : mb >= 5_000 ? 3 : 2
+    /// A new Mac's starting values on this device: the one table for them, from its memory and its performance cores.
+    struct MacProfile {
+        let ramGB: Int      // what leaves iOS room (GuestMemory.prepare caps it again at boot)
+        let cpus: Int       // the guest takes CPUs as equals: more than the P cores + 1 only queue on E cores
+        let uiScale: Double? // Size of Things (#215): less for the Mac to draw where the screen is small
+        let performanceScreen: Bool
+    }
+
+    static let profile: MacProfile = {
+        let mb = Int(ProcessInfo.processInfo.physicalMemory >> 20)
+        let pCores = sysctlInt("hw.perflevel0.physicalcpu") ?? 2
+        // 4 GB (iPad Air 4, A14): the least that runs; a 2 GB Mac, and as little else as possible.
+        if mb < 5_000 { return MacProfile(ramGB: 2, cpus: 2, uiScale: 2.0 / 3, performanceScreen: true) }
+        // 8 GB: a 4 GB Mac, its code cache and records left iOS so little that it closed Henge (#214), so 3 GB.
+        // A 6 GB device installed a 3 GB Mac too (#70). 16 GB: room for 6.
+        let ram = mb >= 14_000 ? 6 : 3
+        // iPhone 16 Pro (2 P + 4 E): 3. M-series iPads: 4, or one past the P cores with 16 GB.
+        let cpus = pCores <= 2 ? 3 : mb >= 14_000 ? min(pCores + 1, 5) : 4
+        return MacProfile(ramGB: ram, cpus: cpus, uiScale: isPad ? nil : 0.8, performanceScreen: isPad)
+    }()
+
+    /// How much memory to suggest for a new Mac.
+    static var suggestedRAMGB: Int { profile.ramGB }
+
+    /// A new Mac's screen before Size of Things.
+    static var newMacScreen: (width: Int, height: Int) {
+        profile.performanceScreen && profile.ramGB > 2 ? performanceScreen : fittingScreen
+    }
+
+    private static func sysctlInt(_ name: String) -> Int? {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname(name, &value, &size, nil, 0) == 0 ? Int(value) : nil
     }
 
     /// The choices for a Mac's memory, in GB.
@@ -47,7 +74,7 @@ enum Device {
 
     /// What a choice risks on this device, if anything. An install always gets at least 2 GB (Installer.install).
     static func memoryNote(_ gb: Int) -> String? {
-        if gb < 4 { return "macOS has little room under 4 GB, so it can be very slow." }
+        if gb < suggestedRAMGB { return "macOS has little room under \(suggestedRAMGB) GB here, so it can be very slow." }
         if gb > suggestedRAMGB { return "More than \(suggestedRAMGB) GB is a lot for this \(name): iOS may close Henge when macOS gets busy." }
         return nil
     }

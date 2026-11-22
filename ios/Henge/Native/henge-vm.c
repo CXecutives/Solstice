@@ -228,6 +228,7 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
         }
     }
     if (getenv("HV_STATS")) hv_vm_machine()->stats_interval = atoi(getenv("HV_STATS"));
+    if (getenv("HV_STATS_DEEP")) hv_vm_machine()->stats_deep = atoi(getenv("HV_STATS_DEEP"));
     return started(err, errlen);
 }
 

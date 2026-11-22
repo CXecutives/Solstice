@@ -48,6 +48,8 @@ struct JITSetupFlow: View {
             // A failed enable from the Library lands on the step that can fix it.
             if jit.error != nil, jit.hasPairing, jit.resolvedMethod == .builtIn {
                 path = [.enable]
+            } else if !jit.hasPairing, HengeBuiltInJIT.isAvailable, OnDevicePairing.isSupported {
+                path = [.pairOnDevice] // first launch on iOS 27: straight to the one way that needs no computer
             }
             HengeLog.log("ui", "JIT walkthrough opened")
         }
@@ -154,10 +156,10 @@ struct JITSetupFlow: View {
                 point(2, "Open **Settings › Privacy & Security › Developer Mode**, scroll down and tap "
                        + "**Pair with \(OnDevicePairing.hostName)**.",
                       done: pairing.isShowingPin || pairedOnDevice)
-                point(3, "Enter the code Henge shows. It also appears in a banner and a notification, "
-                       + "so you don't have to switch back.",
+                point(3, "iOS asks for your \(device)'s passcode first. Then enter the code Solstice shows; it also "
+                       + "appears in a banner and a notification, so you don't have to switch back.",
                       done: pairedOnDevice)
-                point(4, "Come back to Henge.", done: pairedOnDevice)
+                point(4, "Come back to Solstice: it connects LocalDevVPN and turns JIT on by itself.", done: pairedOnDevice)
             }
             .padding(16).hengeCard()
             pairingStatus

@@ -46,6 +46,10 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var running: VirtualMac?
     @State private var tab = Tab.macs
+    @ObservedObject private var installer = Installer.shared
+    /// Once per launch: the JIT walkthrough for a device not set up yet, and starting the last Mac.
+    @State private var firstSetupOffered = false
+    @State private var autoStarted = false
     @AppStorage(DeskAppearance.key) private var appearance = DeskAppearance.system
 
     var body: some View {
@@ -93,6 +97,21 @@ struct RootView: View {
             }
         }
         .onChange(of: jit.attachGeneration) { _ in JITBootstrap.prewarm() } // the built-in helper attached
+        .task {
+            // First launch, nothing paired: straight to pairing (the walkthrough opens on it on iOS 27), and to the
+            // Install tab while there is no Mac yet.
+            if machines.all.isEmpty { tab = .install }
+            guard !firstSetupOffered else { return }
+            firstSetupOffered = true
+            jit.refreshPairingStatus()
+            if !jit.hasPairing && !JITBootstrap.ready && !JITBootstrap.isInstalledWithTrollStore { jit.showSetup = true }
+        }
+        .task(id: jit.attachGeneration) { await autoStartLastMac() }
+        .onChange(of: installer.justInstalled) { mac in
+            guard let mac else { return }
+            installer.justInstalled = nil
+            Task { await startWhenFree(mac) }
+        }
         .task { // testing only: HENGE_AUTOPILOT
             await Autopilot.run { mac in
                 // A session still on screen (its Mac stopped) is closed first: the same value again would start nothing.
@@ -102,6 +121,48 @@ struct RootView: View {
             }
         }
     }
+}
+
+extension RootView {
+    /// Starts the Mac an install just made, once the installer's machine is released (#183).
+    func startWhenFree(_ mac: VirtualMac) async {
+        for _ in 0..<60 where henge_vm_can_start() == 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
+        guard henge_vm_can_start() != 0, running == nil else { return }
+        tab = .macs
+        running = mac
+    }
+
+    /// Settings › Start the last Mac when JIT is on: once per launch, when nothing else is going on. A Mac that
+    /// failed to come up twice in a row turns this off until one starts by hand.
+    func autoStartLastMac() async {
+        guard !autoStarted, AutoStart.enabled, running == nil, !installer.busy else { return }
+        for _ in 0..<150 where !JITBootstrap.ready { try? await Task.sleep(nanoseconds: 200_000_000) }
+        guard JITBootstrap.ready, !autoStarted, running == nil, !installer.busy, henge_vm_can_start() != 0,
+              let mac = machines.all.max(by: { ($0.lastUsed ?? $0.added) < ($1.lastUsed ?? $1.added) }) else { return }
+        autoStarted = true
+        guard AutoStart.attempt() else {
+            HengeLog.log("app", "auto-start skipped: the last two did not get going")
+            return
+        }
+        HengeLog.log("app", "auto-start: \(mac.name)")
+        running = mac
+    }
+}
+
+/// Starting the last Mac by itself, with a guard against a Mac that keeps failing to come up.
+enum AutoStart {
+    static let key = "solstice.autoStartMac"
+    private static let failuresKey = "solstice.autoStartFailures"
+    static var enabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+    /// Counts an attempt; false after two in a row that never reached a running Mac.
+    static func attempt() -> Bool {
+        let failures = UserDefaults.standard.integer(forKey: failuresKey)
+        guard failures < 2 else { return false }
+        UserDefaults.standard.set(failures + 1, forKey: failuresKey)
+        return true
+    }
+    /// A Mac got going (it ran for a while): start counting afresh.
+    static func succeeded() { UserDefaults.standard.set(0, forKey: failuresKey) }
 }
 
 extension View {

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject private var jit = JITCoordinator.shared
-    @AppStorage(JITCoordinator.autoEnableKey) private var jitAtLaunch = false
+    @AppStorage(JITCoordinator.autoEnableKey) private var jitAtLaunch = true
     @AppStorage(HardwareMouse.speedKey) private var mouseSpeed = 1.0
     @AppStorage(HardwareMouse.reverseKey) private var reverseScrolling = false
     @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3

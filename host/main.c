@@ -1165,6 +1165,7 @@ int main(int argc, char **argv) {
     m.watch_va = watch;
     m.watch_pa = watch_pa;
     m.stats_interval = stats; /* set after the machine is made, which clears it */
+    m.stats_deep = stats != 0; /* the Mac tool's --stats keeps every diagnostic */
     if (profile) m.prof = calloc(HV_PROF_RING, sizeof *m.prof);
     m.chain = !no_chain && brk == ~0ull; /* breakpoints need every block to come back */
     signal(SIGINT, on_signal);

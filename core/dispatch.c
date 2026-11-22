@@ -364,7 +364,7 @@ static uint32_t helper(HvCpu *cpu, const HvHelperInfo *info_in) {
     switch (info->op) {
     case HV_OP_MEM:
         cpu->m->stat_slow_mem++;
-        if (cpu->m->stats_interval) { /* --stats: which kinds of access take the slow path */
+        if (cpu->m->stats_deep) { /* --stats: which kinds of access take the slow path */
             HvMemOp op;
             if (hv_mem_decode(info->insn, &op) == 0 && op.kind < 12) cpu->m->stats.slow_kind[op.kind]++;
         }
@@ -642,7 +642,7 @@ static void print_stats(HvCpu *cpu, int force) {
                     RATE(flush_checked), RATE(flush_check_entries), RATE(flush_check_bad), RATE(flush_check_af));
         fprintf(stderr, "  cache drops/s: full %.0f, ASID %.0f, user VA %.0f, kernel VA %.0f, code %.0f (whole user half %.0f, filter full %.0f, big user range %.0f)\n", RATE(reset_why[0]),
                 RATE(reset_why[1]), RATE(reset_why[2]), RATE(reset_why[3]), RATE(reset_why[4]), RATE(reset_why[5]), RATE(reset_why[6]), RATE(reset_why[7]));
-        { /* block hash health: chain lengths and how much of it is stale */
+        if (m->stats_deep) { /* block hash health: chain lengths and how much of it is stale (walks every block) */
             uint64_t used = 0, stale = 0, maxlen = 0, sumsq = 0;
             uint32_t worst = 0;
             for (uint32_t h = 0; h < HV_BLOCK_HASH; h++) {
@@ -1097,7 +1097,7 @@ static int run_loop(HvCpu *cpu, int one) {
         prev_b = b;
         if (m->stats_interval) m->stats.why[why]++;
         m->stats.recent[m->stats.nrecent++ & 15] = cpu->pc | cpu->el;
-        if (why == 5 && m->stats_interval) {
+        if (why == 5 && m->stats_deep) {
             int kind = 6;
             /* A plain walk: fetching could raise an abort in the guest. */
             HvWalk w;

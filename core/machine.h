@@ -286,6 +286,7 @@ typedef struct HvMachine {
     pthread_cond_t big_cv;
     uint64_t big_next, big_serving;
     int stats_interval;  /* seconds between --stats lines, 0 = off */
+    int stats_deep;      /* the costly diagnostics too (page walks and decodes per miss, the block-hash walk, thread probes) */
     /* --profile: host PCs of the CPU thread sampled every millisecond, drained by the stats line. */
     uint64_t *prof;
     uint32_t prof_head, prof_tail;

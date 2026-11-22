@@ -9,13 +9,13 @@ struct InstallView: View {
     @State private var release = MacOSRelease.all.first(where: Installer.haveImage) ?? MacOSRelease.recommended
     @State private var name = "Mac"
     @State private var ramGB = Device.suggestedRAMGB
-    @State private var deleteAfter = false
+    @State private var deleteAfter = true // restore images are 15-25 GB; the Mac is what stays
     @State private var refresh = 0 // redraws the list when a download is deleted
     @State private var details = false
     @State private var stageStarted = Date()
     @State private var stageSeen = -1
     @State private var confirmDeleteDownload: MacOSRelease?
-    @AppStorage("henge.cpus") private var cpus = 4
+    @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
 
     var body: some View {
         NavigationStack {
@@ -26,7 +26,7 @@ struct InstallView: View {
                     case .checking:
                         ProgressView("Preparing to install macOS…")
                             .padding(20)
-                    case .downloading, .preparing, .installing: progress
+                    case .downloading, .preparing, .waitingForJIT, .installing: progress
                     case .done(let text): finished(text)
                     case .failed(let text): failed(text)
                     }
@@ -121,11 +121,12 @@ struct InstallView: View {
         Button(Installer.haveImage(release) ? "Install" : "Download and Install") {
             installer.start(release, name: name.isEmpty ? "Mac" : name, ramMB: ramGB * 1024, cpus: cpus, keepImage: !deleteAfter)
         }
-        .buttonStyle(DeskButtonStyle(enabled: jitReady && !Device.chipTooOld))
-        .disabled(!jitReady || Device.chipTooOld)
+        .buttonStyle(DeskButtonStyle(enabled: !Device.chipTooOld))
+        .disabled(Device.chipTooOld)
         .padding(.top, 20)
-        Text(Device.chipTooOld ? Device.chipTooOldText : jitReady ? "Keep Henge open and the \(Device.name) plugged in. Needs about \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) free."
-                                : JITBootstrap.lastFailure ?? "Turn on JIT first. \(jit.automaticDescription)")
+        Text(Device.chipTooOld ? Device.chipTooOldText
+             : "Keep Solstice open and the \(Device.name) plugged in. Needs about \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) free."
+               + (jitReady ? "" : " The download starts now; the install goes on once JIT is on."))
             .font(.system(size: 13))
             .foregroundStyle(Desk.dim)
             .multilineTextAlignment(.center)
@@ -194,6 +195,18 @@ struct InstallView: View {
     }
 
     @ViewBuilder private var progress: some View {
+        if case .waitingForJIT = installer.phase {
+            VStack(spacing: 10) {
+                Text("Downloaded. Turn on JIT and the install goes on by itself.")
+                    .font(.system(size: 15, weight: .semibold))
+                    .multilineTextAlignment(.center)
+                Button("Turn On JIT") { jit.enable() }.buttonStyle(DeskButtonStyle())
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity)
+            .deskCard(radius: 30)
+            .padding(.bottom, 16)
+        }
         Text("\(release.name) on this \(Device.name). Keep Henge open.")
             .font(.system(size: 16))
             .foregroundStyle(Desk.dim)
@@ -283,8 +296,6 @@ struct InstallView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("It did not work").font(.system(size: 22, weight: .bold))
             Text(text).font(.system(size: 15))
-            Text("Quit Henge (swipe it away) and open it again before trying again: only one Mac can start per launch.")
-                .font(.system(size: 13)).foregroundStyle(Desk.dim)
             Button("Back") { installer.reset() }.buttonStyle(DeskButtonStyle()).padding(.top, 6)
         }
         .padding(18)

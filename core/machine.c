@@ -251,7 +251,7 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
         __atomic_store_n(&s->tlb_live, 0, __ATOMIC_SEQ_CST); /* others need not wait for this one meanwhile */
         ack_wake(s);
     }
-    int sleep = hv_knob[HV_K_SYNCWAIT], probed = !t0, probed_long = !t0;
+    int sleep = hv_knob[HV_K_SYNCWAIT], probed = !t0 || !mm->stats_deep, probed_long = probed; /* thread_info: diagnostics only */
     if (s) __atomic_store_n(&s->phase, HV_PHASE_SYNC, __ATOMIC_RELAXED);
     for (uint32_t spins = 0;; spins++) {
         uint64_t ack = __atomic_load_n(&t->ack_seq, __ATOMIC_ACQUIRE);

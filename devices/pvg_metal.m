@@ -17,12 +17,26 @@
 #include <string.h>
 #include <sys/utsname.h>
 #include <sys/sysctl.h>
+#include <mach/mach_time.h>
 
 /* 1080p shrunk onto a phone would make a normal pointer a few dots across; an iPad's screen needs less. */
+/* The pointer's settings, read at most once a second: the presenter asks for them every frame. */
+static _Atomic uint64_t cursor_settings_next;
+static _Atomic int cursor_saved_scale, cursor_sharp = 1;
+static void cursor_settings_refresh(void) {
+    uint64_t now = mach_absolute_time();
+    if (now < atomic_load_explicit(&cursor_settings_next, memory_order_relaxed)) return;
+    atomic_store_explicit(&cursor_settings_next, now + 24000000, memory_order_relaxed); /* 1 s of 24 MHz ticks */
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    atomic_store(&cursor_saved_scale, (int)[d integerForKey:@"henge.cursor.scale"]);
+    NSNumber *sharp = [d objectForKey:@"henge.cursor.sharp"];
+    atomic_store(&cursor_sharp, !sharp || sharp.boolValue);
+}
 static int cursor_scale(void) {
 #if TARGET_OS_IPHONE
-    NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:@"henge.cursor.scale"];
-    if (saved >= 1 && saved <= 3) return (int)saved;
+    cursor_settings_refresh();
+    int saved = atomic_load(&cursor_saved_scale);
+    if (saved >= 1 && saved <= 3) return saved;
     static int defaultScale;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -533,7 +547,7 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
         const char *tf = getenv("HV_PVG_TRACE_FILE"), *sd = getenv("HV_SHADER_DUMP");
         int keep = sd ? atoi(sd) != 0 : loaded_at > 0 && relabelled_kept < 48;
         if (keep && !sd) relabelled_kept++;
-        if (tf && keep) {
+        if (tf && keep && (sd || hv_pvg_trace_on())) { /* only while tracing (or asked): not on every launch */
             NSString *dir = [[[NSString stringWithUTF8String:tf] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"shaders"];
             [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
             NSString *name = [NSString stringWithFormat:@"%@-%llx.metallib", library.functionNames.firstObject ?: @"lib", (unsigned long long)at];
@@ -2413,7 +2427,9 @@ typedef struct {
         if (!o) continue;
         if (o->mapped) refresh_pages(self, task, o);
         if (o->surface) sync_iosurface(o->surface);
-        if (getenv("HV_PVG_TALLY") && (o->entry[0] & 0xff) == OBJ_MAPPED_TEXTURE) {
+        static int tally = -1;
+        if (tally < 0) tally = getenv("HV_PVG_TALLY") != NULL;
+        if (tally && (o->entry[0] & 0xff) == OBJ_MAPPED_TEXTURE) {
             static uint32_t seen[256];
             uint32_t f = res[i * 2 + 1] & 0xff, key = res[i * 2] & 0xff;
             if (seen[key] != f + 1) {
@@ -2864,8 +2880,8 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             [e setRenderPipelineState:cursor_pipe];
             [e setVertexBytes:r length:sizeof r atIndex:0];
             [e setFragmentTexture:ctex atIndex:0];
-            NSNumber *sharpSetting = [[NSUserDefaults standardUserDefaults] objectForKey:@"henge.cursor.sharp"];
-            [e setFragmentSamplerState:sharpSetting && !sharpSetting.boolValue ? screen_sampler : cursor_sampler atIndex:0];
+            cursor_settings_refresh();
+            [e setFragmentSamplerState:atomic_load(&cursor_sharp) ? cursor_sampler : screen_sampler atIndex:0];
             [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         }
         [e endEncoding];

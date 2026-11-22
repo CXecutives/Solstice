@@ -300,7 +300,7 @@ int hv_vmem_xfer(HvCpu *cpu, uint64_t va, void *buf, uint32_t len, int write, in
         if (chunk > len) chunk = len;
         uint64_t pa;
         int had_entry = 0;
-        if (cpu->m->stats_interval) { /* --stats: was the TLB entry there before this access? */
+        if (cpu->m->stats_deep) { /* --stats: was the TLB entry there before this access? */
             HvTlbEntry *t = hv_tlb_ent(cpu, (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), hv_tlb_table(cpu, el));
             uint64_t tag = write ? t->write_tag : t->read_tag;
             had_entry = tag != HV_TLB_INVALID && ((va - tag) >> HV_TLB_PAGE_BITS) == 0 ? 1 :
@@ -316,7 +316,7 @@ int hv_vmem_xfer(HvCpu *cpu, uint64_t va, void *buf, uint32_t len, int write, in
             return 1;
         }
         int rc = 0;
-        if (cpu->m->stats_interval) {
+        if (cpu->m->stats_deep) {
             HvRam *ram = hv_ram_lookup(cpu->m, pa);
             uint64_t inpage = va & ((1ull << HV_TLB_PAGE_BITS) - 1);
             int why = !ram ? 0 : write && ram->code_pages[(pa - ram->pa) >> HV_TLB_PAGE_BITS] ? 1

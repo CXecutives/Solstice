@@ -17,7 +17,11 @@ enum EngineTuning {
         "HV_FLUSH": "2",       // disk flush: F_BARRIERFSYNC, ordered but without a full fsync
         // The memory balloon, asking for nothing: there for MemoryRelief when iOS runs short (KeepAlive.swift).
         "HV_BALLOON": "0",
-        "HV_STATS": "10",      // seconds between engine stats lines in the log; 0 = off
+        "HV_STATS": "30",      // seconds between engine stats lines in the log; 0 = off (HV_STATS_DEEP=1: costly diagnostics too)
+        // Solstice: a CPU waiting for others' TLB acknowledgements sleeps after 64 spins instead of spinning on (#218:
+        // 76% of a core down to 4-9% on an iPhone); TLB range invalidations of up to 256 pages in one pass.
+        "HV_SYNC_WAIT": "1",
+        "HV_RANGE_DROP": "256",
     ]
 
     static func apply() {

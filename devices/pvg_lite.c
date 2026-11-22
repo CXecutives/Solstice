@@ -813,6 +813,14 @@ static void gfx_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
         hv_gicv3_pend(p->gic, p->gfx_irq);
     } else if (off == 0x1020 && v < MAX_CHANNELS) {
         do_channel(p, (uint32_t)v);
+        /* A channel waiting on another's stamp (a swap on the drawing) can go on as soon as that one has run: retry the
+           waiting ones now, not when CPU 0 next polls (1 ms, or 10 ms from WFI). do_channel guards re-entry itself. */
+        uint32_t chans = p->chan_pending;
+        if (chans) {
+            p->chan_pending = 0;
+            for (uint32_t ch = 1; ch < MAX_CHANNELS; ch++)
+                if (chans & (1u << ch)) do_channel(p, ch);
+        }
         if (__atomic_load_n(&p->status, __ATOMIC_ACQUIRE)) hv_gicv3_pend(p->gic, p->gfx_irq);
     } else if (p->log && off != 0x1020) {
         fprintf(stderr, "hengevm: pvg-lite: write +%llx = %llx\n", (unsigned long long)off, (unsigned long long)v);

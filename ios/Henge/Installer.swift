@@ -12,26 +12,14 @@ struct MacOSRelease: Identifiable, Hashable {
     /// (installed and set up on the Mac in phone mode: Sonoma 21 GB, Ventura 19 GB).
     var macBytes: Int64 = 24 << 30
 
-    /// The builds offered, oldest first. Apple's catalog (mesu.apple.com) only lists the newest;
-    /// these are the same images from Apple's CDN, and Apple still signs them for virtual Macs.
+    /// The build Solstice installs: Sequoia 15.6.1, the one the engine and its display fixes are proven on (the refresh
+    /// time at display +0x68, #161, is what macOS 15 reads there; macOS 27 uses that offset for something else).
+    /// Apple's catalog (mesu.apple.com) only lists the newest; this is the same image from Apple's CDN, and Apple
+    /// still signs it for virtual Macs.
     static let all: [MacOSRelease] = [
-        /* macOS Monterey 12.6 (21G115, 2022FallFCS/fullrestores/012-40537/0EC7C669-13E9-49FB-BD64-9EECC1D174B2) installs and boots,
-           but its GPU driver (protocol 0x1f) never starts WindowServer's GPU work under Henge yet: not offered until it does. */
-        MacOSRelease(id: "22G120", name: "macOS Ventura 13.6",
-                     url: URL(string: "https://updates.cdn-apple.com/2023FallFCS/fullrestores/042-55833/C0830847-A2F8-458F-B680-967991820931/UniversalMac_13.6_22G120_Restore.ipsw")!,
-                     bytes: 12_297 << 20, note: "The smallest download (and about 35 GB in all), for devices short on storage.", macBytes: 23 << 30),
-        MacOSRelease(id: "23G93", name: "macOS Sonoma 14.6.1",
-                     url: URL(string: "https://updates.cdn-apple.com/2024SummerFCS/fullrestores/062-52859/932E0A8F-6644-4759-82DA-F8FA8DEA806A/UniversalMac_14.6.1_23G93_Restore.ipsw")!,
-                     bytes: 14_106 << 20, note: "A smaller download than Sequoia (and about 40 GB in all).", macBytes: 26 << 30),
         MacOSRelease(id: "24G90", name: "macOS Sequoia 15.6.1",
                      url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
-                     bytes: 16_035 << 20, note: "Recommended: the version Henge is tested with."),
-        MacOSRelease(id: "25G83", name: "macOS Tahoe 26.6.2",
-                     url: URL(string: "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw")!,
-                     bytes: 18_856 << 20, note: "Installs and runs on iPhone. Its first setup is slow: creating the account can take 10 minutes."),
-        MacOSRelease(id: "26B123", name: "macOS 27.2",
-                     url: URL(string: "https://updates.cdn-apple.com/2026FallFCS/c9671975-52db-4fb5-9af2-00217169ba8d/UniversalMac_27.2_26B123_Restore.ipsw")!,
-                     bytes: 24_409 << 20, note: "The newest. Installs and runs on iPhone, but it's the slowest here."),
+                     bytes: 16_035 << 20, note: "The version Solstice is built and tuned for."),
     ]
 
     /// Selected in the Install tab when nothing is downloaded yet: the one Henge is tested with most.
@@ -50,6 +38,7 @@ final class Installer: NSObject, ObservableObject {
         case checking
         case downloading
         case preparing
+        case waitingForJIT // downloaded and prepared; the restore needs JIT
         case installing
         case done(String)
         case failed(String)
@@ -61,6 +50,8 @@ final class Installer: NSObject, ObservableObject {
     @Published private(set) var step: Int = 0
     @Published private(set) var stepProgress: Double = 0
     @Published private(set) var machineName = ""
+    /// The Mac an install just made, for the app to start at once (#183 lets it start in the same launch).
+    @Published var justInstalled: VirtualMac?
 
     /* Background time, so a moment out of the foreground (a notification, iPhone Mirroring reconnecting)
        does not suspend the restore at once; iOS gives about 30 s. */
@@ -68,7 +59,7 @@ final class Installer: NSObject, ObservableObject {
 
     var busy: Bool {
         switch phase {
-        case .checking, .downloading, .preparing, .installing: return true
+        case .checking, .downloading, .preparing, .waitingForJIT, .installing: return true
         default: return false
         }
     }
@@ -125,18 +116,27 @@ final class Installer: NSObject, ObservableObject {
                 HengeLog.log("install", "boot ROM ready")
                 let ipsw = try await download(release)
                 phase = .preparing
-                var mac = try prepare(name: name, ramMB: ramMB, rom: rom)
+                var mac = try prepare(name: name, ramMB: ramMB, rom: rom, diskBytes: Self.diskBytes(freeing: keepImage ? 0 : release.bytes))
                 mac.osName = release.name
                 made = mac
+                // The download needs no JIT; the restore does. Wait for it here instead of refusing at the start.
+                if !JITBootstrap.ready {
+                    phase = .waitingForJIT
+                    HengeLog.log("install", "downloaded; waiting for JIT before the restore")
+                    while !JITBootstrap.ready { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                }
                 phase = .installing
                 try await install(mac, ipsw: ipsw, cpus: cpus)
                 if !keepImage { try? FileManager.default.removeItem(at: ipsw) }
                 HengeLog.log("install", "\(name): installed \(release.name)")
-                phase = .done("\(release.name) is installed on \(name). Quit Henge (swipe it away) and open it again, then tap Start.")
+                phase = .done("\(release.name) is installed on \(name). Starting it now.")
+                justInstalled = Machines.shared.all.first { $0.id == mac.id } ?? mac
             } catch {
                 HengeLog.log("install", "failed: \(error.localizedDescription)")
+                // The restore machine goes first (#183 releases it), so a retry can start in this launch.
+                if henge_vm_state() == 1 { await Task.detached { henge_vm_stop() }.value }
                 // A half-installed Mac is no use, and its disk can be many gigabytes. The download stays.
-                if let made, henge_vm_state() != 1 { try? FileManager.default.removeItem(at: made.directory) }
+                if let made { try? FileManager.default.removeItem(at: made.directory) }
                 phase = .failed(error.localizedDescription)
             }
         }
@@ -193,11 +193,22 @@ final class Installer: NSObject, ObservableObject {
 
     // MARK: The new machine
 
-    private func prepare(name: String, ramMB: Int, rom: URL) throws -> VirtualMac {
+    /// The Mac's disk. Its file is sparse and only grows (macOS's deletions do not shrink it), so it must never be able
+    /// to fill the device: what is free once the install is done (the download deleted if it goes), less 8 GB for
+    /// iOS, at most 64 GB and at least 40 GB (Sequoia takes about 26 GB set up).
+    static func diskBytes(freeing: Int64) -> Int64 {
+        let free = (try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? 0
+        let fits = (free + freeing - (8 << 30)) >> 30 << 30
+        return min(64 << 30, max(40 << 30, fits))
+    }
+
+    private func prepare(name: String, ramMB: Int, rom: URL, diskBytes: Int64) throws -> VirtualMac {
         // A new machine identity, as VZMacMachineIdentifier makes one: a random ECID.
         let ecid = UInt64.random(in: 1 << 40 ..< 1 << 62)
-        var mac = VirtualMac(name: name, ecid: ecid, seed: 0, ramMB: ramMB, diskBytes: 64 << 30)
-        (mac.screenWidth, mac.screenHeight) = Device.fittingScreen
+        var mac = VirtualMac(name: name, ecid: ecid, seed: 0, ramMB: ramMB, diskBytes: diskBytes)
+        (mac.screenWidth, mac.screenHeight) = Device.newMacScreen
+        mac.uiScale = Device.profile.uiScale
         let fm = FileManager.default
         try fm.createDirectory(at: mac.directory, withIntermediateDirectories: true)
         Machines.excludeFromBackup(Machines.root)
@@ -205,13 +216,12 @@ final class Installer: NSObject, ObservableObject {
         try fm.copyItem(at: rom, to: mac.rom)
         guard fm.createFile(atPath: mac.disk.path, contents: nil) else { throw message("Cannot create the disk.") }
         let h = try FileHandle(forWritingTo: mac.disk)
-        try h.truncate(atOffset: UInt64(64) << 30) // sparse: blocks are only used as macOS writes them
+        try h.truncate(atOffset: UInt64(diskBytes)) // sparse: blocks are only used as macOS writes them
         try h.close()
         guard henge_make_aux(mac.aux.path) == 0 else { throw message("Cannot create the auxiliary storage.") }
         let info: [String: Any] = ["name": name, "ecid": ecid, "seed": 0, "ramMB": ramMB]
         try JSONSerialization.data(withJSONObject: info).write(to: mac.directory.appendingPathComponent("machine.json"))
-        mac.diskBytes = 64 << 30
-        HengeLog.log("install", "new machine \(name): ECID \(ecid), 64 GB disk")
+        HengeLog.log("install", "new machine \(name): ECID \(ecid), \(diskBytes >> 30) GB disk")
         return mac
     }
 
@@ -226,7 +236,8 @@ final class Installer: NSObject, ObservableObject {
         restoring.ramMB = min(max(mac.ramMB, 2048), 4096)
         let ram = GuestMemory.prepare(restoring)
         guard ram >= 2048 else { throw message("Installing needs a few more GB of free storage for the Mac's memory.") }
-        setenv("HV_WRITE_CACHE", "0", 1) // the ~15 GB the restore writes goes straight to storage (host/disk.c); this process runs no other Mac
+        setenv("HV_WRITE_CACHE", "0", 1) // the ~15 GB the restore writes goes straight to storage (host/disk.c)
+        defer { unsetenv("HV_WRITE_CACHE") } // the new Mac starts in this launch (#183): its first boot writes cached again
         let work = mac.directory.appendingPathComponent("restore", isDirectory: true)
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         var buffer = [CChar](repeating: 0, count: 256)

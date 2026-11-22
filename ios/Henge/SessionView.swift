@@ -21,7 +21,7 @@ struct SessionView: View {
     @State private var started = Date()
     @State private var thermalState = ProcessInfo.processInfo.thermalState
     @State private var bootRAM: UInt64 = 0 /* what the Mac was started with, which a save is for */
-    @AppStorage("henge.cpus") private var cpus = 4
+    @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
     @AppStorage("henge.matchScreenColors") private var matchScreenColors = true
     @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
     @AppStorage("henge.cursor.scale") private var cursorScale = Device.isPad ? 1 : 3
@@ -689,6 +689,7 @@ struct SessionView: View {
                 lastGPUFrames = gpuFrames
                 JITBootstrap.releaseLingeringDebugger()
             }
+            if tick == 60 { AutoStart.succeeded() } // a minute up: the auto-start guard counts afresh
             if tick == 60 && !stillWallpaperTipShown { // about when the desktop is up after a login
                 stillWallpaperTipShown = true
                 showWallpaperTip = true
