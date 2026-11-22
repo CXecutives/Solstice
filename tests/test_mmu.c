@@ -117,6 +117,7 @@ static void remap_test(void) {
     const uint32_t last = 3000;               /* generations a round */
     const uint64_t X = 0x0000555500000000ull; /* nowhere near the process's own addresses */
     if (hv_machine_init(&rm, 16 << 20) != 0) exit(1);
+    rm.stats_interval = 3600; /* counted as on a device (HV_STATS), never printed here */
     uint8_t *data = aligned_alloc(16384, 4 * 16384); /* page 0: the generation, the code pages' addresses; then the code pages */
     rt_pt = aligned_alloc(16384, RT_TABLES * 16384);
     rt_next = 0;

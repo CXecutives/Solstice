@@ -156,19 +156,20 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     }
     /* Translate without the lock, into this thread's buffer... Meanwhile the CPU uses no TLB entry for guest code, so
        it is not live for TLBIs (O8a: they need not wait for a translation, the longest thing a CPU does between two
-       requests): it does what came in right after, and run_loop checks the block's page is still mapped where it was
-       before it goes in (*made). */
+       requests): it does what came in right after, and if that was anything, run_loop checks the block is still what
+       a fetch now would find before it goes in (*made). */
     HvBlock nb = {.va = va, .pa = pa, .flags = flags, .gen = gen, .ram = ram, .pg = pg, .maker = cpu->index + 1, .jit_gen = __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)};
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
     HvPerCpu *pcs = cpu->pc_state;
     uint8_t phase0 = pcs->phase;
+    uint64_t acked = __atomic_load_n(&pcs->ack_seq, __ATOMIC_RELAXED); /* only this CPU moves it */
     __atomic_store_n(&pcs->phase, HV_PHASE_TRANSLATE, __ATOMIC_RELAXED);
     __atomic_store_n(&pcs->tlb_live, 0, __ATOMIC_SEQ_CST);
     hv_cpu_ack_wake(cpu); /* a CPU asleep waiting for this one's acknowledgement need not wait any more */
-    *made = 1;
     int failed = hv_translate_emit(m, &nb, code, avail) != 0;
     __atomic_store_n(&pcs->tlb_live, 1, __ATOMIC_SEQ_CST);
     hv_cpu_process_requests(cpu); /* what came in while it was not live */
+    if (__atomic_load_n(&pcs->ack_seq, __ATOMIC_RELAXED) != acked) *made = 1;
     __atomic_store_n(&pcs->phase, phase0, __ATOMIC_RELAXED);
     if (failed) goto flush_unlocked;
     if (m->stats_interval) {
@@ -1048,13 +1049,13 @@ static int run_loop(HvCpu *cpu, int one) {
             park(cpu);
             return HV_EXIT_UNSUPPORTED;
         }
-        /* The CPU translated, not live for TLBIs (lookup): one done meanwhile (its requests are done now) may have
-           remapped the page the block came from. Go in only if the guest's tables still say pc runs from there;
-           else fetch it again. */
+        /* The CPU translated, not live for TLBIs, and did TLBIs other CPUs asked meanwhile (lookup): they did not wait
+           for it, so their remapping may be done, and even back to the same page with other code. Go in only if the
+           guest's tables still say pc runs from there and its code is what was translated; else fetch it again. */
         if (made) {
             HvWalk w;
             hv_mmu_walk(cpu, cpu->pc, HV_ACC_EXEC, cpu->el, &w);
-            if (w.fsc || w.pa != pa) {
+            if (w.fsc || w.pa != pa || __atomic_load_n(&b->ram->page_gen[b->pg], __ATOMIC_ACQUIRE) != b->gen) {
                 HV_ST(cpu).retranslated++;
                 pending_chain = NULL;
                 continue;
