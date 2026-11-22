@@ -1847,8 +1847,9 @@ static int translate_one(Emit *e, uint32_t insn, uint64_t pc) {
     }
     case HV_INSN_BARRIER: {
         uint32_t op2 = (insn >> 5) & 7;
-        if (op2 == 2) {
-            put_helper(e, pc, insn, HV_OP_CLREX);
+        if (op2 == 2) { /* CLREX: the monitor is excl_addr (translate_excl), ~0 when clear; was a helper call */
+            put(e, 0x92800006u); /* movn x6, #0 */
+            put(e, STR_X(6, 28, HV_CPU_EXCL_ADDR));
             return 0;
         }
         if (op2 == 6) { /* ISB: later instructions must see earlier system register writes */

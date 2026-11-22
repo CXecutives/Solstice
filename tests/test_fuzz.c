@@ -120,6 +120,7 @@ static uint32_t adr(int bytes, int d) { return 0x10000000u | ((uint32_t)bytes & 
 #define MRS_FPCR 0xd53b4400u
 #define MRS_FPSR 0xd53b4420u
 #define DC_ZVA 0xd50b7420u
+#define CLREX 0xd503305fu
 
 static int check_encoders(void) {
     const uint32_t mine[] = {
@@ -403,11 +404,13 @@ static void gen_excl(void) {
     int64_t addr = pick_off(region, bytes, bytes);
     set_base(b, region, addr);
     uint32_t loop = pos;
+    int clrex = rn(5) == 0; /* CLREX in between: the store fails, every time, so no loop */
     emit(excl(size, 0, 1, pair, 31, acq, pair ? t2 : 31, b, t));
     if (!pair) emit(size == 3 ? addsub_imm(0, 0, 0, 1, t, t) : 0x11000400u | R5(t) << 5 | R5(t)); /* add t, t, #1 */
+    if (clrex) emit(CLREX);
     emit(excl(size, 0, 0, pair, s, rel, pair ? t2 : 31, b, t));
-    emit(cbz(0, 1, (int)loop - (int)pos, s));
-    note("excl", size, b, pair, addr);
+    if (!clrex) emit(cbz(0, 1, (int)loop - (int)pos, s));
+    note(clrex ? "clrex" : "excl", size, b, pair, addr);
 }
 
 /* LSE atomics, CAS, CASP, LDAR/STLR/LDAPR: naturally aligned. */
