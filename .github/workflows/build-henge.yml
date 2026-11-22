@@ -1,120 +1,144 @@
 # .github/workflows/build-henge.yml
 #
-# Builds a Henge.ipa from your fork's main branch on a GitHub-hosted macOS
-# runner, no Mac needed. Free on a PUBLIC repo: public repos get unlimited
-# minutes on hosted runners, including macOS. On a private repo, macOS minutes
-# bill at 10x, so the free tier's ~2000 min/month is only ~200 macOS minutes.
+# Solstice's only build: engine tests and/or the IPA, on a GitHub-hosted macOS runner (no Mac needed).
+# Private repo: macOS minutes are scarce (~200/month on the free plan), so it runs only on demand and
+# does just what the inputs ask. tools/check.sh and tools/check-all.sh start it.
 #
-# The IPA comes out unsigned with ad-hoc signing (package_ipa.sh's normal
-# output). SideStore/AltStore re-signs it with your certificate on install
-# and keeps the entitlements it can; increased-memory-limit only survives if
-# your certificate carries it, and Henge falls back to file-backed guest RAM
-# without it.
+# The IPA is signed ad hoc with Henge.personal.entitlements (free team: get-task-allow + increased memory
+# limit); AltStore re-signs it with the user's certificate on install.
 
-name: Build Henge IPA
+name: Build Solstice
 
-# Manual only (Actions tab > Build Henge IPA > Run workflow): pushes to main don't build an IPA.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Engine tests to run: "all", "none", or names like "test_jit test_mem"'
+        default: all
+      ipa:
+        description: Build the IPA
+        type: boolean
+        default: true
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   HUSK: ${{ github.workspace }}/Husk
-  # The Makefile takes its slirp headers from IOS_DEPS, not HUSK:
-  #   IOS_DEPS ?= $(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot
-  # (HUSK is only read by ios/scripts/fetch_deps.sh.)
   IOS_DEPS: ${{ github.workspace }}/Husk/build/ios-arm64/sysroot
+  HUSK_REF: "3.4"
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
 
 jobs:
   build:
-    # Xcode 27 image (arm64, GA since Oct 2026). Plain `xcode-27` is a standard
-    # runner, so it's free on public repos; `xcode-27-xlarge` is a paid larger
-    # runner. Table: https://github.com/actions/runner-images#available-images
     runs-on: xcode-27
-    timeout-minutes: 120
+    timeout-minutes: 90
 
     steps:
-      - name: Check out Henge (this fork)
+      - name: Check out Solstice
         uses: actions/checkout@v4
         with:
           path: Henge
 
-      # fetch_deps.sh copies prebuilt pieces out of a BUILT Husk checkout:
-      # StikJIT.xcframework (vendored in Husk's repo, comes with checkout),
-      # libhusk_rppairing.a (scripts/build_rppairing_ios.sh) and the
-      # libslirp/glib/intl/pcre2 static libs (scripts/build_ios.sh).
-      - name: Check out Husk
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun clang --version | head -1
+          ls -d /Applications/Xcode*.app
+
+      - name: Engine tests
+        if: inputs.tests != 'none'
+        working-directory: Henge
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          [ "$TESTS" = all ] && TESTS=""
+          make -j4 core-test T="$TESTS"
+
+      - name: Check out Husk (pinned)
+        if: inputs.ipa
         uses: actions/checkout@v4
         with:
           repository: Leviidev/Husk
+          ref: ${{ env.HUSK_REF }}
           path: Husk
 
-      - name: Cache Husk's sources and prebuilt iOS pieces
+      - name: Cache Husk's prebuilt iOS pieces
+        if: inputs.ipa
+        id: husk
         uses: actions/cache@v4
         with:
           path: |
             Husk/third_party/build
             Husk/build
-          key: husk-ios-arm64-${{ hashFiles('Husk/scripts/build_ios.sh', 'Husk/scripts/fetch_sources.sh') }}
+          key: husk-ios-arm64-${{ env.HUSK_REF }}-${{ hashFiles('Husk/scripts/build_ios.sh', 'Husk/scripts/fetch_sources.sh', 'Husk/scripts/build_rppairing_ios.sh') }}
 
       - name: Install build tools
+        if: inputs.ipa
         run: |
           set -euxo pipefail
-          brew install xcodegen meson ninja pkg-config
-          # Runner images ship rustup; add the iOS target if it's missing.
-          rustup target add aarch64-apple-ios || {
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            rustup target add aarch64-apple-ios
-          }
+          brew install xcodegen
+          if [ "${{ steps.husk.outputs.cache-hit }}" != "true" ]; then
+            brew install meson ninja pkg-config
+            rustup target add aarch64-apple-ios || {
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              rustup target add aarch64-apple-ios
+            }
+          fi
 
-      # build_ios.sh builds from third_party/build/<name>; the sources are
-      # fetched by fetch_sources.sh, which Husk's own ci_build.sh runs first.
-      - name: Fetch Husk's third-party sources
+      # Henge needs only libffi, glib (with pcre2/intl) and libslirp from Husk, plus the pairing library.
+      - name: Build Husk's iOS pieces
+        if: inputs.ipa && steps.husk.outputs.cache-hit != 'true'
         working-directory: Husk
-        run: bash scripts/fetch_sources.sh
+        run: |
+          set -euxo pipefail
+          bash scripts/fetch_sources.sh
+          bash scripts/build_ios.sh libffi glib libslirp
+          bash scripts/build_rppairing_ios.sh
 
-      # Henge only needs these three sysroot pieces: libffi (a glib dep),
-      # glib (whose meson subprojects also produce libpcre2-8 and libintl),
-      # and libslirp (the guest network). Skip Husk's pixman/libucontext/qemu
-      # stages entirely: that's the Android emulator, minutes instead of an
-      # hour-plus.
-      - name: Build the iOS libraries Henge needs
-        working-directory: Husk
-        run: bash scripts/build_ios.sh libffi glib libslirp
-
-      - name: Build Husk's on-device pairing library
-        working-directory: Husk
-        run: bash scripts/build_rppairing_ios.sh
-
-      - name: Copy prebuilt deps into Henge
+      - name: Copy prebuilt deps into Solstice
+        if: inputs.ipa
         working-directory: Henge
         run: zsh ios/scripts/fetch_deps.sh
 
-      - name: Build the restore stack (libirecovery, usbmuxd, idevicerestore)
+      - name: Build the restore stack
+        if: inputs.ipa
         working-directory: Henge
         run: zsh tools/build_ios_restore.sh
 
       - name: Build the engine
+        if: inputs.ipa
         working-directory: Henge
-        run: make ios-lib
+        run: make -j4 ios-lib
 
-      - name: Package Henge.ipa
+      - name: SIMD gate
+        if: inputs.ipa
         working-directory: Henge
+        run: python3 tools/simd_gate.py build/ios
+
+      - name: Package Solstice.ipa
+        if: inputs.ipa
+        working-directory: Henge
+        env:
+          SOLSTICE_BUILD: ${{ github.run_number }}
+          HENGE_IPA_OUT: ${{ github.workspace }}/Solstice.ipa
         run: zsh ios/scripts/package_ipa.sh
 
-      - name: Upload Henge.ipa
+      - name: Upload Solstice.ipa
+        if: inputs.ipa
         uses: actions/upload-artifact@v4
         with:
-          name: Henge-ipa-${{ github.sha }}
-          path: /Users/runner/Desktop/Henge.ipa
+          name: Solstice-ipa
+          path: ${{ github.workspace }}/Solstice.ipa
           if-no-files-found: error
+          retention-days: 14
 
-      - name: Package Henge.tipa
-        working-directory: Henge
-        run: zsh ios/scripts/package_ipa.sh --trollstore
-
-      - name: Upload Henge.tipa
+      - name: Upload the build log
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: Henge-tipa-${{ github.sha }}
-          path: /Users/runner/Desktop/Henge.tipa
-          if-no-files-found: error
+          name: buildlog
+          path: Henge/ios/build/DerivedData.buildlog
+          if-no-files-found: ignore

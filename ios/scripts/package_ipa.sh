@@ -38,12 +38,19 @@ mkdir -p "$STAGE/Payload"
 cp -R "$APP" "$STAGE/Payload/"
 ENT="$STAGE/entitlements.plist"
 # HENGE_ENTITLEMENTS picks another file, as for xcodebuild (Henge/Henge.personal.entitlements for a free team).
-cp "$IOS/${HENGE_ENTITLEMENTS:-Henge/Henge.entitlements}" "$ENT"
+cp "$IOS/${HENGE_ENTITLEMENTS:-Henge/Henge.personal.entitlements}" "$ENT"
 BANNED_KEYS=("com.apple.private.cs.debugger" "dynamic-codesigning" "com.apple.private.skip-library-validation")
 if [ "$TROLLSTORE" = true ]; then for k in "${BANNED_KEYS[@]}"; do plutil -remove "$k" "$ENT" 2>/dev/null || true; done; fi
 SAPP="$STAGE/Payload/Henge.app"
 plutil -insert HengeBuildCommit -string "$(git -C "$IOS/.." rev-parse --short=12 HEAD 2>/dev/null || echo unknown)" "$SAPP/Info.plist"
 plutil -insert HengeBuildDate -string "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SAPP/Info.plist"
+# SOLSTICE_BUILD (CI run number): a rising version in the app and its JIT helper, so a sideloader sees an update.
+if [ -n "$SOLSTICE_BUILD" ]; then
+  for plist in "$SAPP/Info.plist" "$SAPP"/PlugIns/*.appex/Info.plist; do
+    plutil -replace CFBundleShortVersionString -string "1.0.$SOLSTICE_BUILD" "$plist"
+    plutil -replace CFBundleVersion -string "$((1000 + SOLSTICE_BUILD))" "$plist"
+  done
+fi
 # Apple's boot ROM is fetched on the device (BootROM.swift) and must never ship. An older build folder can still
 # hold a copy from when the app bundled it, so it goes, and nothing is packaged if any is left.
 rm -f "$SAPP/AVPBooter.vmapple2.bin"

@@ -47,6 +47,7 @@ int hv_knob_set(HvMachine *m, const char *name, int value) {
 }
 
 int hv_machine_init(HvMachine *m, size_t jit_bytes) {
+    knobs_init(); /* the tests and the Mac tool read the same knobs as the app */
     memset(m, 0, sizeof *m);
     if (hv_jit_region_open(&m->jit, jit_bytes) != 0) return -1;
     return init_rest(m);
@@ -60,6 +61,7 @@ int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes) {
 }
 
 static int init_rest(HvMachine *m) {
+    hv_kva_init();
     pthread_mutex_init(&m->big_mu, NULL);
     pthread_cond_init(&m->big_cv, NULL);
     pthread_mutexattr_t ra;

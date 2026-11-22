@@ -601,14 +601,18 @@ static int kva_shift = 30;
 static uint64_t kva_fills[KVA_GBS], kva_pages_n[KVA_GBS], kva_below, kva_above;
 static uint8_t *kva_seen; /* one bit per page */
 static int kva_on = -1;
+/* Read the environment and allocate before any vCPU runs: kva_note is reached from hv_tlb_refill, which runs from
+   translated code with the guest's q0-q31 still live, so it must not call into libc (getenv, calloc). */
+void hv_kva_init(void) {
+    if (kva_on >= 0) return;
+    kva_on = getenv("HV_KVA_HIST") != NULL;
+    if (getenv("HV_KVA_BASE")) KVA_BASE = strtoull(getenv("HV_KVA_BASE"), NULL, 16);
+    if (getenv("HV_KVA_SHIFT")) kva_shift = atoi(getenv("HV_KVA_SHIFT"));
+    if (kva_on) kva_seen = calloc((size_t)KVA_GBS << (kva_shift - HV_TLB_PAGE_BITS - 3), 1);
+    if (!kva_seen) kva_on = 0;
+}
 static void kva_note(uint64_t va) {
-    if (kva_on < 0) {
-        kva_on = getenv("HV_KVA_HIST") != NULL;
-        if (getenv("HV_KVA_BASE")) KVA_BASE = strtoull(getenv("HV_KVA_BASE"), NULL, 16);
-        if (getenv("HV_KVA_SHIFT")) kva_shift = atoi(getenv("HV_KVA_SHIFT"));
-    }
-    if (!kva_on) return;
-    if (!kva_seen) kva_seen = calloc((size_t)KVA_GBS << (kva_shift - HV_TLB_PAGE_BITS - 3), 1);
+    if (kva_on <= 0) return;
     if (va < KVA_BASE) { __atomic_add_fetch(&kva_below, 1, __ATOMIC_RELAXED); return; }
     uint64_t off = va - KVA_BASE, gb = off >> kva_shift;
     if (gb >= KVA_GBS) { __atomic_add_fetch(&kva_above, 1, __ATOMIC_RELAXED); return; }

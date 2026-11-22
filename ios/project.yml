@@ -9,9 +9,9 @@ settings:
   base:
     # The app and its JIT helper follow this together (the helper's id sits under the app's).
     HENGE_BUNDLE_IDENTIFIER: com.henge.app
-    # The app's entitlements file. Override on the xcodebuild command line (the JIT helper doesn't use it, so a
-    # personal team can sign the app with fewer entitlements without touching the helper).
-    HENGE_ENTITLEMENTS: Henge/Henge.entitlements
+    # The app's entitlements file. Solstice is signed by a free (personal) team, which cannot sign extended
+    # virtual addressing or dynamic-codesigning, so the personal set is the default.
+    HENGE_ENTITLEMENTS: Henge/Henge.personal.entitlements
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: YES
     ENABLE_BITCODE: NO

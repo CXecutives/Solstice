@@ -1,0 +1,7 @@
+* text=auto
+*.sh text eol=lf
+*.S text eol=lf
+*.s text eol=lf
+*.yml text eol=lf
+*.png binary
+*.icon binary

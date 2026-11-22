@@ -1,0 +1,2 @@
+# External symbols hv_tlb_refill / hv_ijc_resolve may reach (see tools/simd_gate.py).
+# Only functions proven not to touch SIMD/FP registers belong here.
