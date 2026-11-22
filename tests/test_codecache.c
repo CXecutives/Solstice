@@ -2,8 +2,8 @@
 // 4 MB of translated code a round, with HV_JIT_POISON, so a segment that is freed is zeroed (a stale jump into it faults
 // at once) and checked to be unreachable (exits, the hash, the front caches). One CPU, then three on their own threads
 // running at once: chaining, posting TLBIs to each other, waiting for room; with code changes from another thread and
-// full flushes in between in one of the runs. Every run's x0 must be the native run's, and the cache must have gone
-// round many times.
+// full flushes and the stats line in between in one of the runs, and the phone's sleeping TLBI waits in another. Every
+// run's x0 must be the native run's, and the cache must have gone round hundreds of times.
 #include "harness.h"
 
 #include <mach/mach_time.h>
@@ -70,8 +70,14 @@ static double now_s(void) {
     return (double)mach_absolute_time() / 24e6;
 }
 
+enum {
+    RUN_CHANGES = 1,   /* code changes from another thread, and two full flushes */
+    RUN_STATS = 2,     /* the stats line every 2 s (its counters and the code-cache line) */
+    RUN_SYNC_WAIT = 4, /* TLBI waits asleep, as on the phone (HV_SYNC_WAIT=1) */
+};
+
 /* One run: cap_mb of code cache, ncpu CPUs, until want_laps times round (at least min_laps) or max_s seconds. */
-static int run(const char *name, int cap_mb, int ncpu, int changes, double min_laps, double want_laps, double max_s) {
+static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps, double want_laps, double max_s) {
     char cap[16];
     snprintf(cap, sizeof cap, "%d", cap_mb);
     setenv("HV_JIT_CAP", cap, 1);
@@ -79,6 +85,9 @@ static int run(const char *name, int cap_mb, int ncpu, int changes, double min_l
         printf("%s: machine init failed\n", name);
         return 1;
     }
+    int changes = opts & RUN_CHANGES, sync_wait = hv_knob[HV_K_SYNCWAIT];
+    if (opts & RUN_STATS) m.stats_interval = 2;
+    if (opts & RUN_SYNC_WAIT) hv_knob[HV_K_SYNCWAIT] = 1;
     hv_machine_add_ram(&m, (uint64_t)(uintptr_t)codecache_programs_begin, codecache_programs_finish - codecache_programs_begin,
                        (void *)codecache_programs_begin, 1);
     uint8_t *stack = aligned_alloc(16384, 65536);
@@ -166,6 +175,7 @@ static int run(const char *name, int cap_mb, int ncpu, int changes, double min_l
     for (int i = 0; i < ncpu; i++) free(w[i].cpu);
     hv_machine_free(&m);
     free(stack);
+    hv_knob[HV_K_SYNCWAIT] = sync_wait;
     return failed;
 }
 
@@ -173,9 +183,10 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setenv("HV_JIT_POISON", "1", 1); /* read once, at the first machine */
     int failed = 0;
-    failed += run("1 cpu, 2 MB", 2, 1, 0, 20, 60, 45);
-    failed += run("3 cpus, 2 MB, code changes and full flushes", 2, 3, 1, 20, 60, 45);
-    failed += run("3 cpus, 1 MB", 1, 3, 0, 20, 60, 45);
+    /* Each about 300 times round the cache (at least 100), at most a minute. */
+    failed += run("1 cpu, 2 MB", 2, 1, 0, 100, 300, 60);
+    failed += run("3 cpus, 2 MB, code changes, full flushes, stats", 2, 3, RUN_CHANGES | RUN_STATS, 100, 300, 60);
+    failed += run("3 cpus, 1 MB, TLBI waits asleep (HV_SYNC_WAIT=1, as on the phone)", 1, 3, RUN_SYNC_WAIT, 100, 300, 60);
     printf("%s\n", failed ? "FAIL" : "ok");
     return failed != 0;
 }
