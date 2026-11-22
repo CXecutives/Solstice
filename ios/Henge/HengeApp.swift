@@ -12,6 +12,7 @@ struct HengeApp: App {
         // allocator's first lines land in Documents/henge.log too.
         HengeLog.start()
         HengeLog.log("boot", "address space: \(henge_largest_reservation_gb()) GB can be reserved in one piece")
+        SafeMode.noteLaunch() // before the engine's settings: two launches in a row that ended with a Mac up start it safe
         EngineTuning.apply()
         // Settings > Log stream: send the log to a computer on this network, if that is on.
         LogStream.shared.applySettings()
@@ -50,6 +51,8 @@ struct RootView: View {
     /// Once per launch: the JIT walkthrough for a device not set up yet, and starting the last Mac.
     @State private var firstSetupOffered = false
     @State private var autoStarted = false
+    /// Said once, when safe mode comes on.
+    @State private var safeModeNotice = SafeMode.justCameOn
     @AppStorage(DeskAppearance.key) private var appearance = DeskAppearance.system
 
     var body: some View {
@@ -58,7 +61,7 @@ struct RootView: View {
                 HomeView(running: $running, tab: $tab)
                     .tabItem { Label("Macs", systemImage: "macwindow") }
                     .tag(Tab.macs)
-                InstallView()
+                InstallView(sessionUp: running != nil)
                     .tabItem { Label("Install", systemImage: "arrow.down.circle") }
                     .tag(Tab.install)
                 SettingsView()
@@ -73,6 +76,12 @@ struct RootView: View {
             }
         }
         .background(WindowStyle(style: running != nil ? .dark : appearance.style))
+        .alert("Safe mode", isPresented: $safeModeNotice) {
+            Button("OK", role: .cancel) {}
+            Button("Use Solstice's Settings") { SafeMode.turnOff() }
+        } message: {
+            Text("The last two times, Solstice ended while a Mac was running. Until the next update it starts Macs with Henge's standard engine settings. Settings, Performance turns this off.")
+        }
         .sheet(isPresented: $jit.showSetup) { JITSetupFlow() }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }

@@ -1,5 +1,6 @@
 #include "virtio_blk.h"
 
+#include <pthread/qos.h>
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -29,9 +30,13 @@
 #define ZERO_SEGS 32
 
 /* Disk I/O straight between the file and the guest's buffers: the
-   segments of one direction, skipping `off` bytes of them, `len` bytes in all.
+   segments of one direction, skipping `off` bytes of them, `len` bytes in all,
+   in one system call (preadv/pwritev) for the whole request.
    Returns 0, or -1 on a host error or a buffer outside guest RAM. */
 static int seg_io(HvVirtioBlk *b, const HvVirtqElem *e, int writable, uint32_t off, uint64_t disk_off, uint32_t len) {
+    struct iovec iov[HV_VIRTQ_MAX_SEGS];
+    uint64_t at[HV_VIRTQ_MAX_SEGS];
+    int n = 0;
     for (int s = 0; s < e->nseg && len; s++) {
         const HvVirtqSeg *g = &e->seg[s];
         if (g->write != writable) continue;
@@ -39,18 +44,21 @@ static int seg_io(HvVirtioBlk *b, const HvVirtqElem *e, int writable, uint32_t o
             off -= g->len;
             continue;
         }
-        uint32_t n = g->len - off;
-        if (n > len) n = len;
-        void *p = hv_phys_ptr(b->vio.m, g->addr + off, n);
+        uint32_t c = g->len - off;
+        if (c > len) c = len;
+        void *p = hv_phys_ptr(b->vio.m, g->addr + off, c);
         if (!p) return -1;
-        int r = writable ? hv_disk_read(b->disk, disk_off, p, n) : hv_disk_write(b->disk, disk_off, p, n);
-        if (writable && r == 0) hv_dma_written(b->vio.m, g->addr + off, n);
-        if (r != 0) return -1;
-        disk_off += n;
-        len -= n;
+        iov[n].iov_base = p, iov[n].iov_len = c, at[n] = g->addr + off;
+        n++;
+        len -= c;
         off = 0;
     }
-    return len ? -1 : 0;
+    if (len) return -1;
+    int r = writable ? hv_disk_readv(b->disk, disk_off, iov, n) : hv_disk_writev(b->disk, disk_off, iov, n);
+    /* Guest memory the disk wrote, even part of it on a failed read: the CPUs' translations of it are stale. */
+    if (writable)
+        for (int i = 0; i < n; i++) hv_dma_written(b->vio.m, at[i], iov[i].iov_len);
+    return r ? -1 : 0;
 }
 
 static uint32_t readable(const HvVirtqElem *e) {
@@ -138,6 +146,9 @@ static uint64_t now_us(void) {
    after it starts until it is done, so their ordering meaning holds. */
 static void *worker(void *opaque) {
     HvVirtioBlk *b = opaque;
+    /* The guest's CPUs wait for these (page-ins at app launch): as urgent as they are, not the default's utility-ish
+       scheduling that a phone under load parks on its slowest cores. */
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
     /* HV_BLK_STATS: requests, bytes, flushes and how busy this worker was, every 10 s. */
     int stats = getenv("HV_BLK_STATS") != NULL;
     uint64_t every = stats && atoi(getenv("HV_BLK_STATS")) > 0 ? (uint64_t)atoi(getenv("HV_BLK_STATS")) * 1000000 : 10000000;
@@ -291,8 +302,10 @@ HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int a
     HvVirtioBlk *b = calloc(1, sizeof *b);
     if (!b) return NULL;
     HvVirtio *v = &b->vio;
-    /* Discard and write-zeroes on the aux disk only, where the guest keeps its panic store. */
-    uint64_t zeroing = apple_variant == HV_VBLK_AUX && !disk->readonly ? F_DISCARD | F_WRITE_ZEROES : 0;
+    /* Discard and write-zeroes: on the aux disk, where the guest keeps its panic store, and on the main disk, whose
+       image is sparse: APFS trims what it frees, and those blocks become holes again instead of the image only ever
+       growing (hv_disk_zero). */
+    uint64_t zeroing = (apple_variant == HV_VBLK_AUX || apple_variant == HV_VBLK_ROOT) && !disk->readonly ? F_DISCARD | F_WRITE_ZEROES : 0;
     hv_virtio_init(v, m, 2, 0x010000, 1, F_SEG_MAX | F_BLK_SIZE | F_FLUSH | zeroing | (disk->readonly ? F_RO : 0));
     v->dev = b;
     v->notify = notify;
@@ -324,6 +337,8 @@ HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int a
     memcpy(v->config + 20, &blk_size, 4);
     memcpy(v->config + 34, &num_queues, 2);
     if (zeroing) {
+        /* Alignment 1, as the driver took it on the aux disk (#142): APFS frees 4 KB blocks, which on the main disk
+           (no header) are the host file's blocks too, and any partial block is zeroed exactly. */
         uint32_t max_sectors = capacity > UINT32_MAX ? UINT32_MAX : (uint32_t)capacity, segs = ZERO_SEGS, align = 1;
         memcpy(v->config + 36, &max_sectors, 4); /* max_discard_sectors */
         memcpy(v->config + 40, &segs, 4);        /* max_discard_seg */

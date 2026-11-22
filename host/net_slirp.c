@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <stdatomic.h>
 #include <libslirp.h>
 #include <stdio.h>
@@ -324,7 +325,13 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
     }
     net = n;
     n->transmit = transmit;
-    if (pthread_create(&network_thread, NULL, net_thread, NULL) != 0) { hv_net_detach(); return -1; }
+    /* User-initiated, as the CPUs waiting on its packets are: not whatever the starting thread had. */
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_set_qos_class_np(&at, QOS_CLASS_USER_INITIATED, 0);
+    int made = pthread_create(&network_thread, &at, net_thread, NULL) == 0;
+    pthread_attr_destroy(&at);
+    if (!made) { hv_net_detach(); return -1; }
     thread_started = 1;
     return 0;
 }

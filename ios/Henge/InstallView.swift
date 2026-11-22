@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Download macOS (or use a copy already on this device) and install it on a new Mac.
 struct InstallView: View {
+    /// A Mac is open over the tabs: this screen is not seen, and its once-a-second loops wait.
+    var sessionUp = false
     @ObservedObject private var installer = Installer.shared
     @ObservedObject private var jit = JITCoordinator.shared
     @State private var jitReady = JITBootstrap.ready
@@ -37,9 +39,10 @@ struct InstallView: View {
             }
             .background(Desk.page)
             .navigationTitle(installer.busy ? "Installing" : "Install macOS")
-            .task {
+            .task(id: sessionUp) {
+                guard !sessionUp else { return }
                 while !Task.isCancelled { // the region may be claimed after a hand-off to StikDebug
-                    jitReady = JITBootstrap.ready
+                    if jitReady != JITBootstrap.ready { jitReady = JITBootstrap.ready }
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
             }
@@ -272,7 +275,7 @@ struct InstallView: View {
                         .aspectRatio(16.0 / 10.0, contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                 }
-                LogTail()
+                LogTail(active: !sessionUp)
             }
             .padding(14)
             .deskCard()
@@ -302,12 +305,13 @@ struct InstallView: View {
         .deskCard(radius: 30)
         .padding(.top, 8)
         DeskHeading("Log")
-        LogTail().padding(14).frame(maxWidth: .infinity, alignment: .leading).deskCard()
+        LogTail(active: !sessionUp).padding(14).frame(maxWidth: .infinity, alignment: .leading).deskCard()
     }
 }
 
 /// The last lines of Henge's log.
 private struct LogTail: View {
+    var active = true
     @State private var lines: [String] = []
 
     var body: some View {
@@ -317,7 +321,8 @@ private struct LogTail: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .task {
+        .task(id: active) {
+            guard active else { return }
             while !Task.isCancelled {
                 lines = Array(HengeLog.recentLines(14))
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
