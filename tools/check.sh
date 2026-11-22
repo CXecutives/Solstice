@@ -4,6 +4,7 @@
 # Exit code = the run's result.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export GH_REPO=CXecutives/Solstice # never the upstream remote
 tests="${*:-all}"
 ipa="${SOLSTICE_IPA:-false}"
 branch="$(git rev-parse --abbrev-ref HEAD)"
