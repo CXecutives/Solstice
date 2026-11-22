@@ -140,13 +140,43 @@ static int init_rest(HvMachine *m) {
 
 __thread HvCpu *hv_self;
 
+_Static_assert(offsetof(HvStats, small_at) % sizeof(uint64_t) == 0, "HvStats: counters first");
+
+void hv_stats_total(HvMachine *m, HvStats *out) {
+    *out = m->stats;
+    uint64_t *sum = (uint64_t *)(void *)out;
+    for (int i = 0; i < HV_MAX_CPUS; i++) {
+        const uint64_t *c = (const uint64_t *)(const void *)&m->percpu[i].own.stats;
+        for (size_t k = 0; k < HV_STATS_COUNTERS; k++) sum[k] += __atomic_load_n(&c[k], __ATOMIC_RELAXED);
+    }
+}
+
+uint64_t hv_stat_blocks(HvMachine *m) {
+    uint64_t n = __atomic_load_n(&m->stats.blocks, __ATOMIC_RELAXED);
+    for (int i = 0; i < HV_MAX_CPUS; i++) n += __atomic_load_n(&m->percpu[i].own.stats.blocks, __ATOMIC_RELAXED);
+    return n;
+}
+
+uint64_t hv_stat_slow_mem(HvMachine *m) {
+    uint64_t n = 0;
+    for (int i = 0; i < HV_MAX_CPUS; i++) n += __atomic_load_n(&m->percpu[i].own.slow_mem, __ATOMIC_RELAXED);
+    return n;
+}
+
+/* The guest PC of the access being emulated on this thread's CPU, for logs. */
+static uint64_t hv_access_pc(HvMachine *m) {
+    HvCpu *self = hv_self;
+    return self && self->pc_state ? self->pc_state->own.access_pc : m->access_pc;
+}
+
 void hv_dev_lock(HvMachine *m) {
     if (pthread_mutex_trylock(&m->dev_mu) == 0) return;
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
     pthread_mutex_lock(&m->dev_mu);
     if (m->stats_interval) {
-        m->stats.dev_waits++;
-        m->stats.dev_wait_ticks += mach_absolute_time() - t0;
+        HvStats *st = hv_stats_here(m);
+        st->dev_waits++;
+        st->dev_wait_ticks += mach_absolute_time() - t0;
     }
 }
 
@@ -159,7 +189,7 @@ static uint64_t post_locked_done(HvCpu *target, HvPerCpu *p) {
     pthread_mutex_unlock(&p->req_mu);
     __atomic_store_n(&target->exit_req, 1, __ATOMIC_SEQ_CST);
     __asm__ volatile("sev" ::: "memory"); /* a WFE waiting in place (wfe() in dispatch.c) sees it now */
-    if (target->m->stats_interval) target->m->stats.kick_src[0]++;
+    if (target->m->stats_interval) hv_stats_here(target->m)->kick_src[0]++;
     return seq;
 }
 
@@ -228,7 +258,7 @@ void hv_cpu_process_requests(HvCpu *cpu) {
     p->nijc_page = 0;
     pthread_mutex_unlock(&p->req_mu);
     if (flags & HV_REQ_TLB_ALL) {
-        cpu->m->stats.flush_why[7]++;
+        HV_ST(cpu).flush_why[7]++;
         hv_tlb_flush(cpu);
     } else {
         for (uint32_t i = 0; i < n; i++) hv_tlbi_apply(cpu, q[i].op1, q[i].crn, q[i].crm, q[i].op2, q[i].xt);
@@ -246,6 +276,7 @@ void hv_cpu_process_requests(HvCpu *cpu) {
 void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
     HvPerCpu *t = target->pc_state, *s = self ? self->pc_state : NULL;
     HvMachine *mm = target->m;
+    HvStats *st = s ? &s->own.stats : &mm->stats;
     uint64_t t0 = mm->stats_interval ? mach_absolute_time() : 0;
     if (s) {
         __atomic_store_n(&s->tlb_live, 0, __ATOMIC_SEQ_CST); /* others need not wait for this one meanwhile */
@@ -261,16 +292,16 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
             thread_basic_info_data_t ti;
             mach_msg_type_number_t cnt = THREAD_BASIC_INFO_COUNT;
             int on = !t->thread || (thread_info(t->thread, THREAD_BASIC_INFO, (thread_info_t)&ti, &cnt) == KERN_SUCCESS && ti.run_state == TH_STATE_RUNNING);
-            mm->stats.sync_probe[on ? 1 : 0]++;
-            if (__atomic_load_n(&t->walk_seq, __ATOMIC_RELAXED) & 1) mm->stats.sync_probe[2]++;
-            if (__atomic_load_n(&t->ijc_seq, __ATOMIC_RELAXED) & 1) mm->stats.sync_probe[3]++;
+            st->sync_probe[on ? 1 : 0]++;
+            if (__atomic_load_n(&t->walk_seq, __ATOMIC_RELAXED) & 1) st->sync_probe[2]++;
+            if (__atomic_load_n(&t->ijc_seq, __ATOMIC_RELAXED) & 1) st->sync_probe[3]++;
         }
         if (probed && !probed_long && !(spins & 63) && mach_absolute_time() - t0 >= 24000) { /* 1 ms */
             probed_long = 1;
             thread_basic_info_data_t ti;
             mach_msg_type_number_t cnt = THREAD_BASIC_INFO_COUNT;
             int on = !t->thread || (thread_info(t->thread, THREAD_BASIC_INFO, (thread_info_t)&ti, &cnt) == KERN_SUCCESS && ti.run_state == TH_STATE_RUNNING);
-            mm->stats.sync_phase[on ? __atomic_load_n(&t->phase, __ATOMIC_RELAXED) % 5 : 5]++;
+            st->sync_phase[on ? __atomic_load_n(&t->phase, __ATOMIC_RELAXED) % 5 : 5]++;
         }
         if (!__atomic_load_n(&t->tlb_live, __ATOMIC_SEQ_CST)) break; /* parked: it does the work before it runs again */
         if (self) hv_cpu_process_requests(self);
@@ -292,10 +323,10 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
     if (mm->stats_interval) {
         uint64_t dt = mach_absolute_time() - t0;
         int b = dt < 240 ? 0 : dt < 2400 ? 1 : dt < 24000 ? 2 : 3; /* 24 MHz ticks */
-        mm->stats.syncs++;
-        mm->stats.sync_ticks += dt;
-        mm->stats.sync_len[b]++;
-        mm->stats.sync_len_ticks[b] += dt;
+        st->syncs++;
+        st->sync_ticks += dt;
+        st->sync_len[b]++;
+        st->sync_len_ticks[b] += dt;
     }
 }
 
@@ -340,7 +371,7 @@ void hv_ret_clear(HvCpu *cpu) {
 void hv_cpu_wake(HvCpu *cpu) {
     __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_SEQ_CST);
     __asm__ volatile("sev" ::: "memory");
-    if (cpu->m->stats_interval) cpu->m->stats.kick_src[1]++;
+    if (cpu->m->stats_interval) hv_stats_here(cpu->m)->kick_src[1]++;
     HvPerCpu *p = cpu->pc_state;
     pthread_mutex_lock(&p->wake_mu);
     p->wake_pending = 1;
@@ -349,7 +380,7 @@ void hv_cpu_wake(HvCpu *cpu) {
 }
 
 void hv_machine_kick_all(HvMachine *m) {
-    if (m->stats_interval) m->stats.kick_src[2]++;
+    if (m->stats_interval) hv_stats_here(m)->kick_src[2]++;
     for (int i = 0; i < m->ncpus; i++)
         if (m->cpus[i]) __atomic_store_n(&m->cpus[i]->exit_req, 1, __ATOMIC_SEQ_CST);
     __asm__ volatile("sev" ::: "memory");
@@ -373,7 +404,7 @@ void hv_machine_halt(HvMachine *m, enum HvHaltReason reason) {
 
 /* Device work is for CPU 0, which polls the devices. */
 void hv_machine_wake(HvMachine *m) {
-    if (m->stats_interval) m->stats.kick_src[3]++;
+    if (m->stats_interval) hv_stats_here(m)->kick_src[3]++;
     if (m->cpu) hv_cpu_wake(m->cpu);
 }
 
@@ -508,7 +539,7 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
        hv_ijc_fill_checked), so only that page's; under none, only the return predictions go; under several, all. */
     uint64_t v = __atomic_exchange_n(&r->ijc_va[pg], 0, __ATOMIC_SEQ_CST);
     if (!hv_knob[HV_K_IJCPAGES]) v = ~0ull;
-    if (m->stats_interval) m->stats.code_ijc[!v ? 0 : v == ~0ull ? 2 : 1]++;
+    if (m->stats_interval) hv_stats_here(m)->code_ijc[!v ? 0 : v == ~0ull ? 2 : 1]++;
     if (!v) v = 1;
     for (int i = 0; i < m->ncpus; i++) {
         HvCpu *c = m->cpus[i];
@@ -529,7 +560,7 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
             hv_cpu_post_ijc_page(c, v);
         }
     }
-    m->stats.reset_why[4]++;
+    hv_stats_here(m)->reset_why[4]++;
     /* Make a running chain leave (chains stay patched: see chain() in dispatch.c). */
     hv_machine_kick_all(m);
 }
@@ -614,7 +645,7 @@ int hv_phys_read(HvMachine *m, uint64_t pa, void *buf, unsigned len) {
     memcpy(buf, &v, len);
     if (m->log >= 3)
         fprintf(stderr, "mmio read  %s+%llx size %u = %llx pc %llx\n", d->name, (unsigned long long)(pa - d->pa), len,
-                (unsigned long long)v, (unsigned long long)m->access_pc);
+                (unsigned long long)v, (unsigned long long)hv_access_pc(m));
     return 0;
 }
 
@@ -631,7 +662,7 @@ int hv_phys_write(HvMachine *m, uint64_t pa, const void *buf, unsigned len) {
             memcpy(&v, (const uint8_t *)buf + (m->watch_pa - pa), len - (m->watch_pa - pa) < 8 ? len - (m->watch_pa - pa) : 8);
             fprintf(stderr, "hengevm: watch: write to pa %llx = %llx (%u bytes at pa %llx) by pc %llx\n",
                     (unsigned long long)m->watch_pa, (unsigned long long)v, len, (unsigned long long)pa,
-                    (unsigned long long)m->access_pc);
+                    (unsigned long long)hv_access_pc(m));
         }
         memcpy(r->host + off, buf, len);
         return 0;
@@ -642,7 +673,7 @@ int hv_phys_write(HvMachine *m, uint64_t pa, const void *buf, unsigned len) {
     memcpy(&v, buf, len);
     if (m->log >= 3)
         fprintf(stderr, "mmio write %s+%llx size %u = %llx pc %llx\n", d->name, (unsigned long long)(pa - d->pa), len,
-                (unsigned long long)v, (unsigned long long)m->access_pc);
+                (unsigned long long)v, (unsigned long long)hv_access_pc(m));
     if (!d->self_locked) hv_dev_lock(m);
     if (d->write) d->write(d->opaque, pa - d->pa, v, len);
     if (!d->self_locked) hv_dev_unlock(m);

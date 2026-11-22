@@ -140,8 +140,7 @@ void hv_mmu_walk(HvCpu *cpu, uint64_t va, HvAccess acc, int el, HvWalk *out) {
 int hv_tlb_tmajor;
 
 void hv_tlb_flush(HvCpu *cpu) {
-    if (cpu->m) cpu->m->stats.tlb_flushes++;
-    if (cpu->m) cpu->m->stats.reset_why[0]++;
+    if (cpu->pc_state) HV_ST(cpu).tlb_flushes++, HV_ST(cpu).reset_why[0]++;
     hv_ijc_reset(cpu, 0); /* mappings changed: branch targets cached by VA are no longer trusted */
     hv_ijc_reset(cpu, 1);
     /* Only the entries filled since the last flush can be valid (both logs, unless one ran over). */
@@ -269,20 +268,20 @@ void hv_ijc_switch(HvCpu *cpu) {
 }
 
 void hv_ijc_drop_asid(HvCpu *cpu, uint16_t asid) {
-    if (cpu->m) cpu->m->stats.ijc_resets++;
+    if (cpu->pc_state) HV_ST(cpu).ijc_resets++;
     cpu->asid_cid[asid] = 0;
     int cur = current_asid(cpu);
     if (cur == asid || cur < 0) hv_ijc_switch(cpu); /* without ASIDs, any drop may be about the current process */
 }
 
 void hv_ijc_reset(HvCpu *cpu, int kernel) {
-    if (cpu->m && cpu->m->stats_interval) cpu->m->stats.ijc_reset_kind[kernel ? 1 : 0]++;
+    if (cpu->m && cpu->pc_state && cpu->m->stats_interval) HV_ST(cpu).ijc_reset_kind[kernel ? 1 : 0]++;
     ret_new(cpu, kernel);
     if (cpu->pc_state) cpu->pc_state->last_fill[0] = cpu->pc_state->last_fill[1] = 0;
     /* Every entry of the half is dead now (new ids or kernel generation): so are their hints. */
     if (cpu->pc_state) memset(cpu->pc_state->ijc_hint[kernel], 0, sizeof cpu->pc_state->ijc_hint[kernel]);
     if (cpu->m) {
-        cpu->m->stats.ijc_resets++;
+        HV_ST(cpu).ijc_resets++;
         memset(cpu->pc_state->ijc_pages[kernel], 0, sizeof cpu->pc_state->ijc_pages[kernel]);
     }
     if (kernel) {
@@ -308,7 +307,7 @@ void hv_ijc_reset(HvCpu *cpu, int kernel) {
 /* TTBR0 changed or an ASID was dropped: only user-half (TTBR0) translations go;
    the kernel's TTBR1 entries stay. */
 void hv_tlb_flush_user(HvCpu *cpu) {
-    if (cpu->m) cpu->m->stats.tlb_flushes++;
+    if (cpu->pc_state) HV_ST(cpu).tlb_flushes++;
     uint32_t n = cpu->nuser_fills;
     cpu->nuser_fills = 0;
     if (n <= HV_USER_FILLS) {
@@ -335,7 +334,7 @@ void hv_tlb_flush_user_range(HvCpu *cpu, uint64_t va, uint64_t len) {
         hv_tlb_flush_user(cpu);
         return;
     }
-    if (cpu->m) if (cpu->m->stats_interval) cpu->m->stats.tlb_range_flushes++;
+    if (cpu->m && cpu->pc_state && cpu->m->stats_interval) HV_ST(cpu).tlb_range_flushes++;
     uint64_t lo = va & 0x00ffffffffffffffull;
     for (uint32_t k = 0; k < n; k++) {
         HvTlbEntry *e = &cpu->tlb[0] + cpu->user_fills[k];
@@ -353,7 +352,7 @@ void hv_tlb_flush_user_range(HvCpu *cpu, uint64_t va, uint64_t len) {
    second, Sequoia none). Up to 64 MB page by page, as small ranges are; past that, a scan for kernel entries in the range
    and the kernel half of the branch caches. */
 void hv_tlb_flush_kernel_range(HvCpu *cpu, uint64_t va, uint64_t len) {
-    if (cpu->m && cpu->m->stats_interval) cpu->m->stats.kernel_ranges++;
+    if (cpu->m && cpu->pc_state && cpu->m->stats_interval) HV_ST(cpu).kernel_ranges++;
     uint64_t first = va & ~(uint64_t)PAGE_MASK;
     if (len <= (4096ull << HV_TLB_PAGE_BITS)) {
         for (uint64_t p = first; p < va + len; p += 1ull << HV_TLB_PAGE_BITS) hv_tlb_flush_va_asid(cpu, p, -1);
@@ -383,7 +382,7 @@ void hv_tlb_protect_code_page(HvCpu *cpu, HvRam *ram, uint64_t pg) {
     uint64_t *hint = &ram->whint[(size_t)cpu->index * ram->npages + pg];
     uint64_t h = __atomic_exchange_n(hint, 0, __ATOMIC_SEQ_CST);
     const uint8_t *host_page = ram->host + (pg << HV_TLB_PAGE_BITS);
-    if (cpu->m) if (cpu->m->stats_interval) cpu->m->stats.protect_kind[h & HV_WHINT_MANY ? 2 : h ? 1 : 0]++;
+    if (cpu->m && cpu->m->stats_interval) hv_stats_here(cpu->m)->protect_kind[h & HV_WHINT_MANY ? 2 : h ? 1 : 0]++; /* any CPU's TLB, from the one translating */
     if (h & HV_WHINT_MANY) {
         hv_tlb_protect_code(cpu, host_page);
         return;
@@ -466,10 +465,11 @@ static int ijc_drop_va(HvCpu *cpu, uint64_t va, int asid, int remote) {
         }
         if (drop) {
             if (remote && !kernel && asid < 0) return 0;
-            m->stats.reset_why[kernel ? 3 : 2]++;
+            HvStats *st = remote ? hv_stats_here(m) : &p->own.stats;
+            st->reset_why[kernel ? 3 : 2]++;
             uint64_t page = va & ~((1ull << HV_TLB_PAGE_BITS) - 1);
             if (kernel) ijc_clear_page(cpu, page, 1, cpu->ijc_salt[1], !remote);
-            else if (asid < 0) m->stats.reset_why[5]++, hv_ijc_reset(cpu, 0); /* every address space: their slots differ, so start the user half over */
+            else if (asid < 0) st->reset_why[5]++, hv_ijc_reset(cpu, 0); /* every address space: their slots differ, so start the user half over */
             else ijc_clear_page(cpu, page, 0, current_asid(cpu) < 0 ? cpu->ijc_salt[0] : (uint64_t)cpu->asid_cid[asid] << 48, !remote);
         }
     }
@@ -512,7 +512,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
     HvMachine *m = cpu->m;
     if (!m) return;
     if (asid < 0) { /* every address space */
-        m->stats.reset_why[5]++;
+        HV_ST(cpu).reset_why[5]++;
         hv_ijc_reset(cpu, 0);
         return;
     }
@@ -527,7 +527,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
         for (uint64_t c = c0; !any && c <= c1; c++)
             any = cpu->pc_state->cid_chunks[cid][(c & 255) >> 6] >> (c & 63) & 1;
         if (!any) {
-            if (m->stats_interval) m->stats.range_spared++;
+            if (m->stats_interval) HV_ST(cpu).range_spared++;
             return;
         }
     }
@@ -541,7 +541,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
             n += b - a + 1;
         }
     if (wide || n >= 4096) {
-        if (m->stats_interval) m->stats.ijc_reset_kind[3]++;
+        if (m->stats_interval) HV_ST(cpu).ijc_reset_kind[3]++;
         hv_ijc_drop_asid(cpu, (uint16_t)asid);
         return;
     }
@@ -550,7 +550,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
         uint64_t a = c << 11 > first ? c << 11 : first, b = ((c + 1) << 11) - 1 < last ? ((c + 1) << 11) - 1 : last;
         for (uint64_t p = a; p <= b; p++)
             if (ucode_has(cpu->pc_state, cid, p << HV_TLB_PAGE_BITS)) {
-                m->stats.reset_why[2]++;
+                HV_ST(cpu).reset_why[2]++;
                 ijc_clear_page(cpu, p << HV_TLB_PAGE_BITS, 0, salt, 1);
             }
     }
@@ -729,7 +729,7 @@ static int walks_elsewhere(HvCpu *target, uint32_t s1, uint32_t s2, uint64_t va,
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     uint32_t s3 = __atomic_load_n(&p->walk_seq, __ATOMIC_SEQ_CST);
     if ((s3 >> 1) - k1 >= WALK_LOG) return 0;
-    if (target->m->stats_interval) target->m->stats.race_other_page++;
+    if (target->m->stats_interval) hv_stats_here(target->m)->race_other_page++;
     return 1;
 }
 
@@ -737,9 +737,9 @@ int hv_tlbi_drop_remote_va(HvCpu *target, uint64_t va, int asid) {
     HvPerCpu *p = target->pc_state;
     uint32_t s1 = __atomic_load_n(&p->walk_seq, __ATOMIC_SEQ_CST);
     /* mid-walk: it may be about to fill from the old table, unless the walk is of another page (and not a switch's) */
-    if ((s1 & 1) && !walks_elsewhere(target, s1, s1, va, 1)) { if (target->m->stats_interval) target->m->stats.race_kind[0]++; return 0; }
+    if ((s1 & 1) && !walks_elsewhere(target, s1, s1, va, 1)) { if (target->m->stats_interval) hv_stats_here(target->m)->race_kind[0]++; return 0; }
     uint32_t c1 = __atomic_load_n(&p->ijc_seq, __ATOMIC_SEQ_CST);
-    if (c1 & 1) { if (target->m->stats_interval) target->m->stats.race_kind[1]++; return 0; } /* caching a block it may have looked up through the old mapping */
+    if (c1 & 1) { if (target->m->stats_interval) hv_stats_here(target->m)->race_kind[1]++; return 0; } /* caching a block it may have looked up through the old mapping */
     if (!((va >> 55) & 1)) stash_drop_va(p, va, asid);
     uint32_t idx = (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1);
     int fetched = 0; /* the target may be running code from the page: it must leave and look again */
@@ -760,7 +760,7 @@ int hv_tlbi_drop_remote_va(HvCpu *target, uint64_t va, int asid) {
     int ok = walks_elsewhere(target, s1, __atomic_load_n(&p->walk_seq, __ATOMIC_SEQ_CST), va, 1) && /* no fill of it in between */
              __atomic_load_n(&p->ijc_seq, __ATOMIC_SEQ_CST) == c1;
     if (!ok) {
-        if (target->m->stats_interval) target->m->stats.race_kind[2]++;
+        if (target->m->stats_interval) hv_stats_here(target->m)->race_kind[2]++;
     } else if (fetched) {
         hv_cpu_kick(target);
     }
@@ -775,9 +775,9 @@ static void stash_drop_range(HvPerCpu *p, uint64_t va, uint64_t npages, int asid
 int hv_tlbi_drop_remote_range(HvCpu *target, uint64_t va, uint64_t npages, int asid) {
     HvPerCpu *p = target->pc_state;
     uint32_t s1 = __atomic_load_n(&p->walk_seq, __ATOMIC_SEQ_CST);
-    if ((s1 & 1) && !walks_elsewhere(target, s1, s1, va, npages)) { if (target->m->stats_interval) target->m->stats.race_kind[0]++; return 0; }
+    if ((s1 & 1) && !walks_elsewhere(target, s1, s1, va, npages)) { if (target->m->stats_interval) hv_stats_here(target->m)->race_kind[0]++; return 0; }
     uint32_t c1 = __atomic_load_n(&p->ijc_seq, __ATOMIC_SEQ_CST);
-    if (c1 & 1) { if (target->m->stats_interval) target->m->stats.race_kind[1]++; return 0; }
+    if (c1 & 1) { if (target->m->stats_interval) hv_stats_here(target->m)->race_kind[1]++; return 0; }
     if (!((va >> 55) & 1)) stash_drop_range(p, va, npages, asid);
     int fetched = 0;
     for (uint64_t i = 0; i < npages && i < HV_TLB_SIZE; i++) { /* past HV_TLB_SIZE pages the slots come round again */
@@ -802,7 +802,7 @@ int hv_tlbi_drop_remote_range(HvCpu *target, uint64_t va, uint64_t npages, int a
     int ok = walks_elsewhere(target, s1, __atomic_load_n(&p->walk_seq, __ATOMIC_SEQ_CST), va, npages) &&
              __atomic_load_n(&p->ijc_seq, __ATOMIC_SEQ_CST) == c1;
     if (!ok) {
-        if (target->m->stats_interval) target->m->stats.race_kind[2]++;
+        if (target->m->stats_interval) hv_stats_here(target->m)->race_kind[2]++;
     } else if (fetched) {
         hv_cpu_kick(target);
     }
@@ -827,7 +827,7 @@ const uint32_t *hv_mmu_fetch(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *av
         }
     }
     HvWalk w;
-    cpu->m->stats.fetch_walks++;
+    HV_ST(cpu).fetch_walks++;
     walk_begin(cpu, va);
     hv_mmu_walk(cpu, va, HV_ACC_EXEC, cpu->el, &w);
     if (!w.fsc) tlb_fill(cpu, va, cpu->el, &w);
@@ -874,7 +874,7 @@ int hv_tlb_refill(HvCpu *cpu, uint64_t va, uint32_t flags) {
     if (w.fsc) return 1;
     HvTlbEntry *e = hv_tlb_ent(cpu, (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), table);
     uint64_t tag = write ? e->write_tag : e->read_tag;
-    if (cpu->m->stats_interval) cpu->m->stats.refills++;
+    if (cpu->m->stats_interval) HV_ST(cpu).refills++;
     return tag != HV_TLB_INVALID && tag + HV_TLB_ADJ == (va & ~(uint64_t)PAGE_MASK) ? 0 : 1;
 }
 
@@ -912,7 +912,7 @@ void hv_ijc_fill(HvCpu *cpu, HvBlock *b) {
     if (!(pcs->ijc_keyed[k >> 6] >> (k & 63) & 1)) {
         pcs->ijc_keyed[k >> 6] |= 1ull << (k & 63);
         if (++pcs->ijc_keyed_count > (1u << 17)) { /* an eighth full: start the cache and the filter over */
-            m->stats.reset_why[6]++;
+            HV_ST(cpu).reset_why[6]++;
             hv_ijc_reset(cpu, 0);
             hv_ijc_reset(cpu, 1);
             memset(pcs->ijc_keyed, 0, sizeof pcs->ijc_keyed);
@@ -1007,7 +1007,7 @@ static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags) {
     HvMachine *m = cpu->m;
     HvPerCpu *pcs = cpu->pc_state;
     int kernel = flags & HV_BLOCK_EL1;
-#define FAIL(k) do { if (m->stats_interval) m->stats.light_fail[k]++; return 0; } while (0)
+#define FAIL(k) do { if (m->stats_interval) HV_ST(cpu).light_fail[k]++; return 0; } while (0)
     if (!m->chain || va == m->stop_pc || va == m->stop_pc2 || (int)((va >> 55) & 1) != kernel || (va & 3)) FAIL(0);
     if (pcs->ijc_keyed_count >= (1u << 17) || pcs->ucode_count + 1 >= (1u << HV_UCODE_BITS) / 2) FAIL(1);
     int table = !kernel ? 0 : (flags & HV_BLOCK_PAN) ? 2 : 1;
@@ -1022,7 +1022,7 @@ static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags) {
         if (!w.fsc) tlb_fill(cpu, va, kernel ? 1 : 0, &w);
         walk_end(cpu);
         if (w.fsc || e->exec_tag != hv_exec_key(va & ~(uint64_t)PAGE_MASK, e->addend)) FAIL(2);
-        if (m->stats_interval) m->stats.light_walks++;
+        if (m->stats_interval) HV_ST(cpu).light_walks++;
     }
     const uint8_t *host = (const uint8_t *)(uintptr_t)(va + (uint64_t)e->addend);
     HvRam *ram = NULL;
@@ -1049,9 +1049,9 @@ static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags) {
             uint32_t c = (uint32_t)(old >> 48);
             if (!(kernel ? (c ^ 0xffff) == cpu->kernel_gen : cpu->asid_cid[cpu->cid_asid[c]] == c)) k = 3;
         }
-        m->stats.light_kind[k]++;
-        m->stats.ijc_light++;
-        if (!kernel) m->stats.light_region[(va - 0x180000000ull) < 0x100000000ull ? 0 : 1]++;
+        HV_ST(cpu).light_kind[k]++;
+        HV_ST(cpu).ijc_light++;
+        if (!kernel) HV_ST(cpu).light_region[(va - 0x180000000ull) < 0x100000000ull ? 0 : 1]++;
     }
     /* Cached only while the TLB still maps it, inside ijc_seq (see hv_ijc_fill_checked). */
     if (!hv_ijc_fill_checked(cpu, b)) return 0;
@@ -1142,6 +1142,7 @@ static HvRam *ram_of_host(HvMachine *m, const uint8_t *host) {
 int hv_tlb_check_all(HvCpu *cpu) {
     HvMachine *m = cpu->m;
     HvPerCpu *p = cpu->pc_state;
+    HvStats *st = p ? &p->own.stats : &m->stats;
     uint64_t ttbr0 = cpu->ttbr0_el1;
     int bad = 0;
     static int told;
@@ -1169,10 +1170,10 @@ int hv_tlb_check_all(HvCpu *cpu) {
             if (s && (va >> 55) & 1) continue; /* stashes hold the user half only */
             HvWalk w;
             hv_mmu_walk(cpu, va, rt != HV_TLB_INVALID || wt != HV_TLB_INVALID ? HV_ACC_READ : HV_ACC_EXEC, table ? 1 : 0, &w);
-            if (m->stats_interval) m->stats.flush_check_entries++;
+            if (m->stats_interval) st->flush_check_entries++;
             const char *why = NULL;
             if (w.fsc >= HV_FSC_ACCESS(0) && w.fsc <= HV_FSC_ACCESS(3)) {
-                if (m->stats_interval) m->stats.flush_check_af++;
+                if (m->stats_interval) st->flush_check_af++;
                 continue;
             }
             if (w.fsc >= HV_FSC_PERMISSION(0) && w.fsc <= HV_FSC_PERMISSION(3)) continue; /* PAN or EL: not about where the page is */
@@ -1195,8 +1196,8 @@ int hv_tlb_check_all(HvCpu *cpu) {
     cpu->ttbr0_el1 = ttbr0;
     if (p) walk_end(cpu);
     if (m->stats_interval) {
-        m->stats.flush_checked++;
-        if (bad) m->stats.flush_check_bad++;
+        st->flush_checked++;
+        if (bad) st->flush_check_bad++;
     }
     return bad;
 }
@@ -1215,7 +1216,7 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
         return;
     }
     walk_begin(cpu, HV_WALK_ANY);
-    m->stats.tlb_flushes++;
+    p->own.stats.tlb_flushes++;
     uint32_t n = cpu->nuser_fills;
     cpu->nuser_fills = 0;
     HvTlbStash *s = NULL;
@@ -1232,7 +1233,7 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
         __atomic_store_n(&s->ttbr0, old, __ATOMIC_SEQ_CST);
         s->saved_gen = __atomic_load_n(&s->gen, __ATOMIC_SEQ_CST);
         s->used = ++p->stash_clock;
-        if (m->stats_interval) m->stats.stash_saves++;
+        if (m->stats_interval) p->own.stats.stash_saves++;
     }
     uint32_t k = 0;
     if (n <= HV_USER_FILLS) {
@@ -1259,7 +1260,7 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
         int fresh = __atomic_load_n(&r->gen, __ATOMIC_SEQ_CST) == r->saved_gen;
         __atomic_store_n(&r->ttbr0, 0, __ATOMIC_SEQ_CST); /* used up either way: the live TLB has them now */
         if (!fresh) {
-            if (m->stats_interval) m->stats.stash_stale++;
+            if (m->stats_interval) p->own.stats.stash_stale++;
             break;
         }
         /* Writable entries: all their hints, one fence, then each page's code check (write_guard, batched: one fence per
@@ -1288,8 +1289,8 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
             if (ram && __atomic_load_n(&ram->code_pages[(uint64_t)(host - ram->host) >> HV_TLB_PAGE_BITS], __ATOMIC_RELAXED))
                 (&cpu->tlb[0] + r->slot[pend[q]])->write_tag = HV_TLB_INVALID;
         }
-        if (m->stats_interval) m->stats.stash_hits++;
-        if (m->stats_interval) m->stats.stash_entries += r->n;
+        if (m->stats_interval) p->own.stats.stash_hits++;
+        if (m->stats_interval) p->own.stats.stash_entries += r->n;
         break;
     }
     walk_end(cpu);

@@ -67,7 +67,9 @@ typedef struct HvBlock {
 #define HV_PROF_RING (1 << 16)
 #define HV_MAX_SLOTS (6 << 20)  /* chainable exits: about two per block */
 
-/* Counters for --stats: where the time goes. */
+/* Counters for --stats: where the time goes. Each CPU writes its own copy (HvPerCpu.own); HvMachine.stats holds what
+   is counted off the CPUs (devices, the kicker), under a lock, or rarely; readers sum them (hv_stats_total). Every
+   field up to small_at is a uint64_t counter (summed as such): the tables and rings after it are not summed. */
 typedef struct HvStats {
     uint64_t blocks, translations, block_flushes;
     uint64_t flush_smc, flush_ic, flush_full;  /* why translations were dropped */
@@ -88,9 +90,8 @@ typedef struct HvStats {
     uint64_t code_protects;   /* pages that became code (every CPU's TLB scanned for writable entries) */
     uint64_t tlb_miss_kind[4]; /* TLB misses: EL0 empty, EL0 other page there, EL1 empty, EL1 other page there */
     uint64_t stash_stale;     /* process switches that found the stash dropped by a TLBI meanwhile */
-    uint64_t slow_why[6];
+    uint64_t slow_why[6];     /* slow accesses by cause: MMIO, code-page write, page end, TLB miss, other, TLB entry there but mismatched */
     uint64_t small_pages;     /* of the TLB misses above: the guest maps the page with a granule under 16 KB (4 KB), which the TLB cannot hold */
-    struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 such regions were */     /* slow accesses by cause: MMIO, code-page write, page end, TLB miss, other, TLB entry there but mismatched */
     uint64_t slow_kind[12];   /* hv_mem_emulate calls by HV_MEM_* kind */
     uint64_t light_kind[4];
     uint64_t light_fail[4];
@@ -115,21 +116,24 @@ typedef struct HvStats {
     uint64_t flush_after_switch[4];
     uint64_t flush_checked, flush_check_entries, flush_check_bad, flush_check_af; /* HV_SWITCH_FLUSH=2: flushes checked, entries walked, out of date (the flush was done), only the access flag */
     uint64_t flush_skipped;   /* TLBI all here right after a process switch, left out (HV_SWITCH_FLUSH=1) */
-    uint64_t flush_skipped_late; /* of them, 20-200 us after the switch at a PC seen within 20 us of one (HV_SWITCH_FLUSH=3) */ /* TLBI all here, by time since this CPU's last TTBR0 change: <2 us, <20 us, <200 us, later */
-    struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */    /* whole-TLB flushes: TLBI all (local), TLBI all (shared), SCTLR, TTBR1, TCR, MAIR, range of everything, requests overflowed */
+    uint64_t flush_skipped_late; /* of them, 20-200 us after the switch at a PC seen within 20 us of one (HV_SWITCH_FLUSH=3) */
     uint64_t reset_why[8];    /* cache drops: full flush, TLBI by ASID, TLBI user VA, TLBI kernel VA, code change, user VA in every ASID (whole user half), keyed filter full, big user range */
     uint64_t why[6];          /* dispatcher entries by cause: chain fill, kick, exception/sysreg, interrupt, cached target, cache miss */
     uint64_t miss_kind[7];    /* cache misses by the branch that missed: RET, BR/BLR, B/BL, conditional, MSR, other, unknown */
-    uint64_t recent[16];      /* debugging: the last blocks the dispatcher entered (pc | el) */
-    struct { uint64_t from, to, spsr; uint32_t kind, el; } elchg[16]; /* debugging: last exception entries (kind = type) and ERETs (kind 9) */
-    uint32_t nelchg;
-    uint64_t nrecent;
     uint64_t translate_ticks, translated_insns, translated_words; /* time spent translating, guest and host code size */
     uint64_t retrans_va, retrans_vapa; /* translations of a VA (and VA+PA) translated before: diagnostics */
     uint64_t helper[12];      /* by HV_OP_* */
     uint64_t tlb_flushes, fetch_walks, exceptions, interrupts;
     uint64_t wfi, wfi_ticks;  /* WFI exits, host ticks spent asleep */
+    /* Not summed: tables of the first few values seen, and debugging rings (per CPU). */
+    struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 regions mapped under 16 KB were */
+    struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */
+    uint64_t recent[16];      /* debugging: the last blocks the dispatcher entered (pc | el) */
+    struct { uint64_t from, to, spsr; uint32_t kind, el; } elchg[16]; /* debugging: last exception entries (kind = type) and ERETs (kind 9) */
+    uint32_t nelchg;
+    uint64_t nrecent;
 } HvStats;
+#define HV_STATS_COUNTERS (offsetof(HvStats, small_at) / sizeof(uint64_t))
 
 #define HV_MAX_CPUS 8
 #define HV_WHINT_MANY (1ull << 63) /* whint: more than three; else up to three TLB codes + 1, 16 bits each */
@@ -210,7 +214,17 @@ typedef struct HvPerCpu {
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
+    /* What only this CPU's thread writes on its hot paths (or another thread while it is parked): on cache lines of
+       their own, so CPUs on different cores never pass a line back and forth for a counter (128 bytes: Apple's line). */
+    struct {
+        HvStats stats;
+        uint64_t slow_mem;       /* hv_mem_emulate calls */
+        uint64_t access_pc;      /* guest PC of the load/store being emulated, for logs */
+    } own __attribute__((aligned(128)));
 } HvPerCpu;
+
+/* The counters of a CPU's own thread (or of a parked CPU): HvPerCpu.own. */
+#define HV_ST(cpu) ((cpu)->pc_state->own.stats)
 
 enum { HV_PHASE_RUN, HV_PHASE_TRANSLATE, HV_PHASE_HELPER, HV_PHASE_SYNC, HV_PHASE_FLUSH };
 #define HV_REQ_TLB_ALL 1u   /* drop the whole TLB and branch cache */
@@ -249,8 +263,7 @@ typedef struct HvMachine {
     int log;             /* 1: unknown sysregs, undefined instructions, unmapped accesses; 2: also every exception */
     int slow_mem;        /* tests: send every load and store through hv_mem_emulate */
     uint64_t switch_flush_pc[4]; /* HV_SWITCH_FLUSH=3: PCs of the TLBI VMALLE1s seen within 20 us of a TTBR0 change (xnu's pmap switch) */
-    uint64_t stat_slow_mem; /* hv_mem_emulate calls */
-    uint64_t access_pc;  /* guest PC of the load/store being emulated, for logs */
+    uint64_t access_pc;  /* with log on: guest PC of the load/store being emulated (each CPU keeps its own, HvPerCpu.own) */
     uint64_t watch_va;   /* debugging: log every write that touches this guest VA (0: off) */
     uint64_t watch_pa;   /* debugging: the same by physical address */
     HvStats stats;
@@ -309,6 +322,11 @@ static inline HvBlock *hv_block_find(HvMachine *m, uint32_t h, uint64_t va, uint
     return NULL;
 }
 
+/* --stats readers: the machine's counters plus every CPU's own. */
+void hv_stats_total(HvMachine *m, HvStats *out);
+uint64_t hv_stat_blocks(HvMachine *m);   /* dispatcher entries, all CPUs */
+uint64_t hv_stat_slow_mem(HvMachine *m); /* hv_mem_emulate calls, all CPUs */
+
 int hv_machine_init(HvMachine *m, size_t jit_bytes);
 /* The same with JIT memory the host provides (iOS: the region a debugger granted and its writable alias). */
 int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes);
@@ -351,6 +369,12 @@ void hv_cpu_reset(HvCpu *cpu, HvMachine *m); /* CPU 0 */
 void hv_cpu_reset_index(HvCpu *cpu, HvMachine *m, uint32_t index);
 /* The CPU this thread runs (NULL outside the dispatcher: tests, devices). */
 extern __thread HvCpu *hv_self;
+/* Where a counter goes from a thread that may not be the CPU's whose state it works on (remote TLB drops, devices,
+   wakes): the calling CPU's own copy, or the machine's off the CPUs. */
+static inline HvStats *hv_stats_here(HvMachine *m) {
+    HvCpu *self = hv_self;
+    return self && self->pc_state ? &self->pc_state->own.stats : &m->stats;
+}
 void hv_dev_lock(HvMachine *m);
 void hv_dev_unlock(HvMachine *m);
 /* Ask another CPU to apply a TLBI (or HV_REQ_* work); returns the sequence to wait for. */
