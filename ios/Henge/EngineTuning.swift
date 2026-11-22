@@ -28,6 +28,8 @@ enum EngineTuning {
         // 76% of a core down to 4-9% on an iPhone); TLB range invalidations of up to 256 pages in one pass.
         "HV_SYNC_WAIT": "1",
         "HV_RANGE_DROP": "256",
+        // Grouped memory accesses (v2: plain copies in the cold part, so the hot code grows by the checks only).
+        "HV_GROUPS": "1",
     ]
 
     static var defaults: [String: String] { upstream.merging(solstice) { $1 } }
