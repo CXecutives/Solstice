@@ -28,6 +28,24 @@ Siehe `PLAN.md`. Zusätzlich: Air 4 bekommt 2 GB/2 vCPUs/Large-Screen über die 
 - Sicherer Modus `HV_SAFE`: noch nicht gebaut (Autostart-Schutz existiert).
 - SIMD-Gate: Wurzeln sind voll inline (keine Aufrufe gefunden); prüft SIMD-Register darin.
 
+## Stand 23.11. ~00:00 (Pause für PC-Neustart)
+- Block 1 ist in `main`, IPA in `out/Solstice.ipa` (+ `out/Solstice-Basis.ipa` als Rückfall), `out/GetMoreRam.ipa`.
+- Welle 1 läuft als 4 Helfer in Worktrees (`.claude/worktrees/…`), je eigener Branch auf origin:
+  Übersetzer (`solstice/translator`), Mehrkern/Energie (`solstice/mp-power`), Grafik/IO (`solstice/gpu-io`),
+  Code-Cache (`solstice/codecache`). Bei Pause: WIP-Commit + Push. Fortsetzen per Nachricht an den Helfer,
+  sonst Branch lesen und neu beauftragen. Merge-Reihenfolge: translator → mp-power → gpu-io → codecache (rebased).
+- CI: `san`-Eingabe (UB-Traps) ist in `main`; jeder Helfer muss vor Abgabe `SOLSTICE_SAN=true` grün haben.
+- **Sideloading geändert:** AltServer erkannte das iPhone nicht → **iloader → SideStore → Solstice + GetMoreRam**
+  (IML per GetMoreRam an `com.henge.app.<TEAM>`, danach Solstice in SideStore „Reinstall“). PLAN.md nennt noch
+  AltStore; HANDOFF gilt.
+- PC: AltServer, iCloud, iTunes, Bonjour, Apple Application Support, Apple Software Update und der alte
+  Apple Mobile Device Support sind deinstalliert. Installiert: **iloader 2.4.2** (winget `nabdev.iloader`) und
+  **Apple-Geräte** (Store, `AppleInc.AppleDevices`) – deren Dienst passt zum WinUSB-Treiber `appleusb.inf`
+  am iPhone. Vor dem Neustart sah der Dienst auf 127.0.0.1:27015 noch 0 Geräte → nach Neustart prüfen
+  (ListDevices-Probe per Python, siehe Sitzung).
+- Log-Empfänger nach Neustart neu starten: `py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log`
+  (PC-Adresse <PC-ADDRESS>, Port 7777).
+
 ## Als Nächstes
 1. Grüner Build → `picks` nach `main`, IPA nach `out/Solstice.ipa`.
 2. Besitzer: Einrichtung (PLAN.md „Einrichtung“), IPA über AltStore auf iPhone 16 Pro und iPad Air 4,
