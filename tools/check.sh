@@ -10,9 +10,16 @@ ipa="${SOLSTICE_IPA:-false}"
 san="${SOLSTICE_SAN:-false}" # SOLSTICE_SAN=true: the tests again with undefined-behaviour traps
 branch="$(git rev-parse --abbrev-ref HEAD)"
 git push -q origin "$branch"
+started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 gh workflow run build-henge.yml --ref "$branch" -f tests="$tests" -f ipa="$ipa" -f san="$san"
-sleep 5
-run="$(gh run list --workflow build-henge.yml --branch "$branch" --limit 1 --json databaseId -q '.[0].databaseId')"
+run=""
+for _ in $(seq 1 12); do # the new run takes a few seconds to be listed
+  sleep 5
+  run="$(gh run list --workflow build-henge.yml --branch "$branch" --event workflow_dispatch --limit 1 \
+         --json databaseId,createdAt -q '.[0] | select(.createdAt > "'"$started"'") | .databaseId')"
+  [ -n "$run" ] && break
+done
+[ -n "$run" ] || { echo "the run did not show up" >&2; exit 1; }
 echo "run $run: tests=$tests ipa=$ipa san=$san"
 gh run watch "$run" --exit-status --interval 30 > /dev/null || {
   gh run view "$run" --log-failed | tail -60
