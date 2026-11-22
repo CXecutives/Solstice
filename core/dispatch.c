@@ -137,7 +137,8 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     }
 
 again: /* its code-cache segment was condemned while it was made (hv_cc_publish): again, elsewhere */
-    if (m->flush_pending) goto flush_unlocked;
+    /* A flush asked for already: not again (setting it now, after the CPU doing the flush took it, made a second). */
+    if (m->flush_pending) return NULL;
     /* Writes to this page must take the slow path from now on so we notice them:
        before its code is read (so a write after that, or the IC IVAU after it,
        invalidates what we make), and without the lock (it may scan every CPU's
@@ -190,9 +191,10 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
         jc[j].va = va, jc[j].b = b;
         return b;
     }
-    if (m->flush_pending) {
+    if (m->flush_pending) { /* as above */
         hv_translate_discard_slots(m);
-        goto flush;
+        pthread_mutex_unlock(&m->tr_mu);
+        return NULL;
     }
     int r = hv_cc_publish(m, &nb, h, &b); /* into the hash */
     if (r != HV_CC_OK) {
