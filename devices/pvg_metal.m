@@ -131,6 +131,8 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     NSData *planar_desc;
     NSString *planar_want;
     BOOL planar_compact;
+    /* The command its pages were last checked against the guest's table in (refresh_pages): once is enough. */
+    uint32_t checked;
 }
 @end
 
@@ -145,13 +147,40 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
 
 @class HvContext;
 
+/* A task's objects by ref: each draw names 5 to 15 of them, so a lookup is an index, not two dictionary searches.
+   Slots come in pages of OBJ_PAGE, made as refs are met; a ref indexes the task's object list (12 bytes an entry),
+   so they are dense. */
+#define HV_TASKS 512        /* task ids, as pvg_lite keeps them */
+#define OBJ_PAGE 512
+#define OBJ_REFS (1u << 22) /* past this a ref is not the guest's: that object list would be 48 MB */
+typedef struct HvTaskObjects {
+    HvObject *__strong **page; /* page[ref / OBJ_PAGE][ref % OBJ_PAGE] */
+    uint32_t pages;
+} HvTaskObjects;
+
+/* Task memory pages found while one command runs (task_page): its tables are walked once per page, not once per
+   object lookup. Only for that command: the guest may map its memory differently by the next. */
+#define HV_WALK 64
+typedef struct HvWalk {
+    uint64_t vpn;
+    uint8_t *host;
+    uint32_t task, epoch;
+} HvWalk;
+
 @interface HvReplay : NSObject {
 @public
     HvPvgLite *lite;
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     dispatch_queue_t worker;
-    NSMutableDictionary<NSNumber *, NSMutableDictionary<NSNumber *, HvObject *> *> *tasks;
+    HvTaskObjects task_objs[HV_TASKS]; /* worker only */
+    HvWalk walk[HV_WALK];
+    uint32_t walk_epoch; /* the command running, for walk and HvObject.checked */
+    /* Reused scratch: a command buffer that is not in one piece in host memory, and a range's page numbers. */
+    uint8_t *cmd_scratch;
+    size_t cmd_cap;
+    uint32_t *pages_scratch;
+    uint64_t pages_cap;
     NSMutableDictionary<NSNumber *, id<MTLTexture>> *mapped_textures;
     NSMutableDictionary<NSNumber *, HvObject *> *surfaces;
     /* Multi-plane surfaces' host IOSurfaces by the guest memory they stand for: each process maps a surface
@@ -308,6 +337,99 @@ static float hv_half_shown(float v, int mode) { /* what the screen shows for a h
 
 #include "pvg_colorprobe.h" /* HV_COLOR_PROBE: what the display is told and shown, for chasing colour problems */
 
+/* The slot for a task's ref, made if asked for; NULL for a ref past OBJ_REFS (or no memory). Slots never move once
+   made, so one stays valid while making its object looks up others. */
+static HvObject *__strong *obj_slot(HvTaskObjects *t, uint32_t ref, BOOL make) {
+    if (ref >= OBJ_REFS) return NULL;
+    uint32_t p = ref / OBJ_PAGE;
+    if (p >= t->pages) {
+        if (!make) return NULL;
+        uint32_t n = t->pages ? t->pages : 8;
+        while (n <= p) n *= 2;
+        HvObject *__strong **grown = (HvObject *__strong **)realloc(t->page, n * sizeof *grown);
+        if (!grown) return NULL;
+        memset(grown + t->pages, 0, (n - t->pages) * sizeof *grown);
+        t->page = grown, t->pages = n;
+    }
+    if (!t->page[p]) {
+        if (!make) return NULL;
+        t->page[p] = (HvObject *__strong *)calloc(OBJ_PAGE, sizeof(HvObject *));
+        if (!t->page[p]) return NULL;
+    }
+    return &t->page[p][ref % OBJ_PAGE];
+}
+
+/* All of a task's objects let go (the task ended, or the replay did). */
+static void obj_clear(HvTaskObjects *t) {
+    for (uint32_t p = 0; p < t->pages; p++) {
+        if (!t->page[p]) continue;
+        for (uint32_t i = 0; i < OBJ_PAGE; i++) t->page[p][i] = nil;
+        free(t->page[p]);
+    }
+    free(t->page);
+    t->page = NULL, t->pages = 0;
+}
+
+/* An object already made for a ref, or nil. */
+static HvObject *obj_known(HvReplay *r, uint32_t task, uint32_t ref) {
+    if (task >= HV_TASKS) return nil;
+    HvObject *__strong *s = obj_slot(&r->task_objs[task], ref, NO);
+    return s ? *s : nil;
+}
+
+/* A new command on the worker: the walk memo and the page checks start over. */
+static void new_command(HvReplay *r) {
+    if (++r->walk_epoch == 0) {
+        memset(r->walk, 0, sizeof r->walk);
+        r->walk_epoch = 1;
+    }
+}
+
+/* The host page under task page vpn, or NULL: walked once per page and command. */
+static uint8_t *task_page(HvReplay *r, uint32_t task, uint64_t vpn) {
+    HvWalk *w = &r->walk[(vpn ^ (uint64_t)task * 0x9e3779b1u) % HV_WALK];
+    if (w->epoch == r->walk_epoch && w->vpn == vpn && w->task == task) return w->host;
+    uint32_t page = hv_pvg_lite_task_page(r->lite, task, vpn << 14);
+    w->host = page ? hv_pvg_lite_page(r->lite, page) : NULL;
+    w->vpn = vpn, w->task = task, w->epoch = r->walk_epoch;
+    return w->host;
+}
+
+/* n bytes of task memory copied out; 0, or -1 if a page of it is not there. */
+static int task_copy(HvReplay *r, uint32_t task, uint64_t off, void *to, uint64_t n) {
+    uint8_t *d = to;
+    while (n) {
+        uint8_t *page = task_page(r, task, off >> 14);
+        if (!page) return -1;
+        uint64_t in = off & 0x3fff, c = 0x4000 - in < n ? 0x4000 - in : n;
+        memcpy(d, page + in, c);
+        d += c, off += c, n -= c;
+    }
+    return 0;
+}
+
+/* n bytes of task memory where they are, if they are in one piece in host memory: in one page, or in pages that follow
+   each other there (guest RAM is one mapping, and the guest's allocator mostly hands out runs). NULL if not. */
+static const uint8_t *task_span(HvReplay *r, uint32_t task, uint64_t off, uint64_t n) {
+    if (!n) return NULL;
+    uint64_t vpn = off >> 14, last = (off + n - 1) >> 14;
+    uint8_t *first = task_page(r, task, vpn);
+    if (!first) return NULL;
+    for (uint64_t v = vpn + 1; v <= last; v++)
+        if (task_page(r, task, v) != first + ((v - vpn) << 14)) return NULL;
+    return first + (off & 0x3fff);
+}
+
+/* Room for n page numbers, kept for the next time. */
+static uint32_t *pages_scratch(HvReplay *r, uint64_t n) {
+    if (n > r->pages_cap) {
+        free(r->pages_scratch);
+        r->pages_scratch = malloc(n * 4);
+        r->pages_cap = r->pages_scratch ? n : 0;
+    }
+    return r->pages_scratch;
+}
+
 /* A contiguous view of a task's guest pages; holes are left as zero pages. */
 /* A range of task memory at one address, page by page. Metal pins a buffer's
    pages when the buffer is made, so a mapping never changes under a buffer: when
@@ -338,6 +460,7 @@ static BOOL map_pages(HvReplay *r, uint32_t task, HvObject *o) {
     free(o->pages);
     o->pages = pages;
     o->mapped = (uint8_t *)base;
+    o->checked = r->walk_epoch;
     return YES;
 }
 
@@ -351,16 +474,16 @@ static id<MTLBuffer> buffer_over_mapping(HvReplay *r, HvObject *o) {
     return b;
 }
 
-/* The guest's table for this range against what is mapped: a change means a new mapping. */
+/* The guest's table for this range against what is mapped: a change means a new mapping. Once a command: one exec
+   names the same buffer many times (each resource, each texture made from it, each info query). */
 static void refresh_pages(HvReplay *r, uint32_t task, HvObject *o) {
-    if (!o->mapped) return;
+    if (!o || !o->mapped || o->checked == r->walk_epoch) return;
     uint64_t n = (o->length + 0x3fff) >> 14;
-    uint32_t stack[256];
-    uint32_t *now = n <= 256 ? stack : malloc(n * 4);
+    uint32_t *now = pages_scratch(r, n);
+    if (!now) return;
+    o->checked = r->walk_epoch;
     hv_pvg_lite_task_pages(r->lite, task, o->vpage, n, now);
-    BOOL same = memcmp(now, o->pages, n * 4) == 0;
-    if (now != stack) free(now);
-    if (same) return;
+    if (memcmp(now, o->pages, n * 4) == 0) return;
     uint8_t *old = o->mapped;
     BOOL old_in_buffer = o->mapping_in_buffer;
     if (!map_pages(r, task, o)) return;
@@ -465,6 +588,12 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
 @end
 
 @implementation HvReplay
+
+- (void)dealloc {
+    for (uint32_t t = 0; t < HV_TASKS; t++) obj_clear(&task_objs[t]);
+    free(cmd_scratch);
+    free(pages_scratch);
+}
 
 - (void)complain:(NSString *)what {
     if ([complaints containsObject:what]) return;
@@ -1429,13 +1558,16 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
 }
 
 - (HvObject *)object:(uint32_t)ref task:(uint32_t)task {
-    if (!ref) return nil;
+    if (!ref || task >= HV_TASKS) return nil;
     uint64_t list = hv_pvg_lite_task_objects(lite, task);
     uint32_t e[3];
-    if (!list || hv_pvg_lite_task_read(lite, task, list + (uint64_t)ref * 12, e, 12)) return nil;
-    NSMutableDictionary *objs = tasks[@(task)];
-    if (!objs) tasks[@(task)] = objs = [NSMutableDictionary new];
-    HvObject *o = objs[@(ref)];
+    if (!list || task_copy(self, task, list + (uint64_t)ref * 12, e, 12)) return nil;
+    HvObject *__strong *slot = obj_slot(&task_objs[task], ref, YES);
+    if (!slot) {
+        [self complain:[NSString stringWithFormat:@"task %u names object %u, past any object list", task, ref]];
+        return nil;
+    }
+    HvObject *o = *slot;
     if (o && !memcmp(o->entry, e, 12)) {
         /* macOS 14's driver names a surface before it writes the surface's description: try again a while.
            And it reuses surface ids: a texture over a surface that has since been replaced is made again. */
@@ -1448,7 +1580,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
             HvObject *again = [HvObject new];
             memcpy(again->entry, e, 12);
             again->retries = tries;
-            objs[@(ref)] = again;
+            *slot = again;
             uint64_t at = (uint64_t)e[2] << 32 | e[1];
             [self makeMappedTexture:again at:at task:task];
             static int told;
@@ -1461,7 +1593,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
     }
     o = [HvObject new];
     memcpy(o->entry, e, 12);
-    objs[@(ref)] = o;
+    *slot = o;
     uint32_t type = e[0] & 0xff, size = e[0] >> 8;
     uint64_t at = (uint64_t)e[2] << 32 | e[1];
     switch (type) {
@@ -1552,11 +1684,10 @@ static BOOL has_guest_pages(HvObject *o) {
     if (n < 8) return;
     uint32_t task = a[0], count = a[1];
     if (n < 8 + count * 4ull) return;
-    NSMutableDictionary *objs = tasks[@(task)];
     id<MTLCommandBuffer> cb = nil;
     id<MTLBlitCommandEncoder> blit = nil;
     for (uint32_t i = 0; i < count; i++) {
-        HvObject *o = objs[@(a[2 + i])];
+        HvObject *o = obj_known(self, task, a[2 + i]);
         if (!o || !o->guest_backed || !o->host_valid) continue;
         if (!cb) cb = [queue commandBuffer];
         [self page:o toGuest:YES task:task blit:&blit commandBuffer:cb];
@@ -1572,10 +1703,9 @@ static BOOL has_guest_pages(HvObject *o) {
 /* {task, count, {ref, host invalid, host valid, guest invalid, guest valid}}. */
 - (void)invalidate:(const uint32_t *)a length:(uint32_t)n {
     if (n < 8 || n < 8 + a[1] * 8ull) return;
-    NSMutableDictionary *objs = tasks[@(a[0])];
     const uint8_t *e = (const uint8_t *)(a + 2);
     for (uint32_t i = 0; i < a[1]; i++, e += 8) {
-        HvObject *o = objs[@(*(const uint32_t *)e)];
+        HvObject *o = obj_known(self, a[0], *(const uint32_t *)e);
         if (!o) continue;
         if (e[6]) o->guest_stale = YES;
         if (e[7]) o->guest_stale = NO;
@@ -2458,9 +2588,19 @@ typedef struct {
         memcpy(&off, bufs + b * 16, 8);
         memcpy(&blen, bufs + b * 16 + 8, 8);
         if (blen > (64u << 20) || blen < 8) continue;
-        NSMutableData *copy = [NSMutableData dataWithLength:(NSUInteger)blen];
-        if (hv_pvg_lite_task_read(lite, task, off, copy.mutableBytes, (uint32_t)blen)) { [self complain:@"command buffer unreadable"]; continue; }
-        const uint8_t *p = copy.bytes, *end = p + blen;
+        /* Read where it is when it is in one piece (nearly always: the guest is waiting for this exec and does not
+           touch it meanwhile), else copied once into a buffer kept for the next. */
+        const uint8_t *p = task_span(self, task, off, blen);
+        if (!p) {
+            if (blen > cmd_cap) {
+                free(cmd_scratch);
+                cmd_scratch = malloc((size_t)blen);
+                cmd_cap = cmd_scratch ? (size_t)blen : 0;
+            }
+            if (!cmd_scratch || task_copy(self, task, off, cmd_scratch, blen)) { [self complain:@"command buffer unreadable"]; continue; }
+            p = cmd_scratch;
+        }
+        const uint8_t *end = p + blen;
         uint32_t seglen, info;
         memcpy(&seglen, p, 4), memcpy(&info, p + 4, 4);
         p += 8;
@@ -2518,6 +2658,10 @@ typedef struct {
         if (!more && e) { [e endEncoding]; e = nil; }
     }
     if (e) [e endEncoding];
+    if (cmd_cap > (4u << 20)) { /* a big one, rare: not kept */
+        free(cmd_scratch);
+        cmd_scratch = NULL, cmd_cap = 0;
+    }
     if (sync_after) { /* the guest wants these back as soon as this is done */
         id<MTLBlitCommandEncoder> back = nil;
         for (uint32_t i = 0; i < nres; i++) {
@@ -3022,7 +3166,7 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->worker = dispatch_queue_create("hengevm.pvg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->screen_lock = OS_UNFAIR_LOCK_INIT;
-        r->tasks = [NSMutableDictionary new];
+        r->walk_epoch = 1;
         r->mapped_textures = [NSMutableDictionary new];
         r->surfaces = [NSMutableDictionary new];
         r->planar = [NSMutableDictionary new];
@@ -3075,7 +3219,7 @@ void hv_pvg_metal_destroy(HvPvgMetal *m) {
         dispatch_sync(r->worker, ^{
             [r saveArchive];
             r->lite = NULL;
-            r->tasks = nil;
+            for (uint32_t t = 0; t < HV_TASKS; t++) obj_clear(&r->task_objs[t]);
             r->surfaces = nil;
             r->mapped_textures = nil;
             r->planar = nil;
@@ -3098,6 +3242,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
     HvReplay *r = (__bridge HvReplay *)m;
     dispatch_async(r->worker, ^{
         @autoreleasepool {
+            new_command(r);
             uint32_t op = cmd[0] & 0xffff, skip = (cmd[0] >> 16) * 8; /* the barriers come first */
             const uint32_t *args = (const uint32_t *)((const uint8_t *)cmd + 12 + skip);
             uint32_t n = len > 12 + skip ? len - 12 - skip : 0;
@@ -3121,7 +3266,8 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                     } else [r complain:[NSString stringWithFormat:@"command 0x37 of %u bytes: %u resources, %u buffers do not fit", n, nres, nbuf]];
                 } else if ((op == 0x25 || op == 0x28) && n >= 8) { /* {task, ref} or {task, tag, size, ref} */
                     uint32_t ref = op == 0x25 ? args[1] : (n >= 16 ? args[3] : 0);
-                    [r->tasks[@(args[0])] removeObjectForKey:@(ref)];
+                    HvObject *__strong *slot = args[0] < HV_TASKS ? obj_slot(&r->task_objs[args[0]], ref, NO) : NULL;
+                    if (slot) *slot = nil;
                 } else if (op == 0x35 || op == 0x3e) {
                     [r synchronize:args length:n];
                 } else if (op == 0x34) {
@@ -3134,7 +3280,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                        flag in bit 0 (Apple's host: -[PGFIFO CmdDeleteTask] passes p[0] to deleteTaskID: as it is). Shifted here,
                        an ended process kept its objects and the next one given its id got its functions wherever an object-list
                        entry read the same: a vertex function in a fragment slot, and the GPU driver died (issue 102). */
-                    [r->tasks removeObjectForKey:@(args[0])];
+                    if (args[0] < HV_TASKS) obj_clear(&r->task_objs[args[0]]);
                 } else {
                     hv_pvg_lite_command(lite, cmd, len);
                     if (op == 8 && n >= 16) {
@@ -3312,17 +3458,19 @@ void hv_pvg_metal_quiesce(HvPvgMetal *m) {
             id<MTLCommandBuffer> cb = nil;
             id<MTLBlitCommandEncoder> blit = nil;
             unsigned copied = 0;
-            for (NSNumber *task in r->tasks) {
-                NSMutableDictionary<NSNumber *, HvObject *> *objs = r->tasks[task];
-                for (NSNumber *ref in objs) {
-                    HvObject *o = objs[ref];
-                    if (!o->guest_backed || !o->host_valid || !o->guest_stale) continue;
-                    if (o->parent && o->parent->heap_whole) continue;
-                    if (!cb) cb = [r->queue commandBuffer];
-                    [r page:o toGuest:YES task:task.unsignedIntValue blit:&blit commandBuffer:cb];
-                    o->guest_stale = NO;
-                    copied++;
-                }
+            new_command(r);
+            for (uint32_t task = 0; task < HV_TASKS; task++) {
+                HvTaskObjects *objs = &r->task_objs[task];
+                for (uint32_t p = 0; p < objs->pages; p++)
+                    for (uint32_t i = 0; objs->page[p] && i < OBJ_PAGE; i++) {
+                        HvObject *o = objs->page[p][i];
+                        if (!o || !o->guest_backed || !o->host_valid || !o->guest_stale) continue;
+                        if (o->parent && o->parent->heap_whole) continue;
+                        if (!cb) cb = [r->queue commandBuffer];
+                        [r page:o toGuest:YES task:task blit:&blit commandBuffer:cb];
+                        o->guest_stale = NO;
+                        copied++;
+                    }
             }
             [blit endEncoding];
             if (cb) {
