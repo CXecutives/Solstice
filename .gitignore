@@ -2,3 +2,4 @@ build/
 out/
 henge.log
 henge-stream.log
+.claude/
