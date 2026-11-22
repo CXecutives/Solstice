@@ -12,6 +12,8 @@
     .globl _mp_timer_wfi
     .globl _mp_idle
     .globl _mp_spin
+    .globl _mp_pv_probe
+    .globl _mp_pv_pingpong
 _mp_programs_begin:
 
     .p2align 11
@@ -122,6 +124,106 @@ _mp_spin:
     SETUP
 1:  ldar w2, [x9]
     cbz w2, 1b
+    b _mp_done
+
+// xnu's hvg_is_hcall_available for WFK and KICK, as lck_init_pv runs it (osfmk/arm64/arm64_hypercall.c): x20 = 1 if
+// both are there. Also REVISION's w0, w1 in x25, x26, and FEATURES for a call that is not there (GET_MABS_OFFSET) must
+// be negative.
+_mp_pv_probe:
+    SETUP
+    mov x20, #0
+    movz x0, #0xc100, lsl #16
+    movk x0, #0x00f0                // VMAPPLE_PAC_NOP: a host from before these calls answers 0xffffffff or < 0
+    hvc #0
+    mov x1, #0xffffffff
+    cmp x0, x1
+    b.eq 9f
+    tbnz x0, #63, 9f
+    movz w0, #0x8300, lsl #16
+    movk w0, #0xff01                // HVC32 OEM UID
+    mov w1, #0
+    mov w2, #0
+    mov w3, #0
+    hvc #0
+    movz w4, #0x9cbb, lsl #16
+    movk w4, #0x6ebb
+    cmp w0, w4
+    b.ne 9f
+    movz w4, #0x9dc9, lsl #16
+    movk w4, #0xd679
+    cmp w1, w4
+    b.ne 9f
+    movz w4, #0xaa62, lsl #16
+    movk w4, #0x4e1f
+    cmp w2, w4
+    b.ne 9f
+    movz w4, #0x3b87, lsl #16
+    movk w4, #0x8185
+    cmp w3, w4
+    b.ne 9f
+    movz w0, #0x8300, lsl #16
+    movk w0, #0xff03                // HVC32 OEM REVISION
+    mov w1, #0
+    hvc #0
+    mov w25, w0
+    mov w26, w1
+    movz w0, #0x8300, lsl #16
+    movk w0, #0xfeff                // HVC32 OEM FEATURES: WFK
+    movz w1, #0xc300, lsl #16
+    movk w1, #0x0005
+    hvc #0
+    tbnz w0, #31, 9f
+    movz w0, #0x8300, lsl #16
+    movk w0, #0xfeff                // KICK
+    movz w1, #0xc300, lsl #16
+    movk w1, #0x0006
+    hvc #0
+    tbnz w0, #31, 9f
+    movz w0, #0x8300, lsl #16
+    movk w0, #0xfeff                // GET_MABS_OFFSET: not there
+    movz w1, #0xc300, lsl #16
+    movk w1, #0x0003
+    hvc #0
+    tbz w0, #31, 9f
+    mov x20, #1
+9:  b _mp_done
+
+// A paravirtual ticket lock's two sides, as xnu's (lock_ticket_pv.c): x9 = &token (32 bits), x10 = this CPU's number
+// (0 or 1), x11 = the other's MPIDR (its phys_id), x15 = hand-overs. Not this CPU's token: interrupts off, one more
+// look, then wait for a kick (WFK); its own: hand it over, kick the other (KICK). Waits in x21, the longest in ticks
+// in x23; a call that failed fails the test.
+_mp_pv_pingpong:
+    SETUP
+    mov x21, #0
+    mov x23, #0
+1:  ldar w2, [x9]
+    cmp w2, w10
+    b.eq 3f
+    msr daifset, #3
+    ldar w2, [x9]
+    cmp w2, w10
+    b.eq 1b
+    mrs x12, cntvct_el0
+    movz x0, #0xc300, lsl #16
+    movk x0, #0x0005                // VMAPPLE_VCPU_WFK
+    mov x1, #0
+    hvc #0
+    tbnz x0, #63, mp_bad
+    mrs x13, cntvct_el0
+    sub x13, x13, x12
+    cmp x13, x23
+    csel x23, x13, x23, hi
+    add x21, x21, #1
+    b 1b
+3:  eor w2, w10, #1
+    stlr w2, [x9]
+    movz x0, #0xc300, lsl #16
+    movk x0, #0x0006                // VMAPPLE_VCPU_KICK
+    mov x1, x11
+    hvc #0
+    tbnz x0, #63, mp_bad
+    subs x15, x15, #1
+    b.ne 1b
     b _mp_done
 
 _mp_done:

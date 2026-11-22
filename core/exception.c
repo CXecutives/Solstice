@@ -12,6 +12,10 @@
 /* Only EL0 and EL1 exist for the guest; HengeVM plays EL2 (PSCI over HVC, as
    QEMU's vmapple machine sets up) and there is no EL3. */
 
+/* vmapple's OEM service calls for paravirtual ticket locks (HVC64: VMAPPLE_VCPU_WFK, VMAPPLE_VCPU_KICK). */
+#define HV_HVC_VCPU_WFK 0xc3000005u
+#define HV_HVC_VCPU_KICK 0xc3000006u
+
 #define PSTATE_EXTRA_MASK ((1ull << 22) | (1ull << 23) | (1ull << 12) | (1ull << 24) | (1ull << 25))
 
 uint64_t hv_pstate_get(HvCpu *cpu) {
@@ -205,6 +209,32 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn) {
         cpu->x[2] = 0x524f50; /* the values only name keys, and no key is ever used */
         cpu->x[3] = 0x4a4f50;
         return 0;
+    /* vmapple's OEM service (XNU osfmk/arm64/hv_hvc.h, arm64_hypercall.c): at boot lck_init_pv asks whether the
+       paravirtual ticket-lock calls exist (hvg_is_hcall_available): PAC_NOP must succeed, then these 32-bit calls must
+       name Apple as the implementor (UID 3B878185-AA62-4E1F-9DC9-D6799CBB6EBB, the last four bytes first in w0),
+       revision 1.0, and FEATURES (w1 = the call) must be >= 0. Then a ticket lock's waiter that spun ticket_lock_spins
+       times waits for a kick (WFK, hv_exception_insn) and the unlocker kicks it (KICK), instead of spinning on. */
+    case 0x8300ff01: /* HVC32 OEM UID */
+        cpu->x[1] = 0x9dc9d679;
+        cpu->x[2] = 0xaa624e1f;
+        cpu->x[3] = 0x3b878185;
+        return 0x9cbb6ebb;
+    case 0x8300ff03: /* HVC32 OEM REVISION: major in w0, minor in w1 */
+        cpu->x[1] = 0;
+        return 1;
+    case 0x8300feff: { /* HVC32 OEM FEATURES: is the call in w1 there (>= 0)? */
+        uint32_t q = (uint32_t)cpu->x[1];
+        return q == HV_HVC_VCPU_WFK || q == HV_HVC_VCPU_KICK ? 0 : 0xffffffffull;
+    }
+    case HV_HVC_VCPU_KICK: { /* x1: the target's phys_id, its device tree reg = MPIDR affinity (cfg.c: cpu_ids[i] = i) */
+        HvCpu *t = cpu_by_mpidr(cpu->m, cpu->x[1]);
+        static int told;
+        if (!__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED) && cpu->m->log) fprintf(stderr, "hengevm: paravirtual ticket locks in use (first kick: target %#llx)\n", (unsigned long long)cpu->x[1]);
+        if (!t) return (uint64_t)-2; /* INVALID_PARAMETERS */
+        if (cpu->m->stats_interval) HV_ST(cpu).pv_kicks++;
+        hv_cpu_wake(t); /* sticky: a kick before the target waits ends that wait at once */
+        return 0;
+    }
     default:
         if (cpu->m->log) fprintf(stderr, "hengevm: unknown hypervisor call %#llx (x1 %#llx) at el%u\n",
                                  (unsigned long long)fn, (unsigned long long)cpu->x[1], cpu->el);
@@ -242,6 +272,15 @@ int hv_exception_insn(HvCpu *cpu, uint32_t insn, uint64_t pc) {
         return 1;
     }
     if (opc == 0 && ll == 2 && cpu->el == 1) { /* HVC: the hypervisor's PSCI and vmapple's PAC calls */
+        if ((uint32_t)cpu->x[0] == HV_HVC_VCPU_WFK) {
+            /* Wait for a kick, or an interrupt (x1: whether the caller had interrupts on; it masked them, and
+               restores them itself right after): the WFI wait, which a kick (hv_cpu_wake) ends. */
+            if (cpu->m->stats_interval) HV_ST(cpu).pv_waits++;
+            cpu->x[0] = 0;
+            cpu->pc = pc + 4;
+            cpu->exit_reason = HV_EXIT_WFI;
+            return 1;
+        }
         cpu->x[0] = psci(cpu, cpu->x[0]);
         if (!cpu->halted && !cpu->off) return 0; /* like a call: the block carries on (xnu makes one per context switch) */
         cpu->pc = pc + 4;

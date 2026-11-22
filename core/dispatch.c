@@ -738,6 +738,7 @@ static void print_stats(HvCpu *cpu, int force) {
                 RATE(kick_src[0]), RATE(kick_src[1]), RATE(kick_src[3]), RATE(kick_src[2]), RATE(kick_src[4]));
         fprintf(stderr, "  kicker: wakeups %.0f/s, CPUs kicked at their deadline %.0f/s, for device polls %.0f/s; device polls %.0f/s\n",
                 RATE(kicker_wakes), RATE(kicker_kicks), RATE(kicker_polls), RATE(dev_polls));
+        fprintf(stderr, "  paravirtual ticket locks: waits for a kick %.0f/s, kicks %.0f/s\n", RATE(pv_waits), RATE(pv_kicks));
         fprintf(stderr, "  light refills %.0fK/s, light branch-cache fills %.0fK/s, chained to other pages %.0f/s\n", RATE(refills) / 1e3,
                 RATE(ijc_light) / 1e3, RATE(xchained));
         fprintf(stderr, "  process switches: %.0f/s saved, %.0f/s restored, %.0f/s dropped by a TLBI (%.0f entries each)\n", RATE(stash_saves), RATE(stash_hits), RATE(stash_stale),

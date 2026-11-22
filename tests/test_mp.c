@@ -12,10 +12,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "exception.h"
 #include "pvg_vblank_clock.h"
 
 extern const char mp_programs_begin[], mp_programs_finish[], mp_done[], mp_svc[], mp_timer_spin[], mp_timer_wfi[],
-    mp_idle[], mp_spin[];
+    mp_idle[], mp_spin[], mp_pv_probe[], mp_pv_pingpong[];
 #define ADDR(sym) ((uint64_t)(uintptr_t)(sym))
 #define NCPU 4
 
@@ -83,7 +84,7 @@ static void kicker_end(void) {
 
 /* Each CPU from the start of prog[i] with x0, x1 = arg0, arg1; returns when all have stopped. */
 static pthread_t threads[NCPU];
-static void start(const char *const prog[NCPU], uint64_t arg0, uint64_t arg1) {
+static void start(const char *const prog[NCPU], uint64_t arg0, uint64_t arg1, void (*setup)(HvCpu *c, int i)) {
     __atomic_store_n(flag, 0, __ATOMIC_SEQ_CST);
     for (int i = 0; i < NCPU; i++) {
         HvCpu *c = &cpus[i];
@@ -93,6 +94,7 @@ static void start(const char *const prog[NCPU], uint64_t arg0, uint64_t arg1) {
         c->x[1] = arg1;
         c->x[9] = ADDR(flag);
         c->pc = ADDR(prog[i]);
+        if (setup) setup(c, i);
     }
     m.stop_pc = ADDR(mp_done);
     pthread_attr_t attr;
@@ -131,7 +133,7 @@ static void counters(void) {
     hv_stats_total(&m, &before);
     uint64_t elchg0[NCPU];
     for (int i = 0; i < NCPU; i++) elchg0[i] = m.percpu[i].own.stats.nelchg;
-    start(prog, n, 0);
+    start(prog, n, 0, NULL);
     finish("counters");
     hv_stats_total(&m, &after);
     for (int i = 0; i < NCPU; i++) check("counters: every SVC reached the vector", cpus[i].x[20] == n);
@@ -151,7 +153,7 @@ static void timers(void) {
     static const char *const prog[NCPU] = {mp_timer_spin, mp_timer_spin, mp_timer_wfi, mp_timer_wfi};
     uint64_t kicks0 = m.stats.kicker_kicks;
     kicker_start();
-    start(prog, n, delay);
+    start(prog, n, delay, NULL);
     for (int i = 0; i < NCPU; i++) pthread_join(threads[i], NULL), threads[i] = 0;
     kicker_end();
     for (int i = 0; i < NCPU; i++) {
@@ -180,7 +182,7 @@ static void refresh_and_idle(void) {
     kicker_start();
     for (int phase = 0; phase < 2; phase++) {
         static const char *const busy[NCPU] = {mp_spin, mp_idle, mp_idle, mp_idle}, *const idle[NCPU] = {mp_idle, mp_idle, mp_idle, mp_idle};
-        start(phase ? idle : busy, 0, 0);
+        start(phase ? idle : busy, 0, 0, NULL);
         usleep(300000); /* settled */
         uint64_t r0 = atomic_load(&refreshes), p0 = atomic_load(&polls), k0 = kicker_wakes(), w0 = wfis();
         uint64_t t0 = mach_absolute_time();
@@ -210,6 +212,94 @@ static void refresh_and_idle(void) {
     refresh_on = 0;
 }
 
+static void pv_setup(HvCpu *c, int i) {
+    if (i >= 2) return;
+    c->x[9] = ADDR(flag + 16);
+    c->x[10] = (uint64_t)i;
+    c->x[11] = (uint64_t)(1 - i); /* the other one's MPIDR */
+    c->x[15] = 3000;
+}
+
+/* PLAT-1: the vmapple OEM calls xnu's lck_init_pv probes, register by register (an HVC at EL1 straight into
+   hv_exception_insn), and its UID as xnu turns it into text (regs_to_uuid, uuid_unparse) against VMAPPLE_HVC_UID. */
+static uint64_t hvc(HvCpu *c, uint64_t x0, uint64_t x1) {
+    c->x[0] = x0, c->x[1] = x1, c->x[2] = c->x[3] = 0;
+    hv_exception_insn(c, 0xd4000002u, ADDR(mp_done)); /* hvc #0 */
+    return c->x[0];
+}
+
+static void pv_calls(void) {
+    HvCpu *c = &cpus[2];
+    hv_cpu_reset_index(c, &m, 2);
+    c->el = 1;
+    check("pv: PAC_NOP succeeds (not 0xffffffff, not negative)", hvc(c, 0xc10000f0u, 0) == 0);
+    uint32_t w[4] = {(uint32_t)hvc(c, 0x8300ff01u, 0), (uint32_t)c->x[1], (uint32_t)c->x[2], (uint32_t)c->x[3]};
+    uint8_t uuid[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) uuid[15 - i * 4 - j] = (uint8_t)(w[i] >> (j * 8));
+    char text[40];
+    snprintf(text, sizeof text, "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X", uuid[0], uuid[1],
+             uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7], uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13],
+             uuid[14], uuid[15]);
+    printf("pv: OEM UID %s\n", text);
+    check("pv: the OEM UID is Apple's (VMAPPLE_HVC_UID)", !strcmp(text, "3B878185-AA62-4E1F-9DC9-D6799CBB6EBB"));
+    check("pv: revision 1.0", (int32_t)hvc(c, 0x8300ff03u, 0) == 1 && (uint32_t)c->x[1] == 0);
+    check("pv: features: WFK there", (int32_t)hvc(c, 0x8300feffu, 0xc3000005u) >= 0);
+    check("pv: features: KICK there", (int32_t)hvc(c, 0x8300feffu, 0xc3000006u) >= 0);
+    check("pv: features: GET_MABS_OFFSET not there", (int32_t)hvc(c, 0x8300feffu, 0xc3000003u) < 0);
+    check("pv: features: GET_BOOTSESSIONUUID not there", (int32_t)hvc(c, 0x8300feffu, 0xc3000004u) < 0);
+    check("pv: KICK of a CPU that does not exist fails", (int64_t)hvc(c, 0xc3000006u, 7) < 0);
+    __atomic_store_n(&m.percpu[1].wake_pending, 0, __ATOMIC_SEQ_CST);
+    check("pv: KICK of CPU 1 succeeds", hvc(c, 0xc3000006u, 1) == 0);
+    check("pv: ...and leaves it woken (a wait after it ends at once)", __atomic_load_n(&m.percpu[1].wake_pending, __ATOMIC_SEQ_CST) == 1);
+    c->pc = 0;
+    c->x[0] = 0xc3000005u, c->x[1] = 0;
+    check("pv: WFK succeeds and leaves the block to wait", hv_exception_insn(c, 0xd4000002u, 0x1000) == 1 && c->x[0] == 0 &&
+          c->exit_reason == HV_EXIT_WFI && c->pc == 0x1004);
+}
+
+/* The probe through the JIT, then two CPUs handing a lock back and forth 3000 times, waiting with WFK and kicking with
+   KICK. A kick is never lost (one that comes before the wait ends it at once): no wait lasts anywhere near the 100 ms
+   WFI cap, and every call is counted. */
+static void pv_locks(void) {
+    static const char *const probe[NCPU] = {mp_pv_probe, mp_idle, mp_idle, mp_idle};
+    start(probe, 0, 0, NULL);
+    while (cpus[0].pc != ADDR(mp_done)) usleep(1000);
+    finish("pv probe");
+    check("pv: xnu's probe finds WFK and KICK (has_lock_pv)", cpus[0].x[20] == 1);
+    check("pv: the probe saw revision 1.0", (uint32_t)cpus[0].x[25] == 1 && (uint32_t)cpus[0].x[26] == 0);
+
+    const uint64_t n = 3000;
+    static const char *const prog[NCPU] = {mp_pv_pingpong, mp_pv_pingpong, mp_idle, mp_idle};
+    static HvStats before, after;
+    hv_stats_total(&m, &before);
+    flag[16] = 0; /* the token: CPU 0's */
+    kicker_start();
+    uint64_t t0 = mach_absolute_time();
+    start(prog, 0, 0, pv_setup);
+    for (int i = 0; i < 2; i++) pthread_join(threads[i], NULL), threads[i] = 0;
+    double secs = (double)(mach_absolute_time() - t0) / 24e6;
+    __atomic_store_n(flag, 1, __ATOMIC_SEQ_CST);
+    for (int i = 2; i < NCPU; i++) hv_cpu_wake(&cpus[i]);
+    for (int i = 2; i < NCPU; i++) pthread_join(threads[i], NULL), threads[i] = 0;
+    kicker_end();
+    hv_stats_total(&m, &after);
+    uint64_t waits = cpus[0].x[21] + cpus[1].x[21];
+    double longest = (double)(cpus[0].x[23] > cpus[1].x[23] ? cpus[0].x[23] : cpus[1].x[23]) / 24.0;
+    printf("pv: %llu hand-overs each in %.2f s, %llu waits for a kick, longest %.0f us; counted %llu waits, %llu kicks\n",
+           (unsigned long long)n, secs, (unsigned long long)waits, longest,
+           (unsigned long long)(after.pv_waits - before.pv_waits), (unsigned long long)(after.pv_kicks - before.pv_kicks));
+    for (int i = 0; i < 2; i++) {
+        char msg[120];
+        snprintf(msg, sizeof msg, "pv: cpu %d handed over every time, every call succeeded (x15 %llu, x17 %llx)", i,
+                 (unsigned long long)cpus[i].x[15], (unsigned long long)cpus[i].x[17]);
+        check(msg, cpus[i].x[15] == 0 && cpus[i].x[17] == 0 && cpus[i].pc == ADDR(mp_done));
+    }
+    check("pv: the CPUs did wait for kicks", waits > 0);
+    check("pv: no kick was lost (no wait reached 80 ms)", longest < 80000);
+    check("pv: every wait and kick counted", after.pv_waits - before.pv_waits == waits && after.pv_kicks - before.pv_kicks == 2 * n);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     alarm(240); /* a multi-CPU test that hangs fails */
@@ -222,6 +312,8 @@ int main(void) {
     counters();
     timers();
     refresh_and_idle();
+    pv_calls();
+    pv_locks();
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

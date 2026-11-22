@@ -94,5 +94,7 @@ void hv_vmapple_reset_cpu(HvVmapple *b);
 /* No CPU or host device callback may be using the board. */
 void hv_vmapple_destroy(HvVmapple *b);
 uint8_t *hv_vmapple_avp_regs(void *avp);
+/* Brings size bytes of file-backed guest RAM in, ahead of the guest, without dirtying them (the prefault thread). */
+void hv_vmapple_prefault(uint8_t *ram, uint64_t size);
 
 #endif

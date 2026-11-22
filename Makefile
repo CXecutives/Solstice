@@ -17,7 +17,8 @@ ENGINE = $(CORE) $(HOST)
 METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -framework IOSurface -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
-        $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown
+        $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
+        $(B)/test_mp $(B)/test_share_scripts
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 
@@ -93,6 +94,10 @@ $(B)/test_operands: tests/test_operands.c tests/operand_cases.s $(B)/operands.o
 	$(CC) $(CFLAGS) $^ -o $@
 $(B)/test_mmu: tests/test_mmu.c tests/mmu_programs.S $(ENGINE)
 	$(CC) $(CFLAGS) tests/test_mmu.c tests/mmu_programs.S $(ENGINE) -o $@
+
+# The scripts share.c serves to macOS: parsed by sh, the LaunchDaemon checked by plutil.
+$(B)/test_share_scripts: tests/test_share_scripts.c host/share.c host/share.h | $(B)
+	$(CC) $(CFLAGS) tests/test_share_scripts.c -o $@
 
 $(B)/test_shutdown: tests/test_shutdown.c $(ENGINE)
 	$(CC) $(CFLAGS) $^ -o $@

@@ -197,9 +197,6 @@ static uint8_t *alloc_no_footprint(uint64_t size) {
     return (uint8_t *)base;
 }
 
-/* A mapped file's page is slow to touch the first time and as fast as any other
-   afterwards, so a background thread gets there before the guest does. Adding
-   zero dirties the page without changing it, whatever the guest has written. */
 /* An Apple register block's bytes (64 KB), for saving the machine. */
 uint8_t *hv_vmapple_avp_regs(void *avp) { return avp ? ((AvpRegs *)avp)->regs : NULL; }
 
@@ -208,13 +205,24 @@ struct PrefaultArgs {
     uint64_t size;
 };
 
+/* A mapped file's page is slow to touch the first time and as fast as any other afterwards, so a background thread
+   gets there before the guest does: by reading it, which brings it in without dirtying it (adding zero, as before,
+   made every page dirty, and the kernel owed the file the whole RAM in writeback to flash); the guest's own first
+   write to it is then a cheap fault. Atomic loads: the guest may be writing meanwhile. */
+static volatile uint8_t prefault_sink;
+void hv_vmapple_prefault(uint8_t *ram, uint64_t size) {
+    uint8_t x = 0;
+    for (uint64_t off = 0; off < size; off += 0x4000) x ^= __atomic_load_n(ram + off, __ATOMIC_RELAXED);
+    prefault_sink = x;
+}
+
 static void *prefault_thread(void *arg) {
     struct PrefaultArgs a = *(struct PrefaultArgs *)arg;
     free(arg);
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (uint64_t off = 0; off < a.size; off += 0x4000) __atomic_fetch_add((volatile uint64_t *)(a.ram + off), 0, __ATOMIC_RELAXED);
+    hv_vmapple_prefault(a.ram, a.size);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     fprintf(stderr, "hengevm: guest RAM file ready in %.1f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
     return NULL;

@@ -69,7 +69,6 @@ static int el0_allowed(HvCpu *cpu, uint32_t reg, int write) {
 
 /* Returns 0 and sets *v, or -1 if the register does not exist. */
 static int read_reg(HvCpu *cpu, uint32_t reg, uint64_t *v) {
-    uint64_t now = counter();
     HvMachine *m = cpu->m;
     switch (reg) {
     case R(3, 3, 4, 2, 0): *v = cpu->nzcv & 0xf0000000; return 0;
@@ -130,15 +129,15 @@ static int read_reg(HvCpu *cpu, uint32_t reg, uint64_t *v) {
         *v = (cpu->csselr_el1 >> 1) == 0 ? (127u << 13 | 7u << 3 | 2) : (2047u << 13 | 15u << 3 | 2);
         return 0;
 
-    /* Generic timer */
+    /* Generic timer: the counter is read for these only (TR-11a: not for every other register, ~30 ns each). */
     case R(3, 3, 14, 0, 0): *v = CNTFRQ; return 0;
-    case R(3, 3, 14, 0, 1): case R(3, 3, 14, 0, 5): *v = now; return 0;
-    case R(3, 3, 14, 0, 2): case R(3, 3, 14, 0, 6): *v = now - cpu->cntvoff; return 0;
-    case R(3, 3, 14, 2, 0): *v = (uint32_t)(cpu->cntp_cval - now); return 0;
-    case R(3, 3, 14, 2, 1): *v = timer_ctl(cpu->cntp_ctl, cpu->cntp_cval, now); return 0;
+    case R(3, 3, 14, 0, 1): case R(3, 3, 14, 0, 5): *v = counter(); return 0;
+    case R(3, 3, 14, 0, 2): case R(3, 3, 14, 0, 6): *v = counter() - cpu->cntvoff; return 0;
+    case R(3, 3, 14, 2, 0): *v = (uint32_t)(cpu->cntp_cval - counter()); return 0;
+    case R(3, 3, 14, 2, 1): *v = timer_ctl(cpu->cntp_ctl, cpu->cntp_cval, counter()); return 0;
     case R(3, 3, 14, 2, 2): *v = cpu->cntp_cval; return 0;
-    case R(3, 3, 14, 3, 0): *v = (uint32_t)(cpu->cntv_cval - (now - cpu->cntvoff)); return 0;
-    case R(3, 3, 14, 3, 1): *v = timer_ctl(cpu->cntv_ctl, cpu->cntv_cval, now - cpu->cntvoff); return 0;
+    case R(3, 3, 14, 3, 0): *v = (uint32_t)(cpu->cntv_cval - (counter() - cpu->cntvoff)); return 0;
+    case R(3, 3, 14, 3, 1): *v = timer_ctl(cpu->cntv_ctl, cpu->cntv_cval, counter() - cpu->cntvoff); return 0;
     case R(3, 3, 14, 3, 2): *v = cpu->cntv_cval; return 0;
     }
     /* GIC CPU interface (ICC_*_EL1): CRn 12, CRm 8..12, and ICC_PMR_EL1. */

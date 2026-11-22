@@ -128,6 +128,7 @@ typedef struct HvStats {
     uint64_t retranslated;    /* blocks made while not live for TLBIs whose page was remapped meanwhile: fetched again */
     uint64_t kicker_wakes, kicker_kicks, kicker_polls; /* the kicker: wakeups, CPUs made to leave at their deadline, device polls asked of CPU 0 */
     uint64_t dev_polls;       /* CPU 0's device polls (vmapple.c) */
+    uint64_t pv_waits, pv_kicks; /* paravirtual ticket locks: waits for a kick (VCPU_WFK), kicks (VCPU_KICK; exception.c) */
     /* Not summed: tables of the first few values seen, and debugging rings (per CPU). */
     struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 regions mapped under 16 KB were */
     struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */
