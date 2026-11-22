@@ -296,19 +296,23 @@ static void put_ijc_jump(Emit *e, int check) {
     put(e, UBFM_X(7, 7, 2, 2 + HV_IJC_BITS - 2));           /* ubfx x7, x7, #2, #bits - 1: the set */
     put(e, LDR_X(6, 28, HV_CPU_IJC_TAB + 8 * (e->flags & (HV_IJC_TABLES - 1))));
     put(e, ADD_LSL(6, 6, 7, 5));
-    put(e, LDR_X(7, 6, 0));                                 /* way 0's tag */
+    put(e, LDP_X(7, 6, 6, 0));                              /* ldp x7, x6, [x6]: way 0's tag and code in one load */
     put(e, 0xca000000u | 15 << 16 | 7 << 5 | 7);            /* eor x7, x7, x15 */
     uint32_t to_way1 = e->n;
     put(e, CBNZ_X(7));
-    put(e, LDR_X(6, 6, 8));
     put(e, BR_X(6));                                        /* hit: x0, x1 are the guest's */
     if (!p0) cold_on(e);
     link_here(e, to_way1, p0);
-    put(e, LDR_X(7, 6, 16));                                /* way 1's */
+    /* x6 is way 0's code now: the set again (x15 is still the tag), then way 1 */
+    put(e, 0xca400000u | 15 << 16 | 16 << 10 | 15 << 5 | 7); /* eor x7, x15, x15, lsr #16 */
+    put(e, 0xca400000u | 15 << 16 | 46 << 10 | 7 << 5 | 7);  /* eor x7, x7, x15, lsr #46 */
+    put(e, UBFM_X(7, 7, 2, 2 + HV_IJC_BITS - 2));
+    put(e, LDR_X(6, 28, HV_CPU_IJC_TAB + 8 * (e->flags & (HV_IJC_TABLES - 1))));
+    put(e, ADD_LSL(6, 6, 7, 5));
+    put(e, LDP_X(7, 6, 6, 16));                             /* way 1's */
     put(e, 0xca000000u | 15 << 16 | 7 << 5 | 7);
     uint32_t to_miss = e->n;
     put(e, CBNZ_X(7));
-    put(e, LDR_X(6, 6, 24));
     put(e, BR_X(6));
     patch_branch(&e->w[to_miss], (int64_t)e->n - to_miss);  /* miss: x15 is the tag, so the VA is x15 ^ salt */
     put(e, LDR_X(7, 28, salt));
@@ -733,6 +737,20 @@ static void translate_pcrel(Emit *e, uint32_t insn, uint64_t pc) {
     int64_t imm = sext(((insn >> 5) & 0x7ffff) << 2 | ((insn >> 29) & 3), 21);
     uint64_t value = (insn >> 31) ? (pc & ~0xfffull) + ((uint64_t)imm << 12) : pc + imm;
     put_const_to(e, insn & 0x1f, value);
+}
+
+/* ADRP Xd then ADD Xd, Xd, #imm{, lsl #12}: how xnu and every dylib make an address. The sum is known now, so it is
+   one constant (TR-13): one load or a few MOVs where the pair took two words, or six for a register in the HvCpu. */
+static int is_adrp_add(uint32_t adrp, uint32_t add) {
+    uint32_t d = adrp & 31;
+    return (adrp & 0x9f000000u) == 0x90000000u && (add & 0xff800000u) == 0x91000000u && d != 31 && (add & 31) == d &&
+           ((add >> 5) & 31) == d;
+}
+
+static void translate_adrp_add(Emit *e, uint32_t adrp, uint32_t add, uint64_t pc) {
+    int64_t imm = sext(((adrp >> 5) & 0x7ffff) << 2 | ((adrp >> 29) & 3), 21);
+    uint64_t lo = (uint64_t)((add >> 10) & 0xfff) << ((add >> 22) & 1 ? 12 : 0);
+    put_const_to(e, (int)(adrp & 31), (pc & ~0xfffull) + ((uint64_t)imm << 12) + lo);
 }
 
 /* Bits 54..48 take bit 55's value. Guest pointers are never signed, so for a
@@ -1412,7 +1430,9 @@ static void put_far_field(Emit *e, int rt, uint32_t off, int read) {
     put(e, STR_X(6, 15, lo));
 }
 #define FAR_FIELD_OK(f) (offsetof(HvCpu, f) % 8 == 0 && offsetof(HvCpu, f) >> 12 < 4096)
-_Static_assert(FAR_FIELD_OK(ttbr0_el1) && FAR_FIELD_OK(contextidr_el1), "put_far_field reaches 16 MB, 8-byte aligned");
+_Static_assert(FAR_FIELD_OK(ttbr0_el1) && FAR_FIELD_OK(contextidr_el1) && FAR_FIELD_OK(mdscr_el1) && FAR_FIELD_OK(cntv_cval) &&
+                   FAR_FIELD_OK(cntkctl_el1),
+               "put_far_field reaches 16 MB, 8-byte aligned");
 
 /* MSR SCTLR_EL1, Xt at EL1. xnu writes it on every kernel entry and exit of a process whose PAC keys differ (the
    EnIA/IB/DA/DB bits): hundreds of thousands a second with a busy app, each through the helper and each ending its
@@ -1674,6 +1694,32 @@ static int translate_sysreg_inline(Emit *e, uint32_t insn, uint64_t pc) {
     case SR(3, 3, 0, 0, 7): /* DCZID_EL0 */
         if (!read) return 0;
         put_const_to(e, rt, 4);
+        return 1;
+    /* More of what hv_sysreg keeps as plain storage (O10). Each write used to take the helper and end its block. */
+    case SR(2, 0, 0, 2, 2): /* MDSCR_EL1 */
+        if (!el1) return 0;
+        put_far_field(e, rt, (uint32_t)offsetof(HvCpu, mdscr_el1), read);
+        return 1;
+    case SR(3, 3, 14, 3, 2): /* CNTV_CVAL_EL0: reads (a write moves the timer: the helper) */
+        if (!read || !el1) return 0;
+        put_far_field(e, rt, (uint32_t)offsetof(HvCpu, cntv_cval), 1);
+        return 1;
+    case SR(3, 0, 14, 1, 0): /* CNTKCTL_EL1, and its EL0 counter enables (bits 1..0) in el0_cnt, as write_reg does */
+        if (!el1) return 0;
+        if (read) {
+            put_far_field(e, rt, (uint32_t)offsetof(HvCpu, cntkctl_el1), 1);
+            return 1;
+        }
+        if (rt == 31) put(e, 0xd2800006u);                                   /* movz x6, #0 */
+        else if (is_stolen(rt)) put(e, LDR_X(6, 28, slot_of(rt)));
+        else put(e, MOV_X(6, rt));
+        {
+            uint32_t off = (uint32_t)offsetof(HvCpu, cntkctl_el1);
+            put(e, 0x91400000u | (off >> 12) << 10 | 28u << 5 | 15u);        /* add x15, x28, #off >> 12, lsl #12 */
+            put(e, STR_X(6, 15, off & 0xfff));
+        }
+        put(e, 0x120004c6u);                                                 /* and w6, w6, #3 */
+        put(e, 0xb9000000u | (HV_CPU_EL0_CNT / 4) << 10 | 28 << 5 | 6);    /* str w6, [x28, #el0_cnt] */
         return 1;
     case SR(3, 0, 4, 2, 3): /* PAN: a block is translated for one PAN state (HV_BLOCK_PAN) and every write ends it */
         if (!read || !el1) return 0;
@@ -2068,9 +2114,9 @@ static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_
 static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail, int nogroup, int all_slow);
 
 int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail) {
-    /* HV_GROUPS=1: group accesses (the app turns it on: EngineTuning.swift). Their plain copies sit in the cold
-       part, and a cold TLB refills for the whole range before falling back to them: the hot part grows by the
-       group checks only (upstream's v1 had the copies in the hot part and measured +15% code, no gain). */
+    /* HV_GROUPS=1: group accesses. Their plain copies sit in the cold part, and a cold TLB refills for the whole
+       range before falling back to them: the hot part grows by the group checks only (upstream's v1 had the
+       copies in the hot part and measured +15% code, no gain). */
     if (hv_knob[HV_K_GROUPS] && translate_emit(m, b, code, avail, 0, 0) == 0) return 0;
     int r = translate_emit(m, b, code, avail, 1, 0);
     /* -2: a slow path's record could not say how far its retry or join is. That cannot happen (put_slow_record),
@@ -2108,7 +2154,9 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
         e->cur_i = i;
         e->u_prev = e->u_live, e->u_live = 0;
         uint32_t n0 = e->n;
-        ended = translate_one(e, code[i], pc);
+        int fold = i + 1 < max && is_adrp_add(code[i], code[i + 1]) && pc + 4 != m->stop_pc && pc + 4 != m->stop_pc2;
+        if (fold) translate_adrp_add(e, code[i], code[i + 1], pc), ended = 0;
+        else ended = translate_one(e, code[i], pc);
         if (m->stats_interval) {
             HvInsnKind k = hv_classify(code[i]);
             m->stats.kind_insns[k & 15]++;
@@ -2116,6 +2164,7 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
         }
         e->after[i] = e->n;
         i++;
+        if (fold) e->after[i] = e->n, i++; /* the ADD: done */
         if (e->n + WORDS_PER_INSN_MAX * 2 > MAX_WORDS || e->other_n + WORDS_PER_INSN_MAX * 2 > MAX_WORDS || e->npool + 8 > MAX_LITS || e->nool + 4 > MAX_OOL || e->nrel + 256 > MAX_RELS) break;
     }
     if (!ended) put_branch_exit(e, b->va + 4ull * i, 1);

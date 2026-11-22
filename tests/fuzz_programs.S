@@ -100,4 +100,5 @@ Lr87: ldr x28, [x28, #224]
 Lr88: stp q30, q31, [x0, #800]
     ldp x2, x3, [sp], #16
     str x30, [x0, #240]
+    clrex
 _fuzz_ref_end:

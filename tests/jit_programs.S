@@ -217,6 +217,25 @@ pcrel_target:
     sub x4, x28, x0
 END pcrel
 
+// ADRP then ADD of the same register: the translator folds the pair into one constant.
+PROGRAM adrp_add
+    adrp x1, pcrel_target@PAGE
+    add x1, x1, pcrel_target@PAGEOFF
+    adrp x6, pcrel_target@PAGE       // a register kept in the HvCpu
+    add x6, x6, pcrel_target@PAGEOFF
+    adrp x28, _jit_programs_begin@PAGE
+    add x28, x28, _jit_programs_begin@PAGEOFF
+    adrp x2, pcrel_target@PAGE
+    add x2, x2, #1, lsl #12          // the shifted form
+    adrp x3, pcrel_target@PAGE
+    add x4, x3, #8                   // into another register: not folded
+    adrp x5, _jit_programs_begin@PAGE
+    add x5, x5, #0xfff
+    adrp x7, _jit_programs_finish@PAGE
+    add x7, x7, #4
+    adds x8, x8, #1                  // ADDS is not ADD: flags
+END adrp_add
+
 // More instructions than one block holds.
 // DIT is a PSTATE bit the translator reads and writes inline; x6 and x7 live in the HvCpu.
 PROGRAM pstate_bits

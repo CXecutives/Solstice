@@ -146,7 +146,7 @@ static int check_encoders(void) {
         ldstp(2, 1, 2, 1, 20, 1, 28, 0), MSR_FPCR, MSR_FPSR, addsub_imm(0, 0, 0, 0, 0, 31), MSR_NZCV, MRS_NZCV | 2, MRS_FPCR | 2,
         MRS_FPSR | 2, addsub_imm(0, 0, 0, 0, 31, 2), addsub_imm(0, 0, 0, 32, 31, 31), addsub_imm(1, 0, 0, 48, 31, 31),
         addsub_imm(1, 1, 0, 1, 23, 23), 0x11000421u, b_imm(0, 3), cbz(1, 0, 2, 5), tbz(1, 5, 2, 3), ldst_uimm(3, 0, 1, 28, 28, 28),
-        ldstp(2, 1, 2, 0, 50, 31, 0, 30), ldstp(2, 0, 1, 1, 2, 3, 31, 2), ldst_uimm(3, 0, 0, 30, 0, 30),
+        ldstp(2, 1, 2, 0, 50, 31, 0, 30), ldstp(2, 0, 1, 1, 2, 3, 31, 2), ldst_uimm(3, 0, 0, 30, 0, 30), CLREX,
     };
     size_t n = sizeof mine / sizeof mine[0], want = (size_t)(fuzz_ref_end - fuzz_ref);
     int bad = n != want;

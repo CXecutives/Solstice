@@ -133,7 +133,11 @@ int main(void) {
         check("sysregs2", "CONTEXTIDR from and to stolen registers", c.x[28], seeded.x[18]);
         check("sysregs2", "TTBR0 read", c.x[12], 0x4000);
         check("sysregs2", "DCZID", c.x[13], 4);
-        check("sysregs2", "MSRs through the helper (VBAR, SCTLR twice, TTBR0 twice)", m.stats.helper[HV_OP_MSR] - msr0, 5);
+        check("sysregs2", "CNTKCTL", c.x[15], 2);
+        check("sysregs2", "CNTKCTL's EL0 enables for translated counter reads", c.el0_cnt, 2);
+        check("sysregs2", "MDSCR", c.x[16], 0x1234);
+        check("sysregs2", "CNTV_CVAL read", c.x[27], 0x777);
+        check("sysregs2", "MSRs through the helper (VBAR, SCTLR twice, TTBR0 twice, CNTV_CVAL)", m.stats.helper[HV_OP_MSR] - msr0, 6);
         check("sysregs2", "MRSs through the helper", m.stats.helper[HV_OP_MRS] - mrs0, 0);
     }
     m.stats_interval = 0;

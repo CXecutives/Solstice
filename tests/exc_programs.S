@@ -193,6 +193,14 @@ PROGRAM p_sysregs2
     mrs x12, ttbr0_el1
     msr ttbr0_el1, xzr
     mrs x13, dczid_el0
+    mov x14, #2
+    msr cntkctl_el1, x14       // and el0_cnt
+    mrs x15, cntkctl_el1       // into a register kept in the HvCpu
+    msr mdscr_el1, x8
+    mrs x16, mdscr_el1
+    mov x17, #0x777
+    msr cntv_cval_el0, x17     // the helper (it moves the timer)
+    mrs x27, cntv_cval_el0
 END p_sysregs2
 
 // The test raises the IRQ line before running; it is masked until DAIFClr.
