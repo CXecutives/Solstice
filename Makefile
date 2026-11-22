@@ -91,8 +91,8 @@ $(B)/test_pvg_vblank_clock: tests/test_pvg_vblank_clock.c devices/pvg_vblank_clo
 
 $(B)/test_operands: tests/test_operands.c tests/operand_cases.s $(B)/operands.o
 	$(CC) $(CFLAGS) $^ -o $@
-$(B)/test_mmu: tests/test_mmu.c $(ENGINE)
-	$(CC) $(CFLAGS) tests/test_mmu.c $(ENGINE) -o $@
+$(B)/test_mmu: tests/test_mmu.c tests/mmu_programs.S $(ENGINE)
+	$(CC) $(CFLAGS) tests/test_mmu.c tests/mmu_programs.S $(ENGINE) -o $@
 
 $(B)/test_shutdown: tests/test_shutdown.c $(ENGINE)
 	$(CC) $(CFLAGS) $^ -o $@

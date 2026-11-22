@@ -125,6 +125,7 @@ typedef struct HvStats {
     uint64_t helper[12];      /* by HV_OP_* */
     uint64_t tlb_flushes, fetch_walks, exceptions, interrupts;
     uint64_t wfi, wfi_ticks;  /* WFI exits, host ticks spent asleep */
+    uint64_t retranslated;    /* blocks made while not live for TLBIs whose page was remapped meanwhile: fetched again */
     /* Not summed: tables of the first few values seen, and debugging rings (per CPU). */
     struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 regions mapped under 16 KB were */
     struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */
@@ -203,8 +204,8 @@ typedef struct HvPerCpu {
     uint64_t ijc_page[16];       /* code changed: cached targets to forget (hv_ijc_drop_code_page), queued as req */
     uint64_t req_seq, ack_seq;
     /* active: inside the dispatcher loop (0 while parked: WFI, powered off, at a
-       flush barrier). tlb_live: active and not itself waiting for acks, i.e. it
-       may be using TLB entries right now. */
+       flush barrier). tlb_live: active and neither waiting for acks itself nor
+       translating, i.e. it may be using TLB entries right now. */
     int active, tlb_live;
     uint32_t ack_waiters;        /* CPUs asleep in hv_cpu_sync waiting for ack_seq to move (HV_SYNC_WAIT) */
     uint32_t walk_seq;           /* odd while it walks page tables and fills its TLB (see hv_tlbi_drop_remote_va) */

@@ -201,6 +201,9 @@ static int write_reg(HvCpu *cpu, uint32_t reg, uint64_t v) {
     case R(3, 0, 1, 0, 1): cpu->actlr_el1 = v; return 0;
     case R(3, 0, 1, 0, 2): cpu->cpacr_el1 = v; return 0;
     case R(3, 0, 2, 0, 0): { /* a process switch */
+        /* What other CPUs asked first (O8b): a TLBI of theirs reaches the going process's entries before they are put
+           aside, so it cannot come back with them, and they need not wait for this CPU's next block exit. */
+        if (cpu->pc_state) hv_cpu_process_requests(cpu);
         uint64_t old = cpu->ttbr0_el1;
         cpu->ttbr0_el1 = v;
         if (old != v) cpu->ttbr0_changed_at = mach_absolute_time();

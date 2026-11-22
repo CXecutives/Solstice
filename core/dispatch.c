@@ -124,7 +124,7 @@ static void block_dump(const HvBlock *b, const uint32_t *code) {
     pthread_mutex_unlock(&mu);
 }
 
-static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail) {
+static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail, int *made) {
     HvMachine *m = cpu->m;
     HvStats *st = &HV_ST(cpu);
     uint32_t j = (uint32_t)((va >> 2) ^ (va >> 18) ^ ((uint64_t)flags << 13)) & ((1u << HV_JC_BITS) - 1);
@@ -154,13 +154,22 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
         gen = __atomic_load_n(&ram->page_gen[pg], __ATOMIC_ACQUIRE);
         if (ram->code_hash) hv_code_check_note(ram, pg);
     }
-    /* Translate without the lock, into this thread's buffer... */
+    /* Translate without the lock, into this thread's buffer... Meanwhile the CPU uses no TLB entry for guest code, so
+       it is not live for TLBIs (O8a: they need not wait for a translation, the longest thing a CPU does between two
+       requests): it does what came in right after, and run_loop checks the block's page is still mapped where it was
+       before it goes in (*made). */
     HvBlock nb = {.va = va, .pa = pa, .flags = flags, .gen = gen, .ram = ram, .pg = pg, .maker = cpu->index + 1, .jit_gen = __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)};
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
-    uint8_t phase0 = cpu->pc_state ? cpu->pc_state->phase : 0;
-    if (cpu->pc_state) __atomic_store_n(&cpu->pc_state->phase, HV_PHASE_TRANSLATE, __ATOMIC_RELAXED);
+    HvPerCpu *pcs = cpu->pc_state;
+    uint8_t phase0 = pcs->phase;
+    __atomic_store_n(&pcs->phase, HV_PHASE_TRANSLATE, __ATOMIC_RELAXED);
+    __atomic_store_n(&pcs->tlb_live, 0, __ATOMIC_SEQ_CST);
+    hv_cpu_ack_wake(cpu); /* a CPU asleep waiting for this one's acknowledgement need not wait any more */
+    *made = 1;
     int failed = hv_translate_emit(m, &nb, code, avail) != 0;
-    if (cpu->pc_state) __atomic_store_n(&cpu->pc_state->phase, phase0, __ATOMIC_RELAXED);
+    __atomic_store_n(&pcs->tlb_live, 1, __ATOMIC_SEQ_CST);
+    hv_cpu_process_requests(cpu); /* what came in while it was not live */
+    __atomic_store_n(&pcs->phase, phase0, __ATOMIC_RELAXED);
     if (failed) goto flush_unlocked;
     if (m->stats_interval) {
         st->translate_ticks += mach_absolute_time() - t0;
@@ -717,8 +726,8 @@ static void print_stats(HvCpu *cpu, int force) {
                 RATE(protect_kind[1]), RATE(protect_kind[2]));
         fprintf(stderr, "  fast resume refused/s: state %.0f, exit request %.0f, interrupt %.0f, timer %.0f, not cached %.0f\n", RATE(fr_fail[0]),
                 RATE(fr_fail[1]), RATE(fr_fail[2]), RATE(fr_fail[3]), RATE(fr_fail[4]));
-        fprintf(stderr, "  WFE waits in place %.0f/s; exits chained as placed %.0f/s; SVC/ERET resumed in place %.0f/s\n", RATE(wfe_waits),
-                RATE(chained_early), RATE(fast_resumes));
+        fprintf(stderr, "  WFE waits in place %.0f/s; exits chained as placed %.0f/s; SVC/ERET resumed in place %.0f/s; fetched again after a translation %.0f/s\n", RATE(wfe_waits),
+                RATE(chained_early), RATE(fast_resumes), RATE(retranslated));
         fprintf(stderr, "  exit requests/s: TLBI posts %.0f, wakes %.0f (of them device work %.0f), kick all %.0f, own %.0f\n",
                 RATE(kick_src[0]), RATE(kick_src[1]), RATE(kick_src[3]), RATE(kick_src[2]), RATE(kick_src[4]));
         fprintf(stderr, "  light refills %.0fK/s, light branch-cache fills %.0fK/s, chained to other pages %.0f/s\n", RATE(refills) / 1e3,
@@ -1026,7 +1035,8 @@ static int run_loop(HvCpu *cpu, int one) {
         }
         last_fault = ~0ull;
         uint64_t flushes = m->stats.block_flushes;
-        HvBlock *b = lookup(cpu, cpu->pc, pa, block_flags(cpu), code, avail);
+        int made = 0;
+        HvBlock *b = lookup(cpu, cpu->pc, pa, block_flags(cpu), code, avail, &made);
         /* A full flush while translating freed the slot the last exit came through,
            and new blocks may have it now: chaining it would rewrite one of theirs. */
         if (m->stats.block_flushes != flushes) pending_chain = NULL;
@@ -1037,6 +1047,18 @@ static int run_loop(HvCpu *cpu, int one) {
             fprintf(stderr, "hengevm: cannot translate block at %llx\n", (unsigned long long)cpu->pc);
             park(cpu);
             return HV_EXIT_UNSUPPORTED;
+        }
+        /* The CPU translated, not live for TLBIs (lookup): one done meanwhile (its requests are done now) may have
+           remapped the page the block came from. Go in only if the guest's tables still say pc runs from there;
+           else fetch it again. */
+        if (made) {
+            HvWalk w;
+            hv_mmu_walk(cpu, cpu->pc, HV_ACC_EXEC, cpu->el, &w);
+            if (w.fsc || w.pa != pa) {
+                HV_ST(cpu).retranslated++;
+                pending_chain = NULL;
+                continue;
+            }
         }
         /* Remember it for indirect branches (not the tests' stop PC: that must reach us). */
         /* EL0 tables only hold user VAs and EL1 tables kernel VAs, so each half has its own salt. */
