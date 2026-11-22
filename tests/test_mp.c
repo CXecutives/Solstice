@@ -240,8 +240,10 @@ static void refresh_and_idle(void) {
         if (!phase) { /* kicked at each refresh deadline: the kicker wakes far more often than 60 times a second */
             snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: every 60 Hz refresh came (%.1f/s)", r);
             check(msg, r >= 57 && r <= 61.5);
-            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: devices polled about every millisecond (%.0f/s; %.0f allowed by this host)", p, want_polls);
-            check(msg, p >= 0.5 * want_polls);
+            /* How often the kicker gets to run is the host's call (a busy CI VM gave 84/s against 181 it promised a
+               moment before), so check what the engine decides: a poll at each kicker wakeup, not just at refreshes. */
+            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: devices polled at each kicker wakeup (%.0f/s, %.0f wakeups/s; %.0f allowed by this host)", p, k, want_polls);
+            check(msg, p >= 0.9 * k && p > r);
         } else { /* asleep until each refresh deadline: one refresh per wakeup */
             snprintf(msg, sizeof msg, "refresh, cpu 0 asleep: a refresh at each deadline (%.1f/s; %.1f allowed by this host)", r, want_asleep);
             check(msg, r >= 0.85 * want_asleep - 1 && r <= 61.5);
