@@ -224,7 +224,13 @@ _hv_helper_thunk:
     ldr w15, [x6, #12]
     ubfx w15, w15, #8, #11
     cbz w15, 3f
-    str x30, [x28, #CPU_REFILL_RET]
+    tbz w15, #10, 4f              // one that must be aligned (atomics, LDAR, ...)
+    ubfx w15, w15, #3, #6         // bytes - 1
+    and x15, x7, x15
+    cbnz x15, 3f                  // and is not: the helper faults (a refill would bring it straight back)
+    ldr w15, [x6, #12]
+    ubfx w15, w15, #8, #11
+4:  str x30, [x28, #CPU_REFILL_RET]
     str x6, [x28, #0x130]         // spill[3]: free in a slow path, its registers are back
     stp x0, x1, [x28, #0]
     stp x2, x3, [x28, #16]
