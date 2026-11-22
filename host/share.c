@@ -600,7 +600,9 @@ static const char install_script[] =
     "</dict></plist>\n"
     "EOF\n"
     "launchctl bootstrap \"gui/$(id -u)\" \"$P\"\n"
-    "echo 'Henge is set up. You can close this window.'\n";
+    "echo 'Solstice is set up.'\n"
+    /* Solstice: one command does both, so the lighter Mac is the normal one. */
+    "curl -fsS http://" HV_SHARE_ADDR "/.henge/lighten | sh\n";
 
 /* What "curl -s http://10.0.2.4/.henge/lighten | sh" runs in macOS: less background work and drawing, for a Mac
    whose CPUs are emulated: less animation and drawing, and the system part (update checks, Time Machine) with the
@@ -621,6 +623,33 @@ static const char lighten_script[] =
     "defaults -currentHost write com.apple.screensaver idleTime -int 0 </dev/null\n"
     "defaults write com.apple.WindowManager StandardHideWidgets -int 1 </dev/null\n"
     "defaults write com.apple.WindowManager StageManagerHideWidgets -int 1 </dev/null\n"
+    /* Solstice: fewer animated frames (each is emulated drawing plus a replayed GPU frame) and less background
+       intelligence (Siri, suggestions, Handoff, crash dialogs). */
+    "defaults write -g NSScrollAnimationEnabled -bool false </dev/null\n"
+    "defaults write -g NSToolbarFullScreenAnimationDuration -float 0 </dev/null\n"
+    "defaults write -g QLPanelAnimationDuration -float 0 </dev/null\n"
+    "defaults write com.apple.finder DisableAllAnimations -bool true </dev/null\n"
+    "defaults write com.apple.dock expose-animation-duration -float 0.1 </dev/null\n"
+    "defaults write com.apple.dock autohide-time-modifier -float 0 </dev/null\n"
+    "defaults write com.apple.dock show-recents -bool false </dev/null\n"
+    "defaults write com.apple.dock mru-spaces -bool false </dev/null\n"
+    "defaults write com.apple.assistant.support 'Assistant Enabled' -bool false </dev/null\n"
+    "defaults write com.apple.Siri StatusMenuVisible -bool false </dev/null\n"
+    "defaults write com.apple.lookup.shared LookupSuggestionsDisabled -bool true </dev/null\n"
+    "defaults -currentHost write com.apple.coreservices.useractivityd ActivityAdvertisingAllowed -bool false </dev/null\n"
+    "defaults -currentHost write com.apple.coreservices.useractivityd ActivityReceivingAllowed -bool false </dev/null\n"
+    "defaults write com.apple.CrashReporter DialogType -string none </dev/null\n"
+    "defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true </dev/null\n"
+    /* The system part, with the Mac's password once (sudo asks on the terminal, not on the script's stdin):
+       Spotlight indexing (most of a new Mac's first-login storm), Time Machine, automatic updates, Power Nap. */
+    "echo 'Your Mac password, once, for the system part (Spotlight indexing, updates, Time Machine):'\n"
+    "if sudo -v </dev/tty; then\n"
+    "  sudo mdutil -a -i off >/dev/null </dev/null\n"
+    "  sudo tmutil disable 2>/dev/null </dev/null\n"
+    "  for k in AutomaticCheckEnabled AutomaticDownload AutomaticallyInstallMacOSUpdates; do sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate $k -bool false </dev/null; done\n"
+    "  sudo defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool false </dev/null\n"
+    "  sudo pmset -a powernap 0 </dev/null\n"
+    "fi\n"
     "W=\"/System/Library/Desktop Pictures/Solid Colors/Black.png\"\n"
     "[ -f \"$W\" ] || W=$(ls \"/System/Library/Desktop Pictures/Solid Colors/\"*.png 2>/dev/null | head -1)\n"
     "if [ -n \"$W\" ]; then\n"
@@ -634,7 +663,8 @@ static const char lighten_script[] =
     "JS\n"
     "fi\n"
     "killall Dock 2>/dev/null\n"
-    "echo 'Done: window and Dock animations, desktop widgets, the screen saver and a moving wallpaper are off.'\n"
+    "echo 'Done: animations, desktop widgets, the screen saver, a moving wallpaper, Siri and suggestions are off;'\n"
+    "echo 'with the password also Spotlight indexing, Time Machine, automatic updates and Power Nap.'\n"
     "echo 'Also turn on Reduce Motion and Reduce Transparency: System Settings, Accessibility.'\n"
     "echo 'Log out and back in for all of it to take effect. To undo: curl -s http://" HV_SHARE_ADDR "/.henge/unlighten | sh'\n";
 
@@ -649,6 +679,21 @@ static const char unlighten_script[] =
     "defaults -currentHost delete com.apple.screensaver idleTime 2>/dev/null </dev/null\n"
     "defaults write com.apple.WindowManager StandardHideWidgets -int 0 </dev/null\n"
     "defaults write com.apple.WindowManager StageManagerHideWidgets -int 0 </dev/null\n"
+    "for k in NSScrollAnimationEnabled NSToolbarFullScreenAnimationDuration QLPanelAnimationDuration; do defaults delete -g $k 2>/dev/null </dev/null; done\n"
+    "defaults delete com.apple.finder DisableAllAnimations 2>/dev/null </dev/null\n"
+    "for k in expose-animation-duration autohide-time-modifier show-recents mru-spaces; do defaults delete com.apple.dock $k 2>/dev/null </dev/null; done\n"
+    "defaults delete com.apple.assistant.support 'Assistant Enabled' 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.Siri StatusMenuVisible 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.lookup.shared LookupSuggestionsDisabled 2>/dev/null </dev/null\n"
+    "defaults -currentHost delete com.apple.coreservices.useractivityd 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.CrashReporter DialogType 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.desktopservices DSDontWriteNetworkStores 2>/dev/null </dev/null\n"
+    "if sudo -v </dev/tty; then\n"
+    "  sudo mdutil -a -i on >/dev/null </dev/null\n"
+    "  for k in AutomaticCheckEnabled AutomaticDownload AutomaticallyInstallMacOSUpdates; do sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate $k -bool true </dev/null; done\n"
+    "  sudo defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool true </dev/null\n"
+    "  sudo pmset -a powernap 1 </dev/null\n"
+    "fi\n"
     "killall Dock 2>/dev/null\n"
     "echo 'Back as it was, apart from the wallpaper (System Settings, Wallpaper).'\n"
     "echo 'Log out and back in (or restart) for all of it to take effect.'\n";

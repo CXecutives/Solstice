@@ -66,9 +66,12 @@ void hv_net_set_share_socket(const char *path) {
     snprintf(share_socket, sizeof share_socket, "%s", path ? path : "");
 }
 
+/* 0: full (dropped); 1: queued; 2: queued into an empty queue, so its reader needs waking. The network thread
+   drains to_host completely each round, so a frame behind others is picked up without a wake of its own. */
 static int push(Queue *q, const uint8_t *data, uint32_t len) {
     pthread_mutex_lock(&q->mu);
     int ok = q->tail - q->head < QUEUE;
+    if (ok && q->tail == q->head) ok = 2;
     if (ok) {
         Frame *f = &q->f[q->tail % QUEUE];
         f->data = malloc(len);
@@ -244,7 +247,7 @@ static void dns_send(const uint8_t *frame, uint32_t len, int guest) {
     if (guest) {
         log_frame("rx dns", frame, len);
         if (push(&to_guest, frame, len)) hv_machine_wake(machine);
-    } else if (push(&to_host, frame, len)) {
+    } else if (push(&to_host, frame, len) == 2) {
         char c = 0;
         (void)!write(wake_pipe[1], &c, 1);
     }
@@ -256,7 +259,7 @@ static void transmit(void *opaque, const uint8_t *frame, uint32_t len) {
     hv_net_tx_frames++;
     log_frame("tx", frame, len);
     if (hv_dns_proxy_take(frame, len, dns_send)) return;
-    if (push(&to_host, frame, len)) {
+    if (push(&to_host, frame, len) == 2) {
         char c = 0;
         (void)!write(wake_pipe[1], &c, 1);
     }
