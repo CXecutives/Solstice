@@ -77,7 +77,10 @@ typedef struct HvVmapple {
     void *ctrr, *sealed;
     pthread_t prefault_thread;
     int prefault_started;
-    void (*poll)(void);      /* extra device work on the CPU thread each tick (Mac PVG) */
+    void (*poll)(void);      /* extra device work on the CPU thread each device poll (Mac PVG) */
+    /* CPU 0 polls the devices when woken for them or at a deadline: the display's refresh, or this long after the
+       last poll (HV_DEV_SAFETY if 0; the Mac's PVG framework, whose interrupts wait for a poll, sets 1 ms). */
+    uint64_t poll_period, poll_due;
 } HvVmapple;
 
 /* Builds the machine around m and cfg->nr_cpus CPUs (cpus is an array of them). Disks may be NULL (no device then).
@@ -91,5 +94,7 @@ void hv_vmapple_reset_cpu(HvVmapple *b);
 /* No CPU or host device callback may be using the board. */
 void hv_vmapple_destroy(HvVmapple *b);
 uint8_t *hv_vmapple_avp_regs(void *avp);
+/* Brings size bytes of file-backed guest RAM in, ahead of the guest, without dirtying them (the prefault thread). */
+void hv_vmapple_prefault(uint8_t *ram, uint64_t size);
 
 #endif

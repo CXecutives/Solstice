@@ -221,7 +221,7 @@ static void flush_words(HvMachine *m) {
    does for a page. Other CPUs may be running the old branch: it still goes where it went until they catch up. */
 static void unpatch(HvMachine *m, uint32_t idx) {
     uint32_t *site = m->slot_site[idx], *stub = m->slot_stub[idx], *cond = m->slot_cond[idx];
-    __atomic_store_n(&m->slots[idx], 0, __ATOMIC_RELEASE);
+    __atomic_store_n(HV_SLOT(m, idx), 0, __ATOMIC_RELEASE);
     if (m->slot_xpa[idx]) xunlink(m, idx);
     if (!site || !stub) return;
     uint32_t insn = 0x14000000u | (uint32_t)((stub - site) & 0x3ffffff);
@@ -345,7 +345,7 @@ int hv_cc_kind(HvMachine *m, uint64_t va, uint64_t pa, uint32_t flags) {
     uint8_t e = __atomic_load_n(&cc->evicted[tenure_key(cc, va, pa, flags)], __ATOMIC_RELAXED);
     /* Dropped by one of the last two laps' evictions, and wanted again: working set. */
     if (!e || (uint8_t)((uint8_t)__atomic_load_n(&cc->nevict, __ATOMIC_RELAXED) - e) > 2 * cc->nseg) return HV_CC_YOUNG;
-    __atomic_add_fetch(&cc->tenured, 1, __ATOMIC_RELAXED);
+    hv_stats_here(m)->cc_tenured++; /* this CPU's own line */
     return HV_CC_TENURED;
 }
 
@@ -365,7 +365,7 @@ int hv_cc_publish(HvMachine *m, const HvBlock *nb, uint32_t h, HvBlock **out) {
        passed them before their sites were set). */
     for (uint32_t k = 0, n = hv_translate_nsites(); k < n; k++) {
         uint32_t idx = hv_translate_site_slot(k);
-        uint64_t v = __atomic_load_n(&m->slots[idx], __ATOMIC_RELAXED);
+        uint64_t v = __atomic_load_n(HV_SLOT(m, idx), __ATOMIC_RELAXED);
         if (v && !hv_cc_code_live(m, (const uint32_t *)(uintptr_t)v)) unpatch(m, idx);
     }
     flush_words(m);
@@ -408,7 +408,7 @@ static void check_bad(HvMachine *m, const char *what, unsigned long long v) {
 static void check_gone(HvMachine *m, uint32_t s) {
     HvCodeCache *cc = &m->cc;
     for (uint32_t idx = 0, hw = slots_hw(m); idx < hw; idx++) {
-        uint64_t v = __atomic_load_n(&m->slots[idx], __ATOMIC_RELAXED);
+        uint64_t v = __atomic_load_n(HV_SLOT(m, idx), __ATOMIC_RELAXED);
         if (v && in_seg(m, (const uint32_t *)(uintptr_t)v, s)) check_bad(m, "an exit still chained into a freed segment", idx);
         uint32_t *site = __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE);
         if (site && in_seg(m, site, s)) check_bad(m, "an exit of a freed segment kept", idx);
@@ -460,7 +460,7 @@ static int job_step(HvMachine *m) {
     case JOB_UNCHAIN: { /* exits from blocks elsewhere chained into it: back to their stubs */
         uint32_t hw = slots_hw(m), end = cc->job_cursor + SCAN_STEP < hw ? cc->job_cursor + SCAN_STEP : hw;
         for (uint32_t idx = cc->job_cursor; idx < end; idx++) {
-            uint64_t v = __atomic_load_n(&m->slots[idx], __ATOMIC_RELAXED);
+            uint64_t v = __atomic_load_n(HV_SLOT(m, idx), __ATOMIC_RELAXED);
             if (!v || !in_seg(m, (const uint32_t *)(uintptr_t)v, s)) continue;
             uint32_t *site = __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE);
             /* Not placed yet (hv_cc_publish sees to it), or an exit of the segment itself (freed with it). */
@@ -492,7 +492,7 @@ static int job_step(HvMachine *m) {
             uint32_t *site = __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE);
             if (!site || !in_seg(m, site, s)) continue;
             if (m->slot_xpa[idx]) xunlink(m, idx);
-            __atomic_store_n(&m->slots[idx], 0, __ATOMIC_RELAXED);
+            __atomic_store_n(HV_SLOT(m, idx), 0, __ATOMIC_RELAXED);
             __atomic_store_n(&m->slot_site[idx], NULL, __ATOMIC_RELAXED);
             m->slot_stub[idx] = m->slot_cond[idx] = NULL;
             m->slot_xa[idx] = 0;

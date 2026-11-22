@@ -119,6 +119,7 @@ _\name\()_end:
 #include "cpu.h"
 #include "dispatch.h"
 #include "machine.h"
+#include "translate.h"
 
 /* SAN=1 builds trap on undefined behaviour (BRK #0x55xx, no runtime library): say in which function and which check
    before the test dies of it, so the CI log shows where. Other BRKs (a guest program's, run natively) are left alone. */
@@ -147,6 +148,15 @@ __attribute__((constructor)) static void hv_ub_trap_init(void) {
 }
 
 void hv_native_run(HvCpu *cpu, const void *entry);
+
+/* Translated code per guest instruction over every block placed so far (hv_xlate_counts). */
+static inline void print_code_size(const char *what) {
+    const HvXlateCounts *c = &hv_xlate_counts;
+    double n = (double)c->insns + 1e-9;
+    printf("%s: code per guest instruction: hot %.2f cold %.2f pool %.2f total %.2f words (%llu blocks, %llu insns)\n", what,
+           (double)c->hot / n, (double)c->cold / n, (double)c->pool / n, (double)(c->hot + c->cold + c->pool) / n,
+           (unsigned long long)c->blocks, (unsigned long long)c->insns);
+}
 
 typedef struct TestProgram {
     const char *name;

@@ -1,9 +1,13 @@
 // Stage 1 walker: granules, block sizes, TTBR0/TTBR1, TBI, permissions and
-// fault codes, checked directly against hv_mmu_walk.
+// fault codes, checked directly against hv_mmu_walk. Then TLBIs between CPUs:
+// requests and remote drops directly, and guest code on four CPU threads at once.
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
+#include "dispatch.h"
 #include "machine.h"
 #include "mmu.h"
 #include "sysreg.h"
@@ -63,7 +67,161 @@ static void expect(const char *what, HvCpu *cpu, uint64_t va, HvAccess acc, int 
     }
 }
 
+/* ---- Four CPUs at once (mmu_programs.S): CPU 0 remaps a code page X, generation after generation, with TLBIs both
+   kinds (requests the others do themselves, and drops done in their TLBs), while the others call X, two of them
+   switching address spaces before each call. Every CPU translates X's new code each generation, so TLBIs meet
+   translating CPUs (not live for them, O8a) and process switches (O8b). A call must never run code older than the
+   generation it reads (one older after a remote drop: see mmu_exec). Any guest exception fails it too. ---- */
+extern const char mmu_programs_begin[], mmu_programs_finish[], mmu_remap[], mmu_exec[], mmu_exec_switch[], mmu_xcode[],
+    mmu_done[], mmu_vectors[];
+#define ADDR(sym) ((uint64_t)(uintptr_t)(sym))
+#define RT_TABLES 32
+#define RT_BITS (3ull | 1ull << 10 | 3ull << 8) /* page, accessed, inner shareable, attribute 0; EL1 read/write */
+#define RT_NG (1ull << 11)                      /* not global: X's mappings are per ASID */
+static uint8_t *rt_pt;
+static unsigned rt_next;
+
+static uint64_t rt_table(void) {
+    if (rt_next == RT_TABLES) {
+        printf("  FAIL remap test: out of page tables\n");
+        exit(1);
+    }
+    uint8_t *t = rt_pt + (size_t)rt_next++ * 16384;
+    memset(t, 0, 16384);
+    return ADDR(t);
+}
+
+/* va's level 3 entry (16 KB granule, 48-bit VA: levels 0-3), making the tables on the way. */
+static uint64_t *rt_entry(uint64_t root, uint64_t va) {
+    uint64_t table = root;
+    for (int level = 0; level < 3; level++) {
+        int shift = 14 + 11 * (3 - level);
+        uint64_t *e = (uint64_t *)(uintptr_t)table + ((va >> shift) & (level == 0 ? 1 : 0x7ff));
+        if (!(*e & 1)) *e = rt_table() | 3;
+        table = *e & 0x0000ffffffffc000ull;
+    }
+    return (uint64_t *)(uintptr_t)table + ((va >> 14) & 0x7ff);
+}
+
+static void rt_identity(uint64_t root, uint64_t start, uint64_t end) {
+    for (uint64_t va = start & ~0x3fffull; va < end; va += 16384) *rt_entry(root, va) = va | RT_BITS;
+}
+
+static void *rt_thread(void *arg) {
+    return (void *)(intptr_t)hv_run(arg);
+}
+
+static void remap_test(void) {
+    static HvMachine rm;
+    static HvCpu rc[4];
+    const uint32_t last = 3000;               /* generations a round */
+    const uint64_t X = 0x0000555500000000ull; /* nowhere near the process's own addresses */
+    if (hv_machine_init(&rm, 16 << 20) != 0) exit(1);
+    rm.stats_interval = 3600; /* counted as on a device (HV_STATS), never printed here */
+    uint8_t *data = aligned_alloc(16384, 4 * 16384); /* page 0: the generation, the code pages' addresses; then the code pages */
+    rt_pt = aligned_alloc(16384, RT_TABLES * 16384);
+    rt_next = 0;
+    hv_machine_add_ram(&rm, ADDR(mmu_programs_begin), (uint64_t)(mmu_programs_finish - mmu_programs_begin), (void *)mmu_programs_begin, 1);
+    hv_machine_add_ram(&rm, ADDR(data), 4 * 16384, data, 0);
+    hv_machine_add_ram(&rm, ADDR(rt_pt), RT_TABLES * 16384, rt_pt, 0);
+    uint64_t root = rt_table();
+    rt_identity(root, ADDR(mmu_programs_begin), ADDR(mmu_programs_finish));
+    rt_identity(root, ADDR(data), ADDR(data) + 4 * 16384);
+    rt_identity(root, ADDR(rt_pt), ADDR(rt_pt) + RT_TABLES * 16384);
+    uint64_t *xpte = rt_entry(root, X);
+    checks++;
+    if (*xpte) {
+        printf("  FAIL remap test: X is mapped already\n");
+        failures++;
+        return;
+    }
+    uint32_t *gen = (uint32_t *)(void *)data;
+    uint64_t *page = (uint64_t *)(void *)(data + 64);
+    for (int round = 0; round < 2; round++) {
+        hv_knob[HV_K_SYNCWAIT] = round; /* waiting for acknowledgements: spinning, then sleeping */
+        *gen = 0;
+        for (int i = 0; i < 3; i++) {
+            page[i] = ADDR(data) + 16384 * (uint64_t)(i + 1);
+            memcpy((void *)(uintptr_t)page[i], mmu_xcode, 12);
+        }
+        *xpte = page[0] | RT_BITS | RT_NG;
+        for (int i = 0; i < 4; i++) {
+            HvCpu *c = &rc[i];
+            hv_cpu_reset_index(c, &rm, (uint32_t)i);
+            c->mpidr = (uint64_t)i;
+            c->ttbr0_el1 = root | 1ull << 48;
+            c->tcr_el1 = 16 | 2u << 14 | 1u << 23 | 5ull << 32; /* T0SZ 16, TG0 16 KB, EPD1, 48-bit PA */
+            c->mair_el1 = 0xff;
+            c->sctlr_el1 |= 1;
+            c->vbar_el1 = ADDR(mmu_vectors);
+            c->x[9] = ADDR(gen);
+            c->x[10] = X;
+            c->x[11] = last;
+            c->x[15] = root | 1ull << 48;
+            c->x[16] = root | 2ull << 48;
+            c->pc = i == 0 ? ADDR(mmu_remap) : i == 1 ? ADDR(mmu_exec) : ADDR(mmu_exec_switch);
+        }
+        rc[0].x[12] = ADDR(page);
+        rc[0].x[13] = ADDR(xpte);
+        rc[0].x[14] = RT_BITS | RT_NG;
+        rm.stop_pc = ADDR(mmu_done);
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 8u << 20);
+        pthread_t t[4];
+        for (int i = 0; i < 4; i++) pthread_create(&t[i], &attr, rt_thread, &rc[i]);
+        pthread_attr_destroy(&attr);
+        for (int i = 0; i < 4; i++) {
+            void *r;
+            pthread_join(t[i], &r);
+            if (i == 0) __atomic_store_n(gen, last, __ATOMIC_SEQ_CST); /* the callers stop even if the remapper did not finish */
+            checks += 2;
+            if ((intptr_t)r != HV_EXIT_HALT) printf("  FAIL remap test round %d: cpu %d left with %d at pc %llx\n", round, i, (int)(intptr_t)r, (unsigned long long)rc[i].pc), failures++;
+            if (rc[i].x[20]) {
+                printf("  FAIL remap test round %d: cpu %d took an exception: esr %llx far %llx elr %llx\n", round, i,
+                       (unsigned long long)rc[i].x[20], (unsigned long long)rc[i].x[19], (unsigned long long)rc[i].x[18]);
+                failures++;
+            }
+        }
+        checks++;
+        if ((uint32_t)rc[0].x[1] != last + 1) printf("  FAIL remap test round %d: the remapper stopped at generation %u of %u\n", round, (uint32_t)rc[0].x[1], last), failures++;
+        for (int i = 1; i < 4; i++) {
+            checks += 2;
+            if (!rc[i].x[24]) printf("  FAIL remap test round %d: cpu %d never called X\n", round, i), failures++;
+            if (rc[i].x[21]) {
+                printf("  FAIL remap test round %d: cpu %d ran older code than it read %llu times (first: code %llu, generation %llu)\n",
+                       round, i, (unsigned long long)rc[i].x[21], (unsigned long long)rc[i].x[22], (unsigned long long)rc[i].x[23]);
+                failures++;
+            }
+        }
+        static HvStats s;
+        hv_stats_total(&rm, &s);
+        printf("remap test round %d: %u generations, calls %llu %llu %llu, tlbi waits %llu, translations %llu, fetched again after one %llu\n",
+               round, last, (unsigned long long)rc[1].x[24], (unsigned long long)rc[2].x[24], (unsigned long long)rc[3].x[24],
+               (unsigned long long)s.syncs, (unsigned long long)s.translations, (unsigned long long)s.retranslated);
+    }
+    hv_knob[HV_K_SYNCWAIT] = 0;
+    hv_machine_free(&rm);
+    free(data);
+    free(rt_pt);
+}
+
+/* O8b: a TTBR0 write (a process switch) does the TLBIs other CPUs asked of this one first. */
+static void switch_does_requests(HvMachine *m) {
+    static HvCpu c;
+    hv_cpu_reset_index(&c, m, 2);
+    HvPerCpu *p = c.pc_state;
+    uint64_t seq = hv_cpu_post_tlbi(&c, 0, 8, 3, 0, 0); /* TLBI VMALLE1IS */
+    checks += 2;
+    if (__atomic_load_n(&p->ack_seq, __ATOMIC_ACQUIRE) >= seq) printf("  FAIL a request was done before its CPU ran\n"), failures++;
+    c.el = 1;
+    c.x[3] = 0x4000 | 3ull << 48;
+    hv_sysreg_msr(&c, 0xd5182003u, 0); /* msr ttbr0_el1, x3 */
+    if (__atomic_load_n(&p->ack_seq, __ATOMIC_ACQUIRE) < seq) printf("  FAIL a process switch left a TLBI request for later\n"), failures++;
+}
+
 int main(void) {
+    alarm(300); /* a multi-CPU test that hangs fails */
     static HvMachine m;
     static HvCpu cpu;
     hv_machine_init(&m, 1 << 20);
@@ -356,7 +514,7 @@ int main(void) {
         uint32_t base = m.nslots + 16, pages[4] = {10, 11, 10, 10}, n0 = m.nxchained;
         for (uint32_t i = 0; i < 4; i++) {
             uint32_t idx = base + i, pg = pages[i];
-            m.slots[idx] = 0x1000 + i;
+            *HV_SLOT(&m, idx) = 0x1000 + i;
             m.slot_site[idx] = NULL;
             m.slot_xpa[idx] = (r->pa + ((uint64_t)pg << 14)) | 1;
             m.slot_xnext[idx] = r->xhead[pg];
@@ -366,7 +524,7 @@ int main(void) {
         r->code_pages[10] = 1;
         hv_invalidate_code(&m, r->pa + (10ull << 14) + 0x40);
         for (uint32_t i = 0; i < 4; i++) {
-            int gone = m.slots[base + i] == 0 && m.slot_xpa[base + i] == 0;
+            int gone = *HV_SLOT(&m, base + i) == 0 && m.slot_xpa[base + i] == 0;
             checks++;
             if (gone != (pages[i] == 10)) printf("  FAIL code change %s an exit chained into page %u\n", gone ? "unchained" : "kept", pages[i]), failures++;
         }
@@ -377,7 +535,7 @@ int main(void) {
         r->code_pages[11] = 1;
         hv_invalidate_code(&m, r->pa + (11ull << 14));
         checks++;
-        if (m.slots[base + 1] || r->xhead[11] || m.nxchained != n0) printf("  FAIL the second page's exit stayed chained\n"), failures++;
+        if (*HV_SLOT(&m, base + 1) || r->xhead[11] || m.nxchained != n0) printf("  FAIL the second page's exit stayed chained\n"), failures++;
     }
 
     /* Another CPU's big range TLBI (64 user pages of ASID 5: over the 32 done from here by default). With HV_RANGE_DROP it is done from here in one pass:
@@ -473,6 +631,9 @@ int main(void) {
         }
         hv_knob[HV_K_WALKLOG] = 1;
     }
+
+    switch_does_requests(&m);
+    remap_test();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;

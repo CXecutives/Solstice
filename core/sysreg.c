@@ -69,7 +69,6 @@ static int el0_allowed(HvCpu *cpu, uint32_t reg, int write) {
 
 /* Returns 0 and sets *v, or -1 if the register does not exist. */
 static int read_reg(HvCpu *cpu, uint32_t reg, uint64_t *v) {
-    uint64_t now = counter();
     HvMachine *m = cpu->m;
     switch (reg) {
     case R(3, 3, 4, 2, 0): *v = cpu->nzcv & 0xf0000000; return 0;
@@ -130,15 +129,15 @@ static int read_reg(HvCpu *cpu, uint32_t reg, uint64_t *v) {
         *v = (cpu->csselr_el1 >> 1) == 0 ? (127u << 13 | 7u << 3 | 2) : (2047u << 13 | 15u << 3 | 2);
         return 0;
 
-    /* Generic timer */
+    /* Generic timer: the counter is read for these only (TR-11a: not for every other register, ~30 ns each). */
     case R(3, 3, 14, 0, 0): *v = CNTFRQ; return 0;
-    case R(3, 3, 14, 0, 1): case R(3, 3, 14, 0, 5): *v = now; return 0;
-    case R(3, 3, 14, 0, 2): case R(3, 3, 14, 0, 6): *v = now - cpu->cntvoff; return 0;
-    case R(3, 3, 14, 2, 0): *v = (uint32_t)(cpu->cntp_cval - now); return 0;
-    case R(3, 3, 14, 2, 1): *v = timer_ctl(cpu->cntp_ctl, cpu->cntp_cval, now); return 0;
+    case R(3, 3, 14, 0, 1): case R(3, 3, 14, 0, 5): *v = counter(); return 0;
+    case R(3, 3, 14, 0, 2): case R(3, 3, 14, 0, 6): *v = counter() - cpu->cntvoff; return 0;
+    case R(3, 3, 14, 2, 0): *v = (uint32_t)(cpu->cntp_cval - counter()); return 0;
+    case R(3, 3, 14, 2, 1): *v = timer_ctl(cpu->cntp_ctl, cpu->cntp_cval, counter()); return 0;
     case R(3, 3, 14, 2, 2): *v = cpu->cntp_cval; return 0;
-    case R(3, 3, 14, 3, 0): *v = (uint32_t)(cpu->cntv_cval - (now - cpu->cntvoff)); return 0;
-    case R(3, 3, 14, 3, 1): *v = timer_ctl(cpu->cntv_ctl, cpu->cntv_cval, now - cpu->cntvoff); return 0;
+    case R(3, 3, 14, 3, 0): *v = (uint32_t)(cpu->cntv_cval - (counter() - cpu->cntvoff)); return 0;
+    case R(3, 3, 14, 3, 1): *v = timer_ctl(cpu->cntv_ctl, cpu->cntv_cval, counter() - cpu->cntvoff); return 0;
     case R(3, 3, 14, 3, 2): *v = cpu->cntv_cval; return 0;
     }
     /* GIC CPU interface (ICC_*_EL1): CRn 12, CRm 8..12, and ICC_PMR_EL1. */
@@ -192,7 +191,7 @@ static int write_reg(HvCpu *cpu, uint32_t reg, uint64_t v) {
         uint64_t changed = cpu->sctlr_el1 ^ v;
         cpu->sctlr_el1 = v;
         if (changed & (1u | 1u << 19 | 1u << 24 | 1u << 25)) { /* M, WXN, E0E, EE: what translations depend on */
-            cpu->m->stats.flush_why[2]++;
+            HV_ST(cpu).flush_why[2]++;
             hv_tlb_flush(cpu);
             __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_RELAXED); /* the block's chained exit must not follow the old mapping */
         }
@@ -201,6 +200,9 @@ static int write_reg(HvCpu *cpu, uint32_t reg, uint64_t v) {
     case R(3, 0, 1, 0, 1): cpu->actlr_el1 = v; return 0;
     case R(3, 0, 1, 0, 2): cpu->cpacr_el1 = v; return 0;
     case R(3, 0, 2, 0, 0): { /* a process switch */
+        /* What other CPUs asked first (O8b): a TLBI of theirs reaches the going process's entries before they are put
+           aside, so it cannot come back with them, and they need not wait for this CPU's next block exit. */
+        if (cpu->pc_state) hv_cpu_process_requests(cpu);
         uint64_t old = cpu->ttbr0_el1;
         cpu->ttbr0_el1 = v;
         if (old != v) cpu->ttbr0_changed_at = mach_absolute_time();
@@ -211,13 +213,13 @@ static int write_reg(HvCpu *cpu, uint32_t reg, uint64_t v) {
     case R(3, 0, 2, 0, 1): { /* TTBR1: rewritten unchanged on context switches; its ASID field only counts with TCR.A1 */
         uint64_t changed = (cpu->ttbr1_el1 ^ v) & ((cpu->tcr_el1 >> 22) & 1 ? ~0ull : 0x0000ffffffffffffull);
         cpu->ttbr1_el1 = v;
-        if (changed) cpu->m->stats.flush_why[3]++, hv_tlb_flush(cpu);
+        if (changed) HV_ST(cpu).flush_why[3]++, hv_tlb_flush(cpu);
         return 0;
     }
     case R(3, 0, 2, 0, 2):
         if (cpu->tcr_el1 != v) {
             cpu->tcr_el1 = v;
-            cpu->m->stats.flush_why[4]++;
+            HV_ST(cpu).flush_why[4]++;
             hv_tlb_flush(cpu);
         }
         return 0;
@@ -229,7 +231,7 @@ static int write_reg(HvCpu *cpu, uint32_t reg, uint64_t v) {
     case R(3, 0, 10, 2, 0):
         if (cpu->mair_el1 != v) {
             cpu->mair_el1 = v;
-            cpu->m->stats.flush_why[5]++;
+            HV_ST(cpu).flush_why[5]++;
             hv_tlb_flush(cpu);
         }
         return 0;
@@ -252,7 +254,7 @@ static int write_reg(HvCpu *cpu, uint32_t reg, uint64_t v) {
     }
     /* Timer outputs follow their registers at once, as in hardware: a masked
        timer must drop its line before the handler's EOI. */
-    if (m->tick) m->tick(m, cpu);
+    if (m->tick) hv_cpu_set_due(cpu, m->tick(m, cpu)); /* and the kicker knows the new deadline */
     return 0;
 other:
     /* PAuth key registers (CRn 2, CRm 1..3): kept, never used, since signing is a no-op. */
@@ -304,7 +306,7 @@ static void irq_check(HvCpu *cpu) {
     (void)m;
     if (p && ((p->irq_line && !(cpu->daif & HV_PSTATE_I)) || (p->fiq_line && !(cpu->daif & HV_PSTATE_F)))) {
         __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_RELAXED);
-        if (m->stats_interval) m->stats.kick_src[4]++;
+        if (m->stats_interval) HV_ST(cpu).kick_src[4]++;
     }
 }
 
@@ -360,12 +362,12 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
         uint64_t len = shift ? pages << shift : 0;
         if (!shift || len > (256ull << HV_TLB_PAGE_BITS)) {
             /* Reserved granule: everything. A big range: what of that half lies in it. */
-            if (!shift) cpu->m->stats.flush_why[6]++, hv_tlb_flush(cpu);
+            if (!shift) HV_ST(cpu).flush_why[6]++, hv_tlb_flush(cpu);
             else if ((va >> 55) & 1) hv_tlb_flush_kernel_range(cpu, va, len);
             else {
                 hv_tlb_flush_user_range(cpu, va, len);
                 hv_tlb_stash_drop(cpu, all_asids ? -1 : (int)(xt >> 48));
-                cpu->m->stats.reset_why[7]++;
+                HV_ST(cpu).reset_why[7]++;
                 hv_ijc_drop_range(cpu, va, len, all_asids ? -1 : (int)(xt >> 48));
             }
         } else {
@@ -382,13 +384,13 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
     } else if (by_asid) {
         hv_tlb_flush_user(cpu);
         hv_tlb_stash_drop(cpu, (int)(xt >> 48));
-        cpu->m->stats.reset_why[1]++;
-        if (cpu->m->stats_interval) cpu->m->stats.ijc_reset_kind[2]++;
+        HV_ST(cpu).reset_why[1]++;
+        if (cpu->m->stats_interval) HV_ST(cpu).ijc_reset_kind[2]++;
         hv_ijc_drop_asid(cpu, (uint16_t)(xt >> 48));
     } else {
         if (cpu->m->log >= 2)
             fprintf(stderr, "tlbi-all S1_%u_C%u_C%u_%u pc %llx\n", op1, crn, crm, op2, (unsigned long long)pc);
-        cpu->m->stats.flush_why[crm == 7 ? 0 : 1]++;
+        HV_ST(cpu).flush_why[crm == 7 ? 0 : 1]++;
         uint64_t since_switch = crm == 7 ? mach_absolute_time() - cpu->ttbr0_changed_at : ~0ull; /* 24 MHz ticks */
         /* HV_SWITCH_FLUSH=1 (testing): macOS 27's xnu follows a process switch between two shared regions with a
            local TLBI VMALLE1, to drop the old region's global entries. Here every process's user entries are put
@@ -417,12 +419,12 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
         }
         if (crm == 7 && hv_knob[HV_K_SWITCHFLUSH] && (since_switch < 480 || late) &&
             (hv_knob[HV_K_SWITCHFLUSH] < 2 || (nth++ & 127) || !hv_tlb_check_all(cpu))) {
-            if (cpu->m->stats_interval) cpu->m->stats.flush_skipped++, cpu->m->stats.flush_skipped_late += (uint64_t)late;
+            if (cpu->m->stats_interval) HV_ST(cpu).flush_skipped++, HV_ST(cpu).flush_skipped_late += (uint64_t)late;
             return;
         }
         if (crm == 7 && cpu->m->stats_interval) {
             uint64_t dt = since_switch;
-            cpu->m->stats.flush_after_switch[dt < 48 ? 0 : dt < 480 ? 1 : dt < 4800 ? 2 : 3]++;
+            HV_ST(cpu).flush_after_switch[dt < 48 ? 0 : dt < 480 ? 1 : dt < 4800 ? 2 : 3]++;
             for (int i = 0; i < 8 && dt < 480; i++) { /* where the ones right after a switch come from */
                 uint64_t *slot_pc = &cpu->m->stats.flush_pc[i].pc;
                 if (*slot_pc == pc) { __atomic_add_fetch(&cpu->m->stats.flush_pc[i].n, 1, __ATOMIC_RELAXED); break; }
@@ -533,7 +535,7 @@ int hv_sysreg_sys(HvCpu *cpu, uint32_t insn, uint64_t pc) {
                     if (r < 0) why = 3;
                 }
                 if (done) continue;
-                if (m->stats_interval) m->stats.posted_kind[why]++;
+                if (m->stats_interval) HV_ST(cpu).posted_kind[why]++;
                 seq[i] = hv_cpu_post_tlbi(c, op1, crn, crm, op2, xt);
             }
             for (int i = 0; i < m->ncpus; i++)

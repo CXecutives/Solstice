@@ -54,10 +54,22 @@ enum InstantResume {
 
     /// Henge is in the background and stays awake there (KeepAlive): the Mac waits, paused, until Henge is back,
     /// using no CPU and no GPU (which is not Henge's in the background). With instant resume on, suspend() does
-    /// this and saves it too.
-    static func rest() {
+    /// this and saves it too. First the Mac is asked for about 1 GB of its memory (MemoryRelief), for up to 3 s:
+    /// its idle pages and file cache then do not sit in Henge's memory while iOS weighs what to close.
+    @MainActor static func rest() {
         guard !enabled, KeepAlive.enabled, henge_vm_state() == 1 else { return }
+        let asked = MemoryRelief.beforeBackgroundPause()
         queue.async {
+            if let asked {
+                let t0 = Date()
+                var got = henge_vm_balloon(-1)
+                while got >= 0, got + 64 < asked, Date().timeIntervalSince(t0) < 3, henge_vm_state() == 1 {
+                    usleep(100_000)
+                    got = henge_vm_balloon(-1)
+                }
+                HengeLog.log("memory", "before the background pause the Mac handed over \(max(got, 0)) of \(asked) MB in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+            }
+            guard henge_vm_state() == 1 else { return }
             var buffer = [CChar](repeating: 0, count: 256)
             let rc = henge_vm_pause(&buffer, buffer.count)
             HengeLog.log("keepalive", rc == 0 ? "the Mac waits, paused, while Henge is in the background" : "the Mac was not paused: \(String(cString: buffer))")
@@ -67,6 +79,11 @@ enum InstantResume {
     /// Henge is in the background: write the paused Mac out, in case iOS closes Henge. It stays paused.
     static func suspend(_ mac: VirtualMac, ramMB: UInt64, cpus: Int) {
         guard enabled, henge_vm_state() == 1 || henge_vm_state() == 4 else { return }
+        // Paused for want of storage: a save of its memory is what would fill the device.
+        guard !StorageGuard.holding else {
+            HengeLog.log("resume", "not saved: storage is almost full")
+            return
+        }
         let path = file(for: mac).path, id = ident(for: mac, ramMB: ramMB, cpus: cpus)
         var task = UIBackgroundTaskIdentifier.invalid
         task = UIApplication.shared.beginBackgroundTask(withName: "Henge save") {
@@ -94,12 +111,51 @@ enum InstantResume {
     }
 
     /// Back in the foreground before iOS closed Henge (or active again after a moment inactive): the saved file, if
-    /// any, is out of date the moment the Mac runs on.
-    static func cameBack(_ mac: VirtualMac) {
+    /// any, is out of date the moment the Mac runs on. The memory asked for only for the background goes back.
+    /// A Mac paused for want of storage stays paused (StorageGuard): it runs on when the user says so.
+    @MainActor static func cameBack(_ mac: VirtualMac) {
+        MemoryRelief.afterBackground()
+        guard !StorageGuard.holding else { return }
         queue.async {
             guard henge_vm_state() == 4 else { return }
             discard(for: mac)
             HengeLog.log("resume", henge_vm_continue() == 0 ? "back: the Mac runs on" : "back: the Mac could not run on")
         }
+    }
+
+    /// Storage ran short (StorageGuard): the Mac stops where it is, as when Henge leaves the foreground. done(true) on
+    /// the main thread if it is paused.
+    static func holdForStorage(_ done: @escaping @MainActor (Bool) -> Void) {
+        queue.async {
+            var buffer = [CChar](repeating: 0, count: 256)
+            let rc = henge_vm_state() == 1 ? henge_vm_pause(&buffer, buffer.count) : -1
+            HengeLog.log("storage", rc == 0 ? "storage almost full: the Mac is paused" : "storage almost full, but the Mac was not paused: \(String(cString: buffer))")
+            DispatchQueue.main.async { MainActor.assumeIsolated { done(rc == 0) } }
+        }
+    }
+
+    /// The user resumes it, with room again.
+    static func releaseStorageHold() {
+        queue.async {
+            guard henge_vm_state() == 4 else { return }
+            HengeLog.log("storage", henge_vm_continue() == 0 ? "room again: the Mac runs on" : "room again, but the Mac could not run on")
+        }
+    }
+}
+
+/// A running Mac's disk image is sparse and grows as macOS writes; with no storage left iOS closes apps and writes
+/// fail. Below 6 GB free the Mac is paused with a notice (SessionView), and runs on when the user asks once there is
+/// room again (a little more than the floor, so it does not stop again at once). Used on the main thread.
+enum StorageGuard {
+    static let minimumFree: Int64 = 6 << 30
+    static let resumeAt: Int64 = minimumFree + (512 << 20)
+    /// The Mac is paused for this: instant resume does not save it, coming back does not run it on.
+    static var holding = false
+
+    /// Free storage as iOS counts it for important use (what it can free for the asking included), or nil if it
+    /// cannot say: then nothing is done.
+    static func freeBytes() -> Int64? {
+        let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
     }
 }

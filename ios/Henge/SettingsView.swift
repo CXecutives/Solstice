@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(EngineTuning.fastFlushKey) private var fastFlush = true
     @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = false
     @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
+    @State private var safeMode = SafeMode.active
     @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = JITBootstrap.defaultCodeCacheMB
     @ObservedObject private var stream = LogStream.shared
     @AppStorage(LogStream.enabledKey) private var streamOn = false
@@ -121,6 +122,12 @@ struct SettingsView: View {
                     .listRowBackground(Desk.card)
                 }
                 Section("Performance") {
+                    if safeMode {
+                        LabeledContent("Safe mode", value: "On")
+                        Button("Use Solstice's Engine Settings") { SafeMode.turnOff(); safeMode = false }
+                        Text("The last two times, Solstice ended while a Mac was running, so Macs start with Henge's standard engine settings until the next update.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     Picker("Mac refresh rate", selection: $refreshRate) {
                         Text("30 Hz").tag(30)
                         Text("60 Hz").tag(60)

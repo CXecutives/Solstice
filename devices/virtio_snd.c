@@ -174,6 +174,12 @@ static uint32_t control(HvVirtioSnd *d, const HvVirtqElem *e) {
 
 /* ---- transmit ---- */
 
+/* CPU thread, after the oldest buffer in the ring changed: where the backend's next useful wake is. */
+static void note_next_end(HvVirtioSnd *d) {
+    atomic_store_explicit(&d->next_end, d->phead != d->pcopy ? d->pending_end[d->phead % HV_VSND_PENDING] : UINT64_MAX,
+                          memory_order_release);
+}
+
 /* Copy waiting buffers' audio into the ring while there is room. Their data is
    still in guest memory, so copying can wait. */
 
@@ -193,6 +199,8 @@ static void fill_ring(HvVirtioSnd *d) {
             hv_virtq_read(v, e, 4 + off, d->ring + at, n);
             off += n;
         }
+        /* The oldest in the ring now: its end is known to the backend before its audio is (release below). */
+        if (d->phead == d->pcopy) atomic_store_explicit(&d->next_end, w + len, memory_order_relaxed);
         atomic_store_explicit(&d->written, w + len, memory_order_release);
         d->pending_end[d->pcopy % HV_VSND_PENDING] = w + len;
         d->pcopy++;
@@ -241,6 +249,7 @@ void hv_virtio_snd_poll(HvVirtioSnd *d) {
         any = 1;
     }
     if (any) {
+        note_next_end(d);
         hv_virtio_interrupt(v);
         take_tx(d); /* room for more */
     }
@@ -262,8 +271,11 @@ uint32_t hv_virtio_snd_pull(HvVirtioSnd *d, void *buf, uint32_t len) {
         if (d->running) d->underruns++;
     }
     /* compare-exchange: a release on the CPU thread may have moved it on */
-    atomic_compare_exchange_strong(&d->consumed, &c, c + n);
-    if (n) hv_machine_wake(d->vio.m);
+    uint64_t played = c + n;
+    atomic_compare_exchange_strong(&d->consumed, &c, played);
+    /* The CPU thread only when a buffer can go back to the guest (all its audio played), not at every callback:
+       that is what paces the guest, and what frees room in the ring. Missed, the next tick's poll still does it. */
+    if (n && played >= atomic_load_explicit(&d->next_end, memory_order_acquire)) hv_machine_wake(d->vio.m);
     return n;
 }
 
@@ -305,6 +317,7 @@ HvVirtioSnd *hv_virtio_snd_create(HvMachine *m, HvPcie *bus) {
     memcpy(v->config + 8, &chmaps, 4);
     v->config_len = 12;
     d->ring = calloc(1, HV_VSND_RING);
+    atomic_store(&d->next_end, UINT64_MAX);
     hv_pcie_attach(bus, &v->pci);
     return d;
 }
@@ -313,6 +326,7 @@ HvVirtioSnd *hv_virtio_snd_create(HvMachine *m, HvPcie *bus) {
    without one starts from now (host times from before mean nothing). */
 void hv_virtio_snd_resume(HvVirtioSnd *d) {
     if (!d) return;
+    note_next_end(d); /* a restored device's buffers */
     d->clock_start_ns = now_ns();
     d->clock_start_consumed = atomic_load(&d->consumed);
     if (d->running && d->backend.start && d->backend.start(d->backend.opaque, d->channels, d->format, d->rate_hz) != 0)

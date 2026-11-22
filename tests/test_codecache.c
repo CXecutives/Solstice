@@ -147,6 +147,8 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     if (changes) pthread_join(changer, NULL);
     double secs = now_s() - t0;
     const HvCodeCache *cc = &m.cc;
+    static HvStats tot; /* the machine's counters and every CPU's own */
+    hv_stats_total(&m, &tot);
     uint64_t runs = 0, bad = 0;
     for (int i = 0; i < ncpu; i++) {
         runs += w[i].runs;
@@ -161,17 +163,17 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
            "%llu checks failed; %llu full flushes (%llu for room), %llu code changes\n",
            name, secs, (unsigned long long)runs, nseg, (4u << cc->seg_shift) >> 10, laps, (unsigned long long)cc->evictions,
            (unsigned long long)cc->evict_tenured, (unsigned long long)cc->evict_blocks, (unsigned long long)cc->evict_unchained,
-           (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3, (unsigned long long)cc->tenured,
-           (unsigned long long)cc->stale, (unsigned long long)cc->check_bad, (unsigned long long)m.stats.block_flushes,
-           (unsigned long long)m.stats.flush_full, (unsigned long long)nchanges);
+           (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3, (unsigned long long)tot.cc_tenured,
+           (unsigned long long)cc->stale, (unsigned long long)cc->check_bad, (unsigned long long)tot.block_flushes,
+           (unsigned long long)tot.flush_full, (unsigned long long)nchanges);
     if (bad) printf("%s: %llu runs wrong: FAIL\n", name, (unsigned long long)bad), failed++;
     if (cc->check_bad) printf("%s: a freed segment was still reachable: FAIL\n", name), failed++;
     if (laps < min_laps) printf("%s: the cache went round %.1f times, want %.0f: FAIL\n", name, laps, min_laps), failed++;
-    if (!cc->evict_tenured || !cc->tenured) printf("%s: nothing tenured, or no tenured segment evicted: FAIL\n", name), failed++;
+    if (!cc->evict_tenured || !tot.cc_tenured) printf("%s: nothing tenured, or no tenured segment evicted: FAIL\n", name), failed++;
     if (!cc->evict_unchained) printf("%s: no chained exit undone: FAIL\n", name), failed++;
-    if (m.stats.flush_full) printf("%s: full flushes for room: FAIL\n", name), failed++;
-    if (m.stats.block_flushes > (uint64_t)flushes_asked) /* (one asked for just before the end may not have run) */
-        printf("%s: %llu full flushes, %d asked for: FAIL\n", name, (unsigned long long)m.stats.block_flushes, flushes_asked), failed++;
+    if (tot.flush_full) printf("%s: full flushes for room: FAIL\n", name), failed++;
+    if (tot.block_flushes > (uint64_t)flushes_asked) /* (one asked for just before the end may not have run) */
+        printf("%s: %llu full flushes, %d asked for: FAIL\n", name, (unsigned long long)tot.block_flushes, flushes_asked), failed++;
     for (int i = 0; i < ncpu; i++) free(w[i].cpu);
     hv_machine_free(&m);
     free(stack);

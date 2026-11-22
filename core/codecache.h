@@ -60,9 +60,9 @@ typedef struct HvCodeCache {
     /* Exits freed with their segments, for the exits translated next: a lock-free stack through m->slot_xnext,
        (pops << 32) | (slot + 1). */
     uint64_t slot_top __attribute__((aligned(128)));
-    /* Counters, for the stats line and the tests. */
+    /* Counters, for the stats line and the tests (mostly under the lock; tenured translations: HvStats.cc_tenured). */
     uint64_t evictions, evict_tenured, evict_blocks, evict_unchained, evict_ticks;
-    uint64_t waits, wait_ticks, tenured, stale, check_bad;
+    uint64_t waits, wait_ticks, stale, check_bad;
 } HvCodeCache;
 
 int hv_cc_init(struct HvMachine *m);

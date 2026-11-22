@@ -26,4 +26,15 @@ static inline int hv_vblank_due(HvVblankClock *clock, uint64_t now, uint64_t per
     return 1;
 }
 
+/* The refresh hv_vblank_due just reported, on its grid: the latest grid time at or before now (a whole number of
+   periods after the first), so the guest's timestamps are a period apart however late the poll came. */
+static inline uint64_t hv_vblank_at(const HvVblankClock *clock, uint64_t period) {
+    return clock->next - period;
+}
+
+/* When the next refresh is due: a device deadline (0 before the first). */
+static inline uint64_t hv_vblank_next(const HvVblankClock *clock) {
+    return clock->started ? clock->next : 0;
+}
+
 #endif

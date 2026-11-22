@@ -14,6 +14,7 @@
 #include <dns_sd.h>
 #include <poll.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -325,6 +326,7 @@ int hv_dns_proxy_take(const uint8_t *p, uint32_t len, HvDnsSend send) {
     pthread_attr_init(&at);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_attr_setstacksize(&at, 256 * 1024);
+    pthread_attr_set_qos_class_np(&at, QOS_CLASS_UTILITY, 0); /* it mostly waits on the resolver */
     int ok = pthread_create(&t, &at, lookup, q) == 0;
     pthread_attr_destroy(&at);
     if (!ok) {

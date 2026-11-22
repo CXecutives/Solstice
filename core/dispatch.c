@@ -76,6 +76,8 @@ static void unpark(HvCpu *cpu) {
     }
     __atomic_store_n(&p->tlb_live, 1, __ATOMIC_SEQ_CST);
     hv_cpu_process_requests(cpu); /* what came in while it was parked */
+    /* Running again: the kicker looks after it from now on (it may be asleep for long with every CPU parked). */
+    hv_kicker_note(m, mach_absolute_time() + HV_KICK_CAP);
 }
 
 static uint32_t block_flags(HvCpu *cpu) {
@@ -120,8 +122,9 @@ static void block_dump(const HvBlock *b, const uint32_t *code) {
     pthread_mutex_unlock(&mu);
 }
 
-static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail) {
+static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, const uint32_t *code, uint32_t avail, int *made) {
     HvMachine *m = cpu->m;
+    HvStats *st = &HV_ST(cpu);
     uint32_t j = (uint32_t)((va >> 2) ^ (va >> 18) ^ ((uint64_t)flags << 13)) & ((1u << HV_JC_BITS) - 1);
     __typeof__(cpu->pc_state->jc[0]) *jc = cpu->pc_state->jc;
     HvBlock *c = jc[j].va == va ? jc[j].b : NULL;
@@ -145,23 +148,33 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
        TLB; two CPUs doing it at once is harmless). */
     if (!__atomic_load_n(&ram->code_pages[pg], __ATOMIC_RELAXED)) {
         __atomic_store_n(&ram->code_pages[pg], 1, __ATOMIC_SEQ_CST); /* before the TLBs: see the end of tlb_fill */
-        m->stats.code_protects++;
+        st->code_protects++;
         for (int i = 0; i < m->ncpus; i++) /* in every CPU's TLB, or a write from another CPU goes unnoticed */
             if (m->cpus[i]) hv_tlb_protect_code_page(m->cpus[i], ram, pg);
         gen = __atomic_load_n(&ram->page_gen[pg], __ATOMIC_ACQUIRE);
         if (ram->code_hash) hv_code_check_note(ram, pg);
     }
-    /* Translate without the lock, into this thread's buffer... */
+    /* Translate without the lock, into this thread's buffer... Meanwhile the CPU uses no TLB entry for guest code, so
+       it is not live for TLBIs (O8a: they need not wait for a translation, the longest thing a CPU does between two
+       requests): it does what came in right after, and if that was anything, run_loop checks the block is still what
+       a fetch now would find before it goes in (*made). */
     HvBlock nb = {.va = va, .pa = pa, .flags = flags, .gen = gen, .ram = ram, .pg = pg, .maker = cpu->index + 1, .jit_gen = __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)};
     uint64_t t0 = m->stats_interval ? mach_absolute_time() : 0;
-    uint8_t phase0 = cpu->pc_state ? cpu->pc_state->phase : 0;
-    if (cpu->pc_state) __atomic_store_n(&cpu->pc_state->phase, HV_PHASE_TRANSLATE, __ATOMIC_RELAXED);
+    HvPerCpu *pcs = cpu->pc_state;
+    uint8_t phase0 = pcs->phase;
+    uint64_t acked = __atomic_load_n(&pcs->ack_seq, __ATOMIC_RELAXED); /* only this CPU moves it */
+    __atomic_store_n(&pcs->phase, HV_PHASE_TRANSLATE, __ATOMIC_RELAXED);
+    __atomic_store_n(&pcs->tlb_live, 0, __ATOMIC_SEQ_CST);
+    hv_cpu_ack_wake(cpu); /* a CPU asleep waiting for this one's acknowledgement need not wait any more */
     int failed = hv_translate_emit(m, &nb, code, avail) != 0;
-    if (cpu->pc_state) __atomic_store_n(&cpu->pc_state->phase, phase0, __ATOMIC_RELAXED);
+    __atomic_store_n(&pcs->tlb_live, 1, __ATOMIC_SEQ_CST);
+    hv_cpu_process_requests(cpu); /* what came in while it was not live */
+    if (__atomic_load_n(&pcs->ack_seq, __ATOMIC_RELAXED) != acked) *made = 1;
+    __atomic_store_n(&pcs->phase, phase0, __ATOMIC_RELAXED);
     if (failed) goto flush_unlocked;
     if (m->stats_interval) {
-        m->stats.translate_ticks += mach_absolute_time() - t0;
-        m->stats.translated_insns += nb.ninsns;
+        st->translate_ticks += mach_absolute_time() - t0;
+        st->translated_insns += nb.ninsns;
     }
     /* ...and place it in the region (space is reserved atomically, so no lock either)... */
     size_t used0 = m->jit.used;
@@ -169,7 +182,7 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
         hv_translate_discard_slots(m);
         if (cpu->pc_state->cc_work & HV_CC_NEED) return NULL; /* a segment is being freed: wait at the top of the loop */
         pthread_mutex_lock(&m->tr_mu); /* nothing to take back: start over */
-        m->stats.flush_full++;
+        st->flush_full++;
         goto flush;
     }
     if (m->gen_checks && nb.jit_gen != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST))
@@ -180,8 +193,8 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
         uint64_t w0 = m->stats_interval ? mach_absolute_time() : 0;
         pthread_mutex_lock(&m->tr_mu);
         if (m->stats_interval) {
-            m->stats.tr_waits++;
-            m->stats.tr_wait_ticks += mach_absolute_time() - w0;
+            st->tr_waits++;
+            st->tr_wait_ticks += mach_absolute_time() - w0;
         }
     }
     b = find(m, h, va, pa, flags, gen); /* another CPU may have just made it: ours is dropped (its space stays used until its segment goes) */
@@ -208,17 +221,17 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
             pthread_mutex_unlock(&m->tr_mu);
             return NULL;
         }
-        m->stats.flush_full++;
+        st->flush_full++;
         goto flush;
     }
     m->stats.translations++;
     if (m->stats_interval) {
-        m->stats.translated_words += m->jit.used - used0;
+        st->translated_words += m->jit.used - used0;
         static uint64_t seen_va[1 << 18], seen_vapa[1 << 18]; /* was this code translated before? (hashed, so approximate) */
         uint32_t hv = (uint32_t)(((va >> 2) ^ flags) * 0x9e3779b97f4a7c15ull >> 40);
         uint32_t hp = (uint32_t)((((va >> 2) ^ flags) * 0x9e3779b97f4a7c15ull ^ pa * 0xc2b2ae3d27d4eb4full) >> 40);
-        if (seen_va[hv >> 6] >> (hv & 63) & 1) m->stats.retrans_va++;
-        if (seen_vapa[hp >> 6] >> (hp & 63) & 1) m->stats.retrans_vapa++;
+        if (seen_va[hv >> 6] >> (hv & 63) & 1) st->retrans_va++;
+        if (seen_vapa[hp >> 6] >> (hp & 63) & 1) st->retrans_vapa++;
         seen_va[hv >> 6] |= 1ull << (hv & 63);
         seen_vapa[hp >> 6] |= 1ull << (hp & 63);
     }
@@ -265,7 +278,7 @@ static uint32_t wfe(HvCpu *cpu) {
         sleep_ok = mach_absolute_time() - t0 < 24 * 20;
     }
     uint64_t deadline = mach_absolute_time() + 24 * 50; /* 50 us at 24 MHz */
-    if (cpu->m->stats_interval) cpu->m->stats.wfe_waits++;
+    if (cpu->m->stats_interval) HV_ST(cpu).wfe_waits++;
     for (;;) {
         uint64_t v;
         switch (size) { /* LDAXR arms the host monitor too, so the WFE below wakes on a write */
@@ -295,14 +308,14 @@ static void *fast_resume(HvCpu *cpu) {
     if (off < 0) off = getenv("HV_NO_FAST_RESUME") != NULL;
     HvMachine *m = cpu->m;
     HvPerCpu *p = cpu->pc_state;
-    if (off || !m->chain || m->trace || m->log >= 2 || !p || cpu->pc == m->stop_pc || cpu->pc == m->stop_pc2 || cpu->halted || cpu->off) { if (m->stats_interval) m->stats.fr_fail[0]++; return NULL; }
+    if (off || !m->chain || m->trace || m->log >= 2 || !p || cpu->pc == m->stop_pc || cpu->pc == m->stop_pc2 || cpu->halted || cpu->off) { if (m->stats_interval && p) p->own.stats.fr_fail[0]++; return NULL; }
     if (__atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED) || __atomic_load_n(&m->flush_pending, __ATOMIC_RELAXED) ||
         __atomic_load_n(&m->stw_active, __ATOMIC_RELAXED)) {
-        if (m->stats_interval) m->stats.fr_fail[1]++;
+        if (m->stats_interval) p->own.stats.fr_fail[1]++;
         return NULL;
     }
-    if ((p->irq_line && !(cpu->daif & HV_PSTATE_I)) || (p->fiq_line && !(cpu->daif & HV_PSTATE_F))) { if (m->stats_interval) m->stats.fr_fail[2]++; return NULL; }
-    if (cpu->timer_due && mach_absolute_time() >= cpu->timer_due) { if (m->stats_interval) m->stats.fr_fail[3]++; return NULL; }
+    if ((p->irq_line && !(cpu->daif & HV_PSTATE_I)) || (p->fiq_line && !(cpu->daif & HV_PSTATE_F))) { if (m->stats_interval) p->own.stats.fr_fail[2]++; return NULL; }
+    if (cpu->timer_due && mach_absolute_time() >= cpu->timer_due) { if (m->stats_interval) p->own.stats.fr_fail[3]++; return NULL; }
     uint32_t flags = block_flags(cpu);
     int kernel = flags & HV_BLOCK_EL1;
     uint64_t va = cpu->pc;
@@ -313,8 +326,8 @@ static void *fast_resume(HvCpu *cpu) {
     if (!code) code = hv_ijc_resolve(cpu, va, flags); /* made already but not cached: cache it */
     if (code) {
         cpu->exit_reason = HV_EXIT_BRANCH;
-        if (m->stats_interval) m->stats.fast_resumes++;
-    } else if (m->stats_interval) m->stats.fr_fail[4]++;
+        if (m->stats_interval) p->own.stats.fast_resumes++;
+    } else if (m->stats_interval) p->own.stats.fr_fail[4]++;
     return code;
 }
 
@@ -370,15 +383,15 @@ static uint32_t helper(HvCpu *cpu, const HvHelperInfo *info_in) {
     HvHelperInfo info_copy = *info_in;
     info_copy.op &= 0xff; /* the rest: hv_helper_thunk's refill flags */
     const HvHelperInfo *info = &info_copy;
-    if (info->op < 12 && cpu->m->stats_interval) cpu->m->stats.helper[info->op]++;
+    if (info->op < 12 && cpu->m->stats_interval) HV_ST(cpu).helper[info->op]++;
     if (cpu->m->stats_interval && (info->op == HV_OP_MRS || info->op == HV_OP_MSR || info->op == HV_OP_SYS))
         reg_hist[(info->insn >> 5) & 0xffff] += info->op == HV_OP_MRS ? 1 : 1ull << 32;
     switch (info->op) {
     case HV_OP_MEM:
-        cpu->m->stat_slow_mem++;
+        cpu->pc_state->own.slow_mem++;
         if (cpu->m->stats_deep) { /* --stats: which kinds of access take the slow path */
             HvMemOp op;
-            if (hv_mem_decode(info->insn, &op) == 0 && op.kind < 12) cpu->m->stats.slow_kind[op.kind]++;
+            if (hv_mem_decode(info->insn, &op) == 0 && op.kind < 12) HV_ST(cpu).slow_kind[op.kind]++;
         }
         return hv_mem_emulate(cpu, info->insn, info->pc);
     case HV_OP_MRS:
@@ -436,25 +449,28 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what) {
                             "miss site %llx\n  recent:", b ? (unsigned long long)b->va : 0ull, b ? b->flags : 0, lo, m->nblocks,
                     (unsigned long long)m->stats.block_flushes, (unsigned long long)cpu->last_stub,
                     (unsigned long long)cpu->miss_site);
-            for (int k = 15; k >= 0; k--) fprintf(stderr, " %llx", (unsigned long long)m->stats.recent[(m->stats.nrecent - 1 - k) & 15]);
+            const HvStats *st = &HV_ST(cpu); /* this CPU's own rings */
+            for (int k = 15; k >= 0; k--) fprintf(stderr, " %llx", (unsigned long long)st->recent[(st->nrecent - 1 - k) & 15]);
             fprintf(stderr, "\n  (%s) el changes, oldest first:\n", what);
             for (int k = 15; k >= 0; k--) {
-                uint32_t i = (m->stats.nelchg - 1 - k) & 15;
-                if (m->stats.elchg[i].kind == 9)
-                    fprintf(stderr, "    eret at %llx from el%u to %llx spsr %llx\n", (unsigned long long)m->stats.elchg[i].from,
-                            m->stats.elchg[i].el, (unsigned long long)m->stats.elchg[i].to, (unsigned long long)m->stats.elchg[i].spsr);
+                uint32_t i = (st->nelchg - 1 - k) & 15;
+                if (st->elchg[i].kind == 9)
+                    fprintf(stderr, "    eret at %llx from el%u to %llx spsr %llx\n", (unsigned long long)st->elchg[i].from,
+                            st->elchg[i].el, (unsigned long long)st->elchg[i].to, (unsigned long long)st->elchg[i].spsr);
                 else
-                    fprintf(stderr, "    exception type %u esr %llx from el%u pc %llx (spsr %llx)\n", m->stats.elchg[i].kind,
-                            (unsigned long long)m->stats.elchg[i].to, m->stats.elchg[i].el,
-                            (unsigned long long)m->stats.elchg[i].from, (unsigned long long)m->stats.elchg[i].spsr);
+                    fprintf(stderr, "    exception type %u esr %llx from el%u pc %llx (spsr %llx)\n", st->elchg[i].kind,
+                            (unsigned long long)st->elchg[i].to, st->elchg[i].el,
+                            (unsigned long long)st->elchg[i].from, (unsigned long long)st->elchg[i].spsr);
             }
         }
     }
 }
 
-/* WFI: sleep until an interrupt is pending (masked or not) or the next timer
-   event, at most 10 ms. WFI may complete early, so the guest just runs again
-   if nothing happened. */
+/* WFI: sleep until an interrupt is pending (masked or not) or the next deadline
+   (this CPU's timers; for CPU 0 also the devices': the display's refresh, a poll
+   at least every HV_DEV_SAFETY), at most HV_WFI_MAX: anything else that has work
+   for this CPU wakes it (hv_cpu_wake). WFI may complete early, so the guest just
+   runs again if nothing happened. */
 static int wait_for_interrupt(HvCpu *cpu) {
     HvMachine *m = cpu->m;
     uint64_t deadline = m->tick ? m->tick(m, cpu) : 0;
@@ -462,11 +478,12 @@ static int wait_for_interrupt(HvCpu *cpu) {
     if (p->irq_line || p->fiq_line) return 0;
     if (!m->tick) return -1; /* nothing could ever wake us */
     uint64_t now = mach_absolute_time();
-    uint64_t wait_ticks = deadline && deadline > now ? deadline - now : 240000; /* the counter runs at 24 MHz */
-    if (wait_ticks > 240000) wait_ticks = 240000;
+    uint64_t wait_ticks = !deadline ? HV_WFI_MAX : deadline > now ? deadline - now : 0; /* the counter runs at 24 MHz */
+    if (wait_ticks > HV_WFI_MAX) wait_ticks = HV_WFI_MAX;
     uint64_t t0 = mach_absolute_time();
     /* Sleep until the next timer event or until a device thread has work for us. */
     hv_big_unlock(m); /* let the other CPUs run while this one sleeps */
+    __atomic_store_n(&p->wfi_until, t0 + wait_ticks, __ATOMIC_SEQ_CST); /* the kicker looks a little after (machine.c) */
     park(cpu);
     /* A thread on another CPU often has something for this one microseconds later
        (a pipe, a Mach message: macOS is made of these), and waking a sleeping host
@@ -491,7 +508,7 @@ static int wait_for_interrupt(HvCpu *cpu) {
         __asm__ volatile("clrex" ::: "memory");
     }
     pthread_mutex_lock(&p->wake_mu);
-    if (!p->wake_pending) {
+    if (!p->wake_pending && wait_ticks) {
         struct timespec ts = {(time_t)(wait_ticks / 24000000), (long)(wait_ticks % 24000000) * 1000 / 24};
         pthread_cond_timedwait_relative_np(&p->wake_cv, &p->wake_mu, &ts);
     }
@@ -499,9 +516,9 @@ static int wait_for_interrupt(HvCpu *cpu) {
     pthread_mutex_unlock(&p->wake_mu);
     unpark(cpu);
     hv_big_lock(m);
-    m->stats.wfi++;
-    m->stats.wfi_ticks += mach_absolute_time() - t0;
-    m->tick(m, cpu);
+    p->own.stats.wfi++;
+    p->own.stats.wfi_ticks += mach_absolute_time() - t0;
+    hv_cpu_set_due(cpu, m->tick(m, cpu));
     return 0;
 }
 
@@ -594,7 +611,9 @@ static void print_stats(HvCpu *cpu, int force) {
         return;
     }
     double dt = (double)(now - last_t) / 24e6;
-    HvStats *s = &m->stats;
+    static HvStats sum;
+    hv_stats_total(m, &sum);
+    HvStats *s = &sum;
 #define RATE(f) ((double)(s->f - last.f) / dt)
     fprintf(stderr,
             "stats %5.0fs: blocks %.2fM/s, translated %.0f/s (again: va %.0f%% va+pa %.0f%%; %.0f%% of time, %.1f insns, %.1fx), slow mem %.0fK/s, mrs %.0fK/s msr %.0fK/s sys %.0fK/s, "
@@ -612,7 +631,7 @@ static void print_stats(HvCpu *cpu, int force) {
                 cc->nseg, (unsigned long long)(4ull << cc->seg_shift) >> 10, (unsigned long long)cc->evictions,
                 (unsigned long long)cc->evict_tenured, (double)cc->evict_ticks / 24e3, (unsigned long long)cc->evict_blocks,
                 (unsigned long long)cc->evict_unchained, (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3,
-                (unsigned long long)cc->tenured, (unsigned long long)cc->stale);
+                (unsigned long long)s->cc_tenured, (unsigned long long)cc->stale);
     }
     {
         double tot = 0;
@@ -721,10 +740,13 @@ static void print_stats(HvCpu *cpu, int force) {
                 RATE(protect_kind[1]), RATE(protect_kind[2]));
         fprintf(stderr, "  fast resume refused/s: state %.0f, exit request %.0f, interrupt %.0f, timer %.0f, not cached %.0f\n", RATE(fr_fail[0]),
                 RATE(fr_fail[1]), RATE(fr_fail[2]), RATE(fr_fail[3]), RATE(fr_fail[4]));
-        fprintf(stderr, "  WFE waits in place %.0f/s; exits chained as placed %.0f/s; SVC/ERET resumed in place %.0f/s\n", RATE(wfe_waits),
-                RATE(chained_early), RATE(fast_resumes));
+        fprintf(stderr, "  WFE waits in place %.0f/s; exits chained as placed %.0f/s; SVC/ERET resumed in place %.0f/s; fetched again after a translation %.0f/s\n", RATE(wfe_waits),
+                RATE(chained_early), RATE(fast_resumes), RATE(retranslated));
         fprintf(stderr, "  exit requests/s: TLBI posts %.0f, wakes %.0f (of them device work %.0f), kick all %.0f, own %.0f\n",
                 RATE(kick_src[0]), RATE(kick_src[1]), RATE(kick_src[3]), RATE(kick_src[2]), RATE(kick_src[4]));
+        fprintf(stderr, "  kicker: wakeups %.0f/s, CPUs kicked at their deadline %.0f/s, for device polls %.0f/s; device polls %.0f/s\n",
+                RATE(kicker_wakes), RATE(kicker_kicks), RATE(kicker_polls), RATE(dev_polls));
+        fprintf(stderr, "  paravirtual ticket locks: waits for a kick %.0f/s, kicks %.0f/s\n", RATE(pv_waits), RATE(pv_kicks));
         fprintf(stderr, "  light refills %.0fK/s, light branch-cache fills %.0fK/s, chained to other pages %.0f/s\n", RATE(refills) / 1e3,
                 RATE(ijc_light) / 1e3, RATE(xchained));
         fprintf(stderr, "  process switches: %.0f/s saved, %.0f/s restored, %.0f/s dropped by a TLBI (%.0f entries each)\n", RATE(stash_saves), RATE(stash_hits), RATE(stash_stale),
@@ -782,8 +804,10 @@ static void print_stats(HvCpu *cpu, int force) {
    from other pages are undone by hv_invalidate_code, and any into a code-cache
    segment on its way out by its eviction (codecache.c): so under the translation
    lock, and neither from nor to such a segment. */
-static void chain(HvMachine *m, uint64_t *slot, HvBlock *b) {
-    uint32_t idx = (uint32_t)(slot - m->slots);
+static void chain(HvCpu *cpu, uint64_t *slot, HvBlock *b) {
+    HvMachine *m = cpu->m;
+    HvStats *st = &HV_ST(cpu);
+    uint32_t idx = HV_SLOT_INDEX(m, slot);
     if (m->gen_checks && (b->jit_gen != m->jit_gen || (m->slot_site[idx] && (uint64_t)(m->slot_site[idx] - m->jit.base) >= m->jit.used)))
         fprintf(stderr, "hengevm: chain slot %u site %p to rx+%llx va %llx: block gen %u now %u\n", idx, (void *)m->slot_site[idx], (unsigned long long)(b->code - m->jit.base) * 4, (unsigned long long)b->va, b->jit_gen, m->jit_gen);
     uint64_t xa = m->slot_xa[idx];
@@ -826,8 +850,8 @@ static void chain(HvMachine *m, uint64_t *slot, HvBlock *b) {
             hv_jit_finish(&m->jit, cond, 1);
         }
     }
-    m->stats.chained++;
-    if (xa && m->stats_interval) m->stats.xchained++;
+    st->chained++;
+    if (xa && m->stats_interval) st->xchained++;
     pthread_mutex_unlock(&m->tr_mu);
 }
 
@@ -845,6 +869,7 @@ static void wait_while_off(HvCpu *cpu) {
     HvMachine *m = cpu->m;
     HvPerCpu *p = cpu->pc_state;
     hv_big_unlock(m);
+    __atomic_store_n(&p->wfi_until, 0, __ATOMIC_SEQ_CST); /* no timeout: CPU_ON wakes it */
     park(cpu);
     pthread_mutex_lock(&p->wake_mu);
     __atomic_store_n(&cpu->parked_off, 1, __ATOMIC_SEQ_CST);
@@ -940,7 +965,6 @@ static int host_pointer_check(HvCpu *cpu, uint64_t prev_pc) {
 static int run_loop(HvCpu *cpu, int one) {
     HvMachine *m = cpu->m;
     uint32_t since_tick = 0;
-    uint64_t next_due = 0; /* host time of this CPU's next timer event, from its last tick (0: none armed) */
     uint64_t last_fault = ~0ull, prev_pc = 0;
     HvBlock *prev_b = NULL;
     uint64_t *pending_chain = NULL;
@@ -967,21 +991,21 @@ static int run_loop(HvCpu *cpu, int one) {
             last_reason = HV_EXIT_EXCEPTION;
             continue;
         }
-        /* Someone asked the CPU to leave (the 1 ms kicker, a device, an invalidation): service devices now. */
-        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED) != 0;
+        /* Someone asked the CPU to leave (the kicker at its deadline, a device, an invalidation): tick now. Acquire: what
+           was asked with it (HvPerCpu.poll_req) is seen. */
+        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_ACQUIRE) != 0;
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */
             cpu->excl_addr = ~0ull;
             hv_big_yield(m);
         }
-        /* Ticks take the device lock, so not every few blocks: on a kick (the 1 ms
-           kicker, a device with work for CPU 0, an interrupt raised for this
-           CPU) or once this CPU's own timer is due. */
-        if (m->tick && (kicked || (++since_tick >= 64 && (since_tick = 0, next_due && mach_absolute_time() >= next_due)))) {
+        /* Ticks may take the device lock, so not every few blocks: on a kick (the
+           kicker at this CPU's deadline, a device with work for CPU 0, an interrupt
+           raised for this CPU) or once this CPU's own deadline is due. */
+        if (m->tick && (kicked || (++since_tick >= 64 && (since_tick = 0, cpu->timer_due && mach_absolute_time() >= cpu->timer_due)))) {
             since_tick = 0;
-            next_due = m->tick(m, cpu);
-            cpu->timer_due = next_due;
+            hv_cpu_set_due(cpu, m->tick(m, cpu));
         }
         int why = pending_chain ? 0 : kicked ? 1 : last_reason != HV_EXIT_BRANCH ? 2 : 5;
         if (hv_check_interrupts(cpu)) {
@@ -1001,9 +1025,9 @@ static int run_loop(HvCpu *cpu, int one) {
                                 "miss site %llx, elr %llx spsr %llx x30 %llx, fast resumes %llu\n  recent:",
                         (unsigned long long)cpu->pc, (unsigned long long)prev_pc, prev_b ? prev_b->flags : 0, prev_b ? prev_b->ninsns : 0,
                         last_reason, why, (unsigned long long)cpu->miss_site, (unsigned long long)cpu->elr_el1,
-                        (unsigned long long)cpu->spsr_el1, (unsigned long long)cpu->x[30], (unsigned long long)m->stats.fast_resumes);
+                        (unsigned long long)cpu->spsr_el1, (unsigned long long)cpu->x[30], (unsigned long long)HV_ST(cpu).fast_resumes);
                 for (int k = 0; k < 16; k++)
-                    fprintf(stderr, " %llx", (unsigned long long)m->stats.recent[(m->stats.nrecent + k) & 15]);
+                    fprintf(stderr, " %llx", (unsigned long long)HV_ST(cpu).recent[(HV_ST(cpu).nrecent + k) & 15]);
                 fprintf(stderr, "\n");
             }
         }
@@ -1030,7 +1054,8 @@ static int run_loop(HvCpu *cpu, int one) {
         }
         last_fault = ~0ull;
         uint64_t flushes = m->stats.block_flushes;
-        HvBlock *b = lookup(cpu, cpu->pc, pa, block_flags(cpu), code, avail);
+        int made = 0;
+        HvBlock *b = lookup(cpu, cpu->pc, pa, block_flags(cpu), code, avail, &made);
         /* A full flush while translating freed the slot the last exit came through,
            and new blocks may have it now: chaining it would rewrite one of theirs. */
         if (m->stats.block_flushes != flushes) pending_chain = NULL;
@@ -1043,6 +1068,18 @@ static int run_loop(HvCpu *cpu, int one) {
             fprintf(stderr, "hengevm: cannot translate block at %llx\n", (unsigned long long)cpu->pc);
             park(cpu);
             return HV_EXIT_UNSUPPORTED;
+        }
+        /* The CPU translated, not live for TLBIs, and did TLBIs other CPUs asked meanwhile (lookup): they did not wait
+           for it, so their remapping may be done, and even back to the same page with other code. Go in only if the
+           guest's tables still say pc runs from there and its code is what was translated; else fetch it again. */
+        if (made) {
+            HvWalk w;
+            hv_mmu_walk(cpu, cpu->pc, HV_ACC_EXEC, cpu->el, &w);
+            if (w.fsc || w.pa != pa || __atomic_load_n(&b->ram->page_gen[b->pg], __ATOMIC_ACQUIRE) != b->gen) {
+                HV_ST(cpu).retranslated++;
+                pending_chain = NULL;
+                continue;
+            }
         }
         /* Remember it for indirect branches (not the tests' stop PC: that must reach us). */
         /* EL0 tables only hold user VAs and EL1 tables kernel VAs, so each half has its own salt. */
@@ -1095,20 +1132,21 @@ static int run_loop(HvCpu *cpu, int one) {
                     int alive = kernel ? (c ^ 0xffff) == cpu->kernel_gen : cpu->asid_cid[cpu->cid_asid[c]] == c;
                     if (!alive) kind = 3;
                 }
-                m->stats.fill_kind[kind]++;
+                HV_ST(cpu).fill_kind[kind]++;
             }
-            if (hv_ijc_fill_checked(cpu, b) && m->stats_interval) m->stats.ijc_fills++;
+            if (hv_ijc_fill_checked(cpu, b) && m->stats_interval) HV_ST(cpu).ijc_fills++;
         }
         /* The block before left through a chainable direct branch to this one: link them. */
         /* Only if nothing in between (an abort, an interrupt) sent the CPU elsewhere. */
-        if (pending_chain && !m->trace && b->va == chain_pc && b->flags == chain_flags) chain(m, pending_chain, b);
+        if (pending_chain && !m->trace && b->va == chain_pc && b->flags == chain_flags) chain(cpu, pending_chain, b);
         pending_chain = NULL;
         if (m->trace) fprintf(stderr, "block %llx el%u\n", (unsigned long long)cpu->pc, cpu->el);
         if (m->log >= 4 && host_pointer_check(cpu, prev_pc)) return HV_EXIT_UNSUPPORTED;
         prev_pc = cpu->pc;
         prev_b = b;
-        if (m->stats_interval) m->stats.why[why]++;
-        m->stats.recent[m->stats.nrecent++ & 15] = cpu->pc | cpu->el;
+        HvStats *st = &HV_ST(cpu);
+        if (m->stats_interval) st->why[why]++;
+        st->recent[st->nrecent++ & 15] = cpu->pc | cpu->el;
         if (why == 5 && m->stats_deep) {
             int kind = 6;
             /* A plain walk: fetching could raise an abort in the guest. */
@@ -1124,14 +1162,14 @@ static int run_loop(HvCpu *cpu, int one) {
                 else if ((i & 0xfff8f01fu) == 0xd500401fu) kind = 4;                                         /* MSR (immediate) */
                 else kind = 5;
             }
-            m->stats.miss_kind[kind]++;
+            st->miss_kind[kind]++;
         }
         cpu->miss_site = 0; /* only the next lookup miss sets it again */
         cpu->exit_reason = HV_EXIT_BRANCH;
         cpu->last_stub = 0;
         cpu->icount++;
-        m->stats.blocks++;
-        if (m->stats_interval && cpu->index == 0 && (m->stats.blocks & 0xffff) == 0) print_stats(cpu, 0);
+        st->blocks++;
+        if (m->stats_interval && cpu->index == 0 && (st->blocks & 0xffff) == 0) print_stats(cpu, 0);
         if (m->gen_checks && ((uint64_t)(b->code - m->jit.base) >= m->jit.used || b->jit_gen != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)))
             fprintf(stderr, "hengevm: cpu %u entering %p (rx+%llx, used %llx) for va %llx: block gen %u, now %u, maker %u\n", cpu->index, (void *)b->code, (unsigned long long)(b->code - m->jit.base) * 4, (unsigned long long)m->jit.used * 4, (unsigned long long)b->va, b->jit_gen, m->jit_gen, b->maker);
         hv_enter(cpu, b->code);

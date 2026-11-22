@@ -46,6 +46,16 @@ Siehe `PLAN.md`. Zusätzlich: Air 4 bekommt 2 GB/2 vCPUs/Large-Screen über die 
 - Log-Empfänger nach Neustart neu starten: `py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log`
   (PC-Adresse <PC-ADDRESS>, Port 7777).
 
+## Stand 23.11. ~00:20 (zweiter Neustart, frischer Start fürs Sideloading)
+- Alle Apple-/Sideload-Programme samt Treibern, Ordnern, Registry, Autostart, Firewall-Regeln und gespeicherten
+  Apple-ID-Daten entfernt (Skript im Scratchpad `cleanup-apple.ps1`). Grund: iPhone war für den Apple-Dienst nur
+  ~10 s sichtbar und verschwand wieder (USB blieb verbunden) → frisch neu einrichten.
+- Neu-Installation nach Neustart, in dieser Reihenfolge: Apple-Geräte (Store, winget `9NP83LWLPZ9K`) öffnen →
+  iPhone anstecken, „Vertrauen“ → ListDevices-Probe muss 30 s stabil 1 zeigen → iloader (winget `nabdev.iloader`)
+  → SideStore → Solstice + GetMoreRam.
+- Helfer alle pausiert und gepusht: translator `3c84f83`, mp-power `98e48fb`, codecache `5bf3888`;
+  gpu-io ist in `main` gemergt. Nach Neustart: Helfer per Nachricht fortsetzen.
+
 ## Als Nächstes
 1. Grüner Build → `picks` nach `main`, IPA nach `out/Solstice.ipa`.
 2. Besitzer: Einrichtung (PLAN.md „Einrichtung“), IPA über AltStore auf iPhone 16 Pro und iPad Air 4,

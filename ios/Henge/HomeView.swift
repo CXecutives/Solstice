@@ -60,9 +60,10 @@ struct HomeView: View {
                 if case let .success(url) = result { machines.importFolder(url) }
             }
             .sheet(isPresented: $showMacApps) { MacAppsView() }
-            .task {
+            .task(id: running == nil) { // waits while a Mac is open over the tabs: this screen is not seen then
+                guard running == nil else { return }
                 while !Task.isCancelled { // the region may be claimed after a hand-off to StikDebug
-                    jitReady = JITBootstrap.ready
+                    if jitReady != JITBootstrap.ready { jitReady = JITBootstrap.ready }
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
             }

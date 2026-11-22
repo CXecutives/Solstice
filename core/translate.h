@@ -43,6 +43,12 @@ uint32_t hv_translate_last_words(void);
 uint32_t hv_translate_nsites(void);
 uint32_t hv_translate_site_slot(uint32_t k);
 void hv_translate_discard_slots(HvMachine *m);
+/* Totals over every block placed, for code size per guest instruction (tests and test_bench print them). */
+typedef struct HvXlateCounts {
+    uint64_t blocks, insns;
+    uint64_t hot, cold, pool; /* words: the hot part, the cold part's code, the literal pool */
+} HvXlateCounts;
+extern HvXlateCounts hv_xlate_counts;
 
 int hv_branch_retarget(uint32_t *w, int64_t off);
 

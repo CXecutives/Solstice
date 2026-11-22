@@ -67,7 +67,7 @@ static void on_exit(int reason) {
     case HV_HALT_HOST: exit_outcome = HENGE_VM_OUTCOME_HOST_STOP; break;
     case HV_HALT_PANIC: exit_outcome = HENGE_VM_OUTCOME_PANIC; break;
     }
-    stopped_blocks = hv_vm_machine()->stats.blocks;
+    stopped_blocks = hv_stat_blocks(hv_vm_machine());
     stopped_tx = hv_net_tx_frames;
     stopped_rx = hv_net_rx_frames;
     /* The restore stack's USB workers let go of an installer's machine first (hv_install_detach); then it is
@@ -375,7 +375,7 @@ int henge_vm_knob(const char *name, int value) {
 }
 uint64_t henge_vm_blocks(void) {
     pthread_rwlock_rdlock(&api_lock);
-    uint64_t result = state == 1 ? hv_vm_machine()->stats.blocks : stopped_blocks;
+    uint64_t result = state == 1 ? hv_stat_blocks(hv_vm_machine()) : stopped_blocks;
     pthread_rwlock_unlock(&api_lock);
     return result;
 }
