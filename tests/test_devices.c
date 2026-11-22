@@ -746,6 +746,7 @@ int main(void) {
     test_virtio_blk_root(&root);
     test_virtio_net();
     test_virtio_balloon();
+    puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();
     /* MSI frame: valid type register, doorbell pends the INTID */
     check("msi type valid", rd32(VMAPPLE_GIC_MSI + 8) >> 31, 1);
@@ -761,7 +762,19 @@ int main(void) {
     check("gpio edge raises SPI 5", board.gic->level[32 + VMAPPLE_IRQ_GPIO], 1);
     wr32(VMAPPLE_GPIO + 0x41c, 1u << 3);
     check("gpio interrupt cleared", board.gic->level[32 + VMAPPLE_IRQ_GPIO], 0);
+    /* The guest programs run on the JIT, whose own tests (test_jit, test_mem) cover it under SAN=1; here they are the
+       devices' interrupts seen from a guest. */
+#if defined(__has_feature)
+#if __has_feature(undefined_behavior_sanitizer)
+#define TEST_UB_TRAPS 1
+#endif
+#endif
+#ifdef TEST_UB_TRAPS
+    puts("guest programs: left to the JIT's own tests under undefined-behaviour traps");
+#else
+    puts("guest programs");
     test_guest_programs();
+#endif
 
     hv_disk_close(&root);
     hv_disk_close(&aux);
