@@ -188,10 +188,7 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
     if (__atomic_load_n(&pcs->ack_seq, __ATOMIC_RELAXED) != acked) *made = 1;
     __atomic_store_n(&pcs->phase, phase0, __ATOMIC_RELAXED);
     if (failed) goto flush_unlocked;
-    if (m->stats_interval) {
-        st->translate_ticks += mach_absolute_time() - t0;
-        st->translated_insns += nb.ninsns;
-    }
+    if (m->stats_interval) st->translate_ticks += mach_absolute_time() - t0;
     /* ...and place it in the region (space is reserved atomically, so no lock either)... */
     if (hv_translate_place(m, &nb) != 0) { /* JIT region full */
         hv_translate_discard_slots(m);
@@ -240,7 +237,7 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
         goto flush;
     }
     st->translations++; /* this CPU's line, not the machine's */
-    if (m->stats_interval) st->translated_words += hv_translate_last_size(); /* its own code: the region's extent says nothing once segmented */
+    if (m->stats_interval) hv_translate_count_last(st, &nb); /* its own code: the region's extent says nothing once segmented */
     if (m->stats_deep) { /* 4 MB of tables, made only for the deep stats */
         static uint64_t seen_va[1 << 18], seen_vapa[1 << 18]; /* was this code translated before? (hashed, so approximate) */
         uint32_t hv = (uint32_t)(((va >> 2) ^ flags) * 0x9e3779b97f4a7c15ull >> 40);

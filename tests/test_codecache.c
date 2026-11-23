@@ -8,6 +8,7 @@
 #include "light.h"
 #include "mmu.h"
 #include "stats.h"
+#include "translate.h"
 
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -134,6 +135,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     uint64_t nchanges = 0;
     if (changes) pthread_create(&changer, &attr, code_changer, &nchanges);
     uint64_t lines0 = hv_stats_lines;
+    HvXlateCounts xc0 = hv_xlate_counts;
     HvRateMark mark = {0};
     double rate0 = hv_stats_blocks_rate(&m, &mark, mach_absolute_time());
     double t0 = now_s(), laps = 0;
@@ -197,12 +199,18 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         printf("%s: blocks/s since the mark %.0f (first read %.0f), %.0f entered in %.1f s: FAIL\n", name, rate, rate0,
                (double)tot.blocks, secs), failed++;
     if (opts & RUN_STATS) {
-        /* Every guest instruction takes some words: the count must be the blocks' own code (it was the region's
-           extent, which goes back down as segments are reused). And a line every 2 s, whichever CPUs run. */
+        /* The words per translated instruction must be the blocks' own code (it was the region's extent, which goes
+           back down as segments are reused), with instructions and words counted for the same translations (the
+           instructions were counted for translations then dropped too): as the translator's own totals say, within 1%.
+           And a line every 2 s, whichever CPUs run. */
         double wpi = (double)tot.translated_words / ((double)tot.translated_insns + 1e-9);
+        double xw = (double)(hv_xlate_counts.hot - xc0.hot + hv_xlate_counts.cold - xc0.cold + hv_xlate_counts.pool - xc0.pool);
+        double xwpi = xw / ((double)(hv_xlate_counts.insns - xc0.insns) + 1e-9);
         uint64_t lines = hv_stats_lines - lines0;
-        printf("%s: %llu stats lines, %.1f words per translated instruction\n", name, (unsigned long long)lines, wpi);
-        if (wpi < 2) printf("%s: %.2f words per translated instruction: FAIL\n", name, wpi), failed++;
+        printf("%s: %llu stats lines, %.2f words per translated instruction (the translator's totals: %.2f)\n", name,
+               (unsigned long long)lines, wpi, xwpi);
+        if (!(wpi > 0.99 * xwpi && wpi < 1.01 * xwpi))
+            printf("%s: %.2f words per translated instruction, the translator's totals %.2f: FAIL\n", name, wpi, xwpi), failed++;
         if ((double)lines + 2 < secs / 2) printf("%s: %llu stats lines in %.1f s: FAIL\n", name, (unsigned long long)lines, secs), failed++;
     }
     if (tot.flush_full) printf("%s: full flushes for room: FAIL\n", name), failed++;
