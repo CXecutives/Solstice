@@ -176,6 +176,7 @@ static void test_video_surface(HvReplay *r) {
     IOSurfaceLock(s->iosurface, kIOSurfaceLockReadOnly, NULL);
     check("the other plane kept what the host drew", ((const uint8_t *)IOSurfaceGetBaseAddressOfPlane(s->iosurface, 0))[5] == 0xab);
     IOSurfaceUnlock(s->iosurface, kIOSurfaceLockReadOnly, NULL);
+    blit = nil;
     check("nothing changed: nothing copied", ![r syncSurface:s blit:&blit commandBuffer:nil] && blit == nil);
     printf("video surface: planes copied as the guest changed them (%s)\n", by_gpu ? "by the GPU" : "by the CPU: no GPU copy here");
 }
