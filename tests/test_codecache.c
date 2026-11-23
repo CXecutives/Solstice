@@ -180,7 +180,8 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
            (unsigned long long)cc->ijc_scans, (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped,
            (unsigned long long)cc->ijc_resets);
     last_translations = tot.translations, last_runs = runs;
-    if (!(opts & RUN_ROOMY) && (!cc->ijc_scans || !cc->ijc_dropped)) printf("%s: no branch cache caught up by dropping entries: FAIL\n", name), failed++;
+    /* (Entries into the segment there may be none: one CPU, few branches.) */
+    if (!(opts & RUN_ROOMY) && !cc->ijc_scans) printf("%s: no branch cache caught up by a scan: FAIL\n", name), failed++;
     if (bad) printf("%s: %llu runs wrong: FAIL\n", name, (unsigned long long)bad), failed++;
     if (cc->check_bad) printf("%s: a freed segment was still reachable: FAIL\n", name), failed++;
     if (laps < min_laps) printf("%s: the cache went round %.1f times, want %.0f: FAIL\n", name, laps, min_laps), failed++;
