@@ -45,14 +45,6 @@ static inline uint64_t hv_vblank_period(uint64_t mode_period, int cap_hz, uint64
     return mode_period && capped > mode_period ? capped : mode_period;
 }
 
-/* CPU 0's device deadline for the refreshes: the next one while the guest listens (event 8 unmasked), none while it
-   does not (the refreshes' times are still written at the polls that come anyway). The mask is looked at again at
-   every tick, so a refresh whose time passed while masked comes at the first tick after the unmask, and the next ones
-   on the grid. */
-static inline uint64_t hv_vblank_deadline(const HvVblankClock *clock, int listening) {
-    return listening ? hv_vblank_next(clock) : 0;
-}
-
 /* The host's presents, apart from the guest's refreshes above: macOS is told the mode's rate and refreshed at it
    whatever the host shows. Seconds between presents for a mode refreshing every mode_every seconds, when at most
    cap_hz frames a second may go to the screen (0: no cap; a cap at or above the mode's rate changes nothing). */
