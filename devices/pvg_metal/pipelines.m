@@ -126,6 +126,13 @@ static unsigned long long archive_cap(void) {
     return (mb && atoi(mb) > 0 ? (unsigned long long)atoi(mb) : 768ull) << 20;
 }
 
+enum { ARCHIVE_FILES = 32 }; /* saved files at most */
+
+/* Whether nothing more may be saved, with this many files of this many bytes saved. */
+static BOOL archive_full_at(NSUInteger files, unsigned long long bytes, unsigned long long cap) {
+    return files >= ARCHIVE_FILES || bytes > cap;
+}
+
 - (id<MTLBinaryArchive>)emptyArchive {
     NSError *err = nil;
     id<MTLBinaryArchive> a = [device newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
@@ -187,7 +194,7 @@ static unsigned long long archive_cap(void) {
     if (!archive) return;
     archives = loaded;
     archive_bytes = bytes;
-    archive_full = loaded.count >= 32 || bytes > archive_cap();
+    archive_full = archive_full_at(loaded.count, bytes, archive_cap());
     fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %lu files, %.1f MB%s%s\n", (unsigned long)loaded.count, bytes / 1048576.0,
             unreadable ? " (some unreadable, removed)" : "", archive_full ? " (full: nothing more is added)" : "");
 }
@@ -278,7 +285,7 @@ static unsigned long long archive_cap(void) {
     archives = [archives arrayByAddingObject:archive];
     archive = next;
     archive_dirty = NO;
-    if (archives.count >= 32 || archive_bytes > archive_cap()) archive_full = YES;
+    if (archive_full_at(archives.count, archive_bytes, archive_cap())) archive_full = YES;
     fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %llu added in file %d (%.1f MB, %.1f MB in %lu files) in %.0f ms%s; this session %llu from the "
                     "archives (%.1f ms each), %llu compiled (%.0f ms each), %llu not saveable\n",
             pipes_unsaved, archive_next - 1, bytes / 1048576.0, archive_bytes / 1048576.0, (unsigned long)archives.count,
