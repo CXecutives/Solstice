@@ -2,7 +2,7 @@ import Foundation
 import UIKit
 
 /// A macOS restore image Apple publishes for virtual Macs (VirtualMac2,1).
-struct MacOSRelease: Identifiable, Hashable {
+struct MacOSRelease {
     let id: String        // build
     let name: String
     let url: URL
@@ -16,14 +16,10 @@ struct MacOSRelease: Identifiable, Hashable {
     /// time at display +0x68, #161, is what macOS 15 reads there; macOS 27 uses that offset for something else).
     /// Apple's catalog (mesu.apple.com) only lists the newest; this is the same image from Apple's CDN, and Apple
     /// still signs it for virtual Macs.
-    static let all: [MacOSRelease] = [
-        MacOSRelease(id: "24G90", name: "macOS Sequoia 15.6.1",
-                     url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
-                     bytes: 16_035 << 20, note: "The version Solstice is built and tuned for."),
-    ]
-
-    /// Selected in the Install tab when nothing is downloaded yet: the one Henge is tested with most.
-    static let recommended = all.first { $0.id == "24G90" } ?? all[0]
+    static let current = MacOSRelease(
+        id: "24G90", name: "macOS Sequoia 15.6.1",
+        url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
+        bytes: 16_035 << 20, note: "The version Solstice is built and tuned for.")
 }
 
 /// Downloads a restore image and installs it on a new virtual Mac, on the
