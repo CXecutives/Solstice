@@ -35,7 +35,7 @@ $(B)/hengevm-ref: host/hvf_ref.c host/hvf_ref.entitlements $(ENGINE) $(DEV)
 # Mac-only graphics device (ParavirtualizedGraphics.framework, as QEMU uses it).
 # Built for an older deployment target: the framework's memory callbacks are
 # marked obsolete in macOS 27 without a documented replacement.
-$(B)/pvg_metal.o: devices/pvg_metal.m devices/*.h core/*.h host/*.h | $(B)
+$(B)/pvg_metal.o: devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h core/*.h host/*.h | $(B)
 	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
 $(B)/pvg_mac.o: devices/pvg_mac.m devices/*.h core/*.h host/*.h | $(B)
 	$(CC) -fobjc-arc -O2 -g -Wall -mmacosx-version-min=15.2 -Icore -Ihost -Idevices -c $< -o $@
@@ -181,7 +181,7 @@ $(patsubst %,$(IB)/core/%.o,$(NOSIMD)): $(IB)/core/%.o: core/%.c core/*.h host/*
 $(IB)/%.o: %.c core/*.h host/*.h devices/*.h
 	@mkdir -p $(dir $@)
 	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -c $< -o $@
-$(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/*.h core/*.h host/*.h
+$(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h core/*.h host/*.h
 	@mkdir -p $(dir $@)
 	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
 $(IB)/host/enter.o: host/enter.S
