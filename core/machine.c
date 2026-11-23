@@ -593,6 +593,45 @@ void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on) {
     if (!__atomic_fetch_or(&m->dev_unsignalled, bit, __ATOMIC_SEQ_CST)) hv_machine_kicker_poke(m); /* it may sleep long */
 }
 
+/* The storm detector (machine.h). One counter per interrupt; the clock and a look at the WFI count once a window. */
+void hv_storm_irq(HvCpu *cpu, uint32_t intid) {
+    HvPerCpu *p = cpu->pc_state;
+    if (!p) return;
+    HvStorm *s = &p->storm;
+    if (s->armed) hv_storm_count(s->irq, intid);
+    if (++s->acks < HV_STORM_WINDOW) return;
+    uint64_t now = mach_absolute_time(), wfi = __atomic_load_n(&p->own.stats.wfi, __ATOMIC_RELAXED);
+    int hot = s->t0 && now - s->t0 < 24000000ull * HV_STORM_WINDOW / HV_STORM_RATE && (wfi - s->wfi0) * 4 >= (uint64_t)s->acks * 3;
+    if (hot && s->armed && !s->logged) {
+        double secs = (double)(now - s->t0) / 24e6;
+        fprintf(stderr, "hengevm: interrupt storm on cpu %u: %.0f interrupts/s, %.0f WFI/s, el%u pc %llx; cntv ctl %llx cval %+lld us, "
+                        "cntp ctl %llx cval %+lld us\n  interrupts:", cpu->index, s->acks / secs, (double)(wfi - s->wfi0) / secs,
+                cpu->el, (unsigned long long)cpu->pc, (unsigned long long)cpu->cntv_ctl,
+                (long long)((int64_t)(cpu->cntv_cval - (now - cpu->cntvoff)) / 24), (unsigned long long)cpu->cntp_ctl,
+                (long long)((int64_t)(cpu->cntp_cval - now) / 24));
+        for (int i = 0; i < HV_STORM_SLOTS && s->irq[i].n; i++)
+            fprintf(stderr, " %d x%u", s->irq[i].id == ~0u ? -1 : (int)s->irq[i].id, s->irq[i].n);
+        fprintf(stderr, "\n  msr:");
+        for (int i = 0; i < HV_STORM_SLOTS && s->msr[i].n; i++) {
+            uint32_t r = s->msr[i].id;
+            if (r == ~0u) fprintf(stderr, " other x%u", s->msr[i].n);
+            else if (r & 0x10000) fprintf(stderr, " pstate%o x%u", r & 0x3f, s->msr[i].n);
+            else fprintf(stderr, " S%u_%u_C%u_C%u_%u x%u", r >> 14, (r >> 11) & 7, (r >> 7) & 15, (r >> 3) & 15, r & 7, s->msr[i].n);
+        }
+        fprintf(stderr, "\n");
+        s->logged = 1;
+        s->episodes++;
+    } else if (!hot && s->logged) {
+        fprintf(stderr, "hengevm: interrupt storm on cpu %u over after %.1f s\n", cpu->index, (double)(now - s->began) / 24e6);
+    }
+    if (hot && !s->armed) s->began = now;
+    if (!hot) s->logged = 0;
+    s->armed = (uint8_t)hot;
+    memset(s->irq, 0, sizeof s->irq);
+    memset(s->msr, 0, sizeof s->msr);
+    s->t0 = now, s->wfi0 = wfi, s->acks = 0;
+}
+
 void hv_machine_kicker_poke(HvMachine *m) {
     pthread_mutex_lock(&m->kick_mu);
     m->kick_poked = 1;

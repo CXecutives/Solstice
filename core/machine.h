@@ -144,6 +144,18 @@ typedef struct HvStats {
 } HvStats;
 #define HV_STATS_COUNTERS (offsetof(HvStats, small_at) / sizeof(uint64_t))
 
+/* The interrupt-storm detector's state (hv_storm_irq). Tiny tables: the top few are what a log needs. */
+#define HV_STORM_SLOTS 8
+typedef struct HvStormSlot { uint32_t id, n; } HvStormSlot;
+typedef struct HvStorm {
+    uint64_t t0, wfi0;           /* the window's start: host time, and the CPU's WFI count then */
+    uint32_t acks;               /* interrupts acknowledged in the window */
+    uint8_t armed, logged;       /* the last window was hot (record now); this episode was logged */
+    uint32_t episodes;           /* storms logged */
+    uint64_t began;              /* host time the episode's first hot window ended */
+    HvStormSlot irq[HV_STORM_SLOTS], msr[HV_STORM_SLOTS]; /* while armed: interrupt ids, MSRs written */
+} HvStorm;
+
 #define HV_MAX_CPUS 8
 #define HV_WHINT_MANY (1ull << 63) /* whint: more than three; else up to three TLB codes + 1, 16 bits each */
 
@@ -208,7 +220,9 @@ typedef struct HvPerCpu {
     uint32_t poll_req;           /* CPU 0: device work signalled (hv_machine_wake) or the kicker's poll: poll at the next tick */
     uint64_t wfi_until;          /* parked in WFI: when the sleep ends at the latest (0: not asleep on a timeout) */
     uint64_t guest_due;          /* host time its guest timer next fires (0: none), apart from CPU 0's device deadlines in
-                                    timer_due: the light paths refuse a fast resume only for this (light.c) */    /* Work other CPUs ask of this one (only the owner may touch its TLB and
+                                    timer_due: the light paths refuse a fast resume only for this (light.c) */
+    HvStorm storm;               /* the interrupt-storm detector (hv_storm_irq): its own thread only */
+    /* Work other CPUs ask of this one (only the owner may touch its TLB and
        branch cache while it runs). Posting bumps req_seq; the owner does the
        work at its next dispatcher entry and publishes ack_seq. */
     pthread_mutex_t req_mu;
@@ -502,6 +516,27 @@ void hv_machine_wake(HvMachine *m);
    (hv_machine_wake), at its device deadlines (the display's refresh) and every HV_DEV_SAFETY. */
 enum { HV_UNSIG_PVG_CHAN = 1u << 0 /* a display channel waits for another channel's stamp (pvg_lite.c) */ };
 void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on);
+
+/* Interrupt storms (an idle CPU taken out of WFI by an interrupt tens of thousands of times a second): each CPU counts
+   its acknowledged interrupts in windows of HV_STORM_WINDOW; a window faster than HV_STORM_RATE a second in which
+   WFI came as often as 3 in 4 interrupts is hot. After one hot window the next records which interrupts and which
+   system register writes, and logs them once; the episode ends with the first window that is not hot. */
+#define HV_STORM_WINDOW 8192u
+#define HV_STORM_RATE 10000u
+void hv_storm_irq(HvCpu *cpu, uint32_t intid);
+/* Counts id in a storm table; once it is full, the rest count in the last slot as id ~0. */
+static inline void hv_storm_count(HvStormSlot *t, uint32_t id) {
+    unsigned i = 0;
+    while (i < HV_STORM_SLOTS - 1 && t[i].n && t[i].id != id) i++;
+    if (!t[i].n) t[i].id = id;
+    else if (t[i].id != id) t[i].id = ~0u;
+    t[i].n++;
+}
+/* An MSR through the helper (reg: its encoding; 0x10000 | field for MSR immediate), recorded while a storm is. */
+static inline void hv_storm_msr(HvCpu *cpu, uint32_t reg) {
+    HvPerCpu *p = cpu->pc_state;
+    if (p && __builtin_expect(p->storm.armed, 0)) hv_storm_count(p->storm.msr, reg);
+}
 
 /* Deadlines, in host ticks (24 MHz). Translated code checks no timer, so a running CPU leaves its block only when asked:
    the kicker asks the CPU that is due, when it is due (its timer_due: the next timer event, and for CPU 0 the devices'

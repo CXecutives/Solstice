@@ -139,6 +139,51 @@ static void test_gic(void) {
     check("ICENABLER1 clears", (wr32(VMAPPLE_GIC_DIST + 0x184, 6), rd32(VMAPPLE_GIC_DIST + 0x104) & 6), 0);
 }
 
+/* The idle storm seen on a device: an idle CPU taken out of WFI by an interrupt tens of thousands of times a second,
+   writing its timer each time. The detector logs it once, with the interrupt and the register, and ends the episode
+   at the first quiet window. n windows of SPI 33 acknowledged, each after a WFI if wfi, with a CNTV_CVAL write. */
+static void storm_windows(HvGic *g, int n, int wfi) {
+    HvStorm *s = &m.percpu[0].storm;
+    for (uint32_t i = 0; i < (uint32_t)n * HV_STORM_WINDOW; i++) {
+        if (wfi) m.percpu[0].own.stats.wfi++;
+        hv_gicv3_set_irq(g, 33, 1);
+        uint64_t id = m.icc_read(&m, &cpu, ICC_IAR1);
+        hv_storm_msr(&cpu, 3u << 14 | 3u << 11 | 14u << 7 | 3u << 3 | 2u); /* CNTV_CVAL_EL0 */
+        m.icc_write(&m, &cpu, ICC_EOIR1, id);
+        hv_gicv3_set_irq(g, 33, 0);
+        if (i == HV_STORM_WINDOW / 2 && s->armed) { /* recording: the interrupt and the register */
+            check("storm: the interrupt counted", s->irq[0].id == 33 && s->irq[0].n == i + 1 && !s->irq[1].n, 1);
+            check("storm: the timer write counted", s->msr[0].id == (3u << 14 | 3u << 11 | 14u << 7 | 3u << 3 | 2u), 1);
+        }
+    }
+}
+
+static void test_storm(void) {
+    HvGic *g = board.gic;
+    HvStorm *s = &m.percpu[0].storm;
+    memset(s, 0, sizeof *s);
+    wr32(VMAPPLE_GIC_DIST + 0x104, 1u << 1); /* SPI 33 on again (test_gic ended with it off) */
+    hv_gicv3_set_irq(g, 33, 1);
+    check("storm: SPI 33 is delivered", m.icc_read(&m, &cpu, ICC_IAR1), 33);
+    m.icc_write(&m, &cpu, ICC_EOIR1, 33);
+    hv_gicv3_set_irq(g, 33, 0);
+    memset(s, 0, sizeof *s);
+    storm_windows(g, 2, 1);
+    check("storm: hot after a fast window with as many WFIs", s->armed, 1);
+    check("storm: not logged before it has recorded a window", s->episodes, 0);
+    storm_windows(g, 1, 1);
+    check("storm: logged once", s->episodes, 1);
+    storm_windows(g, 2, 1);
+    check("storm: once per episode", s->episodes, 1);
+    storm_windows(g, 1, 0);
+    check("storm: a window without WFIs ends it", s->armed + s->logged, 0);
+    storm_windows(g, 2, 1);
+    check("storm: the next episode is logged again", s->episodes, 2);
+    storm_windows(g, 1, 0);
+    memset(s, 0, sizeof *s);
+    wr32(VMAPPLE_GIC_DIST + 0x184, 1u << 1);
+}
+
 static int make_disk(const char *path, uint64_t size, uint8_t salt) {
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return -1;
@@ -803,6 +848,7 @@ int main(void) {
     check("aux disk skips its 16 KB header", aux.size, (256 << 10) - 16384);
 
     test_gic();
+    test_storm();
     test_simple_devices();
     test_bdif(&root, &aux);
     test_virtio_blk(&aux);
