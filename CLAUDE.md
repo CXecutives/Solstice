@@ -24,13 +24,15 @@ eingecheckt): `HANDOFF.local.md`.
 - `tools/check-all.sh` – alle Engine-Tests (normal, wie ausgeliefert + ThinLTO, mit UB-Fallen), Registerschutz-Prüfung,
   iOS-Build; die IPA landet in `out/Solstice.ipa`.
 - `tools/shipped_env.py` – die ausgelieferten Engine-Einstellungen aus `EngineTuning.swift` (CI testet damit).
+- `tools/regen.sh` – schreibt alles Erzeugte neu (Knopf-Tabelle, Karte); CI prüft, dass es aktuell ist.
 - `tools/windows-sideload.ps1` – richtet einen Windows-PC fürs Sideloading ein (Apple-Gerätedienst, Treiber).
 
 ## Grenzen
 - Nichts außer `origin` (CXecutives/Solstice) wird beschrieben; keine Releases.
 - Nur Sequoia 15.6.1 als Gast, bis eine Versions-Weiche gebaut ist (der vBlank-Zeitstempel aus #161 gilt nur für macOS 15).
   Geräte ab A14, iOS/iPadOS ab 26.
-- Engine-Standardwerte nur in `ios/Henge/EngineTuning.swift`, Gerätewerte nur in der Gerätetabelle
+- Engine-Einstellungen (Name, Typ, Vorgabe, Bereich) nur in `core/knobs.def`; daraus erzeugt `tools/regen.sh` die Swift-Namen und
+  `KNOBS.md`. Was die App abweichend ausliefert, steht nur in `ios/Henge/EngineTuning.swift`. Gerätewerte nur in der Gerätetabelle
   `ios/Henge/DeviceProfile.swift` (reines Foundation, Test `tests/test_device_profile.swift`).
 - Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`/`hv_light` heraus kein
   libc-Aufruf und kein SIMD (Dateien in `NOSIMD` im Makefile; CI-Gate `tools/simd_gate.py`). Resets großer Tabellen nur im
