@@ -55,7 +55,7 @@ enum HengeLog {
 
     static var logFileURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("henge.log")
+            .appendingPathComponent(Brand.logFile)
     }
 
     static func recentLines(_ n: Int = 400) -> [String] {
@@ -82,7 +82,7 @@ enum HengeLog {
         // ...but the previous run is kept as henge-prev.log, because when a game took Henge down with it, that run's log is
         // the crash report (CrashReport.swift).
         let url = logFileURL
-        let prev = url.deletingLastPathComponent().appendingPathComponent("henge-prev.log")
+        let prev = url.deletingLastPathComponent().appendingPathComponent(Brand.logPrevFile)
         try? FileManager.default.removeItem(at: prev)
         try? FileManager.default.moveItem(at: url, to: prev)
         logFD = open(url.path, O_CREAT | O_WRONLY | O_TRUNC, 0o644)
@@ -122,11 +122,11 @@ enum HengeLog {
     /// QEMU's own stderr, this run and the one before it.
     static var nativeLogURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("henge-native.log")
+            .appendingPathComponent(Brand.nativeLogFile)
     }
     static var previousNativeLogURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("henge-native-prev.log")
+            .appendingPathComponent(Brand.nativeLogPrevFile)
     }
 
     /// Force everything out to disk.
@@ -155,19 +155,19 @@ enum HengeLog {
     private static func redirectStdio() {
         let dir = FileManager.default.urls(for: .documentDirectory,
                                            in: .userDomainMask)[0]
-        let cURL = dir.appendingPathComponent("henge-native.log")
-        let prevURL = dir.appendingPathComponent("henge-native-prev.log")
+        let cURL = dir.appendingPathComponent(Brand.nativeLogFile)
+        let prevURL = dir.appendingPathComponent(Brand.nativeLogPrevFile)
         try? FileManager.default.removeItem(at: prevURL)
         try? FileManager.default.moveItem(at: cURL, to: prevURL)
 
         pipeWriteFD = open(cURL.path, O_CREAT | O_WRONLY | O_TRUNC, 0o644)
         pipeReadFD = open(cURL.path, O_RDONLY)
         guard pipeWriteFD >= 0, pipeReadFD >= 0 else {
-            log("boot", "WARNING: could not open henge-native.log (errno \(errno)); "
+            log("boot", "WARNING: could not open \(Brand.nativeLogFile) (errno \(errno)); "
                       + "C-side stderr will not be captured")
             return
         }
-        log("boot", "native stderr -> henge-native.log (mirrored here)")
+        log("boot", "native stderr -> \(Brand.nativeLogFile) (mirrored here)")
 
         if let mode = ProcessInfo.processInfo.environment["HV_LOG_CONSOLE"], !mode.isEmpty {
             consoleFD = dup(STDERR_FILENO)
@@ -180,7 +180,7 @@ enum HengeLog {
 
         // The file grows as C writes: each growth is an event, and the reader drains to the end of the file then
         // (more written meanwhile raises the next event). No timer: a paused Mac in the background wakes nothing here.
-        let queue = DispatchQueue(label: "com.henge.log.reader", qos: .userInitiated)
+        let queue = DispatchQueue(label: "com.solstice.log.reader", qos: .userInitiated)
         var pending = Data()
         var buf = [UInt8](repeating: 0, count: 16 * 1024)
         let drain = {
@@ -303,7 +303,7 @@ enum HengeLog {
         // well as stderr, because those are the lines most worth surviving a hard
         // crash. Mirroring them again here would double every one of them in
         // Console.app.
-        if !fromStream || (!line.contains("[henge-jit]") && !line.contains("[henge-dpy]")) {
+        if !fromStream || (!line.contains("[solstice-jit]") && !line.contains("[solstice-dpy]")) {
             osLog.log("\(line, privacy: .public)")
         }
 
@@ -351,7 +351,7 @@ enum HengeLog {
         let model = deviceModel
         let mem = ProcessInfo.processInfo.physicalMemory / (1024 * 1024)
 
-        log("boot", "================ Henge starting ================")
+        log("boot", "================ Solstice starting ================")
         log("boot", "device      : \(model)")
         log("boot", "system      : \(d.systemName) \(d.systemVersion)")
         log("boot", "physical RAM: \(mem) MiB")

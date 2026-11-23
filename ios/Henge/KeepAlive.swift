@@ -87,7 +87,7 @@ enum KeepAlive {
             }
         }
         center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
-            HengeLog.log("memory", "iOS sent a memory warning; \(henge_available_memory() >> 20) MB left before Henge's limit")
+            HengeLog.log("memory", "iOS sent a memory warning; \(henge_available_memory() >> 20) MB left before Solstice's limit")
             HengeLog.logFootprint("memory-warning")
             MainActor.assumeIsolated {
                 MemoryRelief.warning()
@@ -95,7 +95,7 @@ enum KeepAlive {
             }
         }
         center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
-            HengeLog.log("app", "iOS is ending Henge (willTerminate)")
+            HengeLog.log("app", "iOS is ending Solstice (willTerminate)")
         }
         center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
@@ -115,7 +115,7 @@ enum KeepAlive {
         source.setEventHandler {
             let data = source.data
             let level = data.contains(.critical) ? 2 : data.contains(.warning) ? 1 : 0
-            HengeLog.log("memory", "system memory pressure: \(["normal", "warning", "critical"][level]); \(henge_available_memory() >> 20) MB left before Henge's limit")
+            HengeLog.log("memory", "system memory pressure: \(["normal", "warning", "critical"][level]); \(henge_available_memory() >> 20) MB left before Solstice's limit")
             HengeLog.logFootprint("pressure")
             MainActor.assumeIsolated {
                 MemoryRelief.pressure(level)

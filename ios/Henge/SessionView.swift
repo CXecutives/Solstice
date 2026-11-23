@@ -106,7 +106,7 @@ struct SessionView: View {
                         floatingControls(layout)
                     }
                     if pointerRefused && !showRevealHint {
-                        Label("Make Henge full screen to use the trackpad or mouse as the Mac's", systemImage: "cursorarrow.rays")
+                        Label("Make Solstice full screen to use the trackpad or mouse as the Mac's", systemImage: "cursorarrow.rays")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 18).padding(.vertical, 12)
@@ -458,8 +458,8 @@ struct SessionView: View {
                         }
                     }
                     Text(helperRunning
-                         ? "Put files in Files, Henge, Shared to see them in the Henge folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
-                         : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) for the Mac keyboard layout chosen in Settings (\(KeyLayout.current.title)).")
+                         ? "Put files in Files, Solstice, Shared to see them in the Solstice folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
+                         : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about solstice-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) for the Mac keyboard layout chosen in Settings (\(KeyLayout.current.title)).")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Lighter macOS") {

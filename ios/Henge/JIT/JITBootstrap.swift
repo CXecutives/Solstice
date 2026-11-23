@@ -66,7 +66,7 @@ enum JITBootstrap {
         } else {
             lastFailure = "The debugger is attached but is not answering trap "
                         + "requests, so no executable memory could be claimed. "
-                        + "Open Henge from the Home Screen and tap Turn On JIT."
+                        + "Open Solstice from the Home Screen and tap Turn On JIT."
         }
         HengeLog.log("jit", ok ? "JIT region secured" : "JIT prewarm FAILED -- the debugger is not servicing traps")
         return ok

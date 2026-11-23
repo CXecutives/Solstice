@@ -40,12 +40,12 @@ enum EngineTuning {
     static func apply() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var overrides: [String: String] = [:]
-        let url = docs.appendingPathComponent("henge-env.txt")
+        let url = docs.appendingPathComponent(Brand.envFile)
         if let text = try? String(contentsOf: url, encoding: .utf8) {
             let parsed = EnvOverrides.parse(text, documents: docs.path)
             overrides = parsed.accepted
             if !parsed.refused.isEmpty {
-                HengeLog.log("engine", "henge-env.txt: ignored \(parsed.refused.joined(separator: ", ")) (only HV_ variables are taken)")
+                HengeLog.log("engine", "\(Brand.envFile): ignored \(parsed.refused.joined(separator: ", ")) (only HV_ variables are taken)")
             }
         }
         // HV_SAFE=1 or 0 in henge-env.txt decides it by hand.
@@ -69,7 +69,7 @@ enum EngineTuning {
             setenv(k, v, 1)
             HengeLog.log("tuning", "\(k)=\(v)")
         }
-        if safe { HengeLog.log("tuning", "safe mode: upstream Henge's engine defaults, none of Solstice's") }
+        if safe { HengeLog.log("tuning", "safe mode: upstream Solstice's engine defaults, none of Solstice's") }
     }
 }
 
@@ -108,7 +108,7 @@ enum SafeMode {
         }
         active = d.bool(forKey: onKey)
         if streak > 0 { HengeLog.log("app", "the last \(streak) launch(es) ended while a Mac was running") }
-        if active { HengeLog.log("app", "safe mode is on: the engine runs with upstream Henge's defaults") }
+        if active { HengeLog.log("app", "safe mode is on: the engine runs with upstream Solstice's defaults") }
     }
 
     /// A Mac runs and Henge is in front: ending now would count.

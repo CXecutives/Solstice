@@ -40,7 +40,7 @@ struct HomeView: View {
                 .deskColumn()
             }
             .background(Desk.page)
-            .navigationTitle("Henge")
+            .navigationTitle(Brand.name)
             .navigationDestination(for: VirtualMac.self) { MacSettingsView(mac: $0) }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {

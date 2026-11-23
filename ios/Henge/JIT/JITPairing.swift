@@ -81,7 +81,7 @@ import UserNotifications
         guard Self.isSupported, !active, session == nil else { return }
         var error: UnsafeMutablePointer<CChar>?
         guard let session = husk_rppairing_new(Self.hostName, &error) else {
-            fail(Self.take(error) ?? "Henge could not open its pairing port.")
+            fail(Self.take(error) ?? "Solstice could not open its pairing port.")
             return
         }
         self.session = session
@@ -141,11 +141,11 @@ import UserNotifications
         phase = .pin(pin)
         log("code shown")
         if let task = continued as? BGContinuedProcessingTask {
-            task.updateTitle("Pairing code \(pin)", subtitle: "Enter it on this \(Self.deviceKind) to pair with Henge")
+            task.updateTitle("Pairing code \(pin)", subtitle: "Enter it on this \(Self.deviceKind) to pair with Solstice")
             task.progress.completedUnitCount = 1
         }
         if UIApplication.shared.applicationState != .active {
-            notify("Henge pairing code: \(pin)", body: "Enter this code on your \(Self.deviceKind) to finish pairing.")
+            notify("Solstice pairing code: \(pin)", body: "Enter this code on your \(Self.deviceKind) to finish pairing.")
         }
     }
 
@@ -163,11 +163,11 @@ import UserNotifications
                 phase = .paired(device: device ?? "this \(Self.deviceKind)")
                 log("paired")
                 if UIApplication.shared.applicationState != .active {
-                    notify("Paired with Henge", body: "Return to Henge to finish setting up JIT.")
+                    notify("Paired with Solstice", body: "Return to Solstice to finish setting up JIT.")
                 }
                 endBackground(success: true)
             } catch {
-                fail("Pairing finished, but Henge could not save the pairing file.")
+                fail("Pairing finished, but Solstice could not save the pairing file.")
             }
         case 2:
             endBackground(success: false)
@@ -224,8 +224,8 @@ import UserNotifications
         guard active else { return }
         log("advertising failed error=\(error)")
         fail(error == DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
-             ? "Henge needs Local Network access to pair. Allow it in Settings › Apps › Henge, then try again."
-             : "Henge could not announce itself on the local network. Check that Wi-Fi is on, then try again.")
+             ? "Solstice needs Local Network access to pair. Allow it in Settings › Apps › Solstice, then try again."
+             : "Solstice could not announce itself on the local network. Check that Wi-Fi is on, then try again.")
     }
 
     private func stopAdvertising() {
@@ -243,11 +243,11 @@ import UserNotifications
     }
 
     private func beginBackground() {
-        grace = UIApplication.shared.beginBackgroundTask(withName: "Henge pairing") {
+        grace = UIApplication.shared.beginBackgroundTask(withName: "Solstice pairing") {
             MainActor.assumeIsolated {
                 let pairing = OnDevicePairing.shared
                 if pairing.continued == nil && pairing.active {
-                    pairing.cancel(reason: "iOS stopped Henge in the background before pairing finished. "
+                    pairing.cancel(reason: "iOS stopped Solstice in the background before pairing finished. "
                                          + "Try again, and pair from Settings straight away.")
                 }
                 pairing.endGrace()
@@ -266,7 +266,7 @@ import UserNotifications
             guard ok else { log("register refused"); backgroundLimited = true; return }
             registered = identifier
         }
-        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Pairing with Henge",
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Pairing with Solstice",
                                                        subtitle: "Settings › Privacy & Security › Developer Mode")
         request.strategy = .fail
         do {
@@ -283,7 +283,7 @@ import UserNotifications
         continued = task
         task.progress.totalUnitCount = 2
         if case .pin(let pin) = phase {
-            task.updateTitle("Pairing code \(pin)", subtitle: "Enter it on this \(Self.deviceKind) to pair with Henge")
+            task.updateTitle("Pairing code \(pin)", subtitle: "Enter it on this \(Self.deviceKind) to pair with Solstice")
             task.progress.completedUnitCount = 1
         }
         task.expirationHandler = {

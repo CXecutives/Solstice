@@ -202,7 +202,7 @@ struct InstallView: View {
             .deskCard(radius: 30)
             .padding(.bottom, 16)
         }
-        Text("\(release.name) on this \(Device.name). Keep Henge open.")
+        Text("\(release.name) on this \(Device.name). Keep Solstice open.")
             .font(.system(size: 16))
             .foregroundStyle(Desk.dim)
             .frame(maxWidth: .infinity, alignment: .leading)
