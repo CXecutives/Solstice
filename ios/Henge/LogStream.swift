@@ -10,6 +10,8 @@ import UIKit
 /// The app is the client: `tools/henge-log-listen.py` listens on the computer, prints what
 /// arrives and appends it to a file. Lines are queued while the computer is away, and the queue
 /// is bounded, so a session that runs for hours without a listener cannot grow without limit.
+/// Plain TCP: each line goes out with the app's container path and host names taken out (LogPrivacy), and a computer
+/// that is not on the local network is flagged in the status.
 final class LogStream: ObservableObject {
     static let shared = LogStream()
 
@@ -28,6 +30,9 @@ final class LogStream: ObservableObject {
     @Published private(set) var state: State = .off
     @Published private(set) var sent = 0
     @Published private(set) var dropped = 0
+    /// The address is not on the local network: the log would cross the internet unencrypted.
+    @Published private(set) var notLocal = false
+    private let home = NSHomeDirectory()
 
     private struct Target: Equatable {
         var host: String
@@ -66,12 +71,14 @@ final class LogStream: ObservableObject {
 
     /// What the Settings screen says.
     var statusText: String {
+        let text: String
         switch state {
         case .off: return "Off"
-        case .connecting: return "Connecting…"
-        case .connected: return sent > 0 ? "Connected — \(sent) lines sent" : "Connected"
-        case .waiting(let why): return "Waiting — \(why)"
+        case .connecting: text = "Connecting…"
+        case .connected: text = sent > 0 ? "Connected — \(sent) lines sent" : "Connected"
+        case .waiting(let why): text = "Waiting — \(why)"
         }
+        return notLocal ? text + " (not a local address: sent unencrypted)" : text
     }
 
     // MARK: - Settings
@@ -91,6 +98,9 @@ final class LogStream: ObservableObject {
         target = want
         if want == nil { pending.removeAll() } // nothing to send to: do not hold it
         lock.unlock()
+        let outside = want.map { !LogPrivacy.isLocal($0.host) } ?? false
+        if outside { HengeLog.log("stream", "the log stream's address is not on the local network: lines go there unencrypted") }
+        DispatchQueue.main.async { if self.notLocal != outside { self.notLocal = outside } }
         queue.async { self.reconcile(changed: changed) }
     }
 
@@ -232,7 +242,7 @@ final class LogStream: ObservableObject {
         publishCounts()
         guard canSend, let c = connection, !batch.isEmpty else { return }
         batchInFlight = true
-        let data = Data((batch.joined(separator: "\n") + "\n").utf8)
+        let data = Data((batch.map { LogPrivacy.redact($0, home: home) }.joined(separator: "\n") + "\n").utf8)
         let lines = batch.count
         c.send(content: data, completion: .contentProcessed { [weak self] error in
             guard let self else { return }

@@ -294,7 +294,15 @@ test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
 	$(B)/test_physical_mouse_buttons
 .PHONY: test-physical-mouse-buttons
 
+# The lifecycle watchdog's limits, the log stream's redaction and local-address check, henge-env.txt's HV_ filter.
+$(B)/test_lifecycle: ios/Henge/LifecycleWatchdog.swift ios/Henge/LogPrivacy.swift ios/Henge/EnvOverrides.swift tests/test_lifecycle.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-lifecycle: $(B)/test_lifecycle
+	$(B)/test_lifecycle
+.PHONY: test-lifecycle
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
-SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons
+SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons test-lifecycle
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

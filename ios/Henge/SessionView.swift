@@ -146,6 +146,7 @@ struct SessionView: View {
                 }
                 if let error { errorCard(error, layout) }
                 if storagePaused && state != HENGE_VM_STOPPED { storageCard(layout) }
+                if let stuck = session.stuck { LifecycleNotice(stuck: stuck, session: session, close: close).frame(width: min(layout.touch.width, 390) - 32).position(x: layout.fillsPhone ? layout.touch.midX : layout.pad.midX, y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY) }
                 if power.holding && state != HENGE_VM_STOPPED {
                     HeatNotice().frame(width: min(layout.touch.width, 390) - 32)
                         .position(x: layout.fillsPhone ? layout.touch.midX : layout.pad.midX, y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
@@ -186,9 +187,10 @@ struct SessionView: View {
         .persistentSystemOverlays(.hidden)
         .sheet(isPresented: $showDetails) { details }
         .confirmationDialog("Shut down \(mac.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("Shut Down", role: .destructive) { finish() }
+            Button("Shut Down") { if !session.shutDown() { close() } } // macOS shuts down; the view closes once it is off
+            Button("Force Off", role: .destructive) { session.forceOff(); close() }
         } message: {
-            Text("This turns the Mac off at once. Anything not saved on it is lost.")
+            Text("Shut Down asks macOS to close its apps and turn off. Force Off turns it off at once; anything not saved on it is lost.")
         }
         .onChange(of: zoomed) { on in
             zoomFollowing?.cancel()
@@ -208,7 +210,7 @@ struct SessionView: View {
             HardwareMouse.shared.releaseButtons()
             if phase == .inactive { InstantResume.pause() }
             if phase == .background && bootRAM > 0 { InstantResume.suspend(mac, ramMB: bootRAM, cpus: cpus) }
-            if phase == .background { InstantResume.rest() }
+            if phase == .background { InstantResume.rest(mac) }
         }
         .onChange(of: showDetails) { showing in
             if showing {
@@ -501,6 +503,7 @@ struct SessionView: View {
                 zoomFollowing?.cancel()
             },
             restart: { bootAttempt += 1 },
+            shutDown: close,
             minuteUp: {
                 guard !stillWallpaperTipShown else { return } // about when the desktop is up after a login
                 stillWallpaperTipShown = true
@@ -511,10 +514,5 @@ struct SessionView: View {
 
     private func stopTapped() {
         if state == HENGE_VM_RUNNING { confirmStop = true } else { close() }
-    }
-
-    private func finish() {
-        session.shutDown()
-        close()
     }
 }
