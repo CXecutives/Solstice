@@ -3,6 +3,7 @@
 
 #include "cpu.h"
 #include "machine.h"
+#include "stats.h" /* the stats line, printed from the dispatcher loop */
 
 /* Runs translated code until the CPU halts, the test stop PC is reached, or
    something the dispatcher cannot handle happens. Returns the HV_EXIT_* reason. */
@@ -19,10 +20,5 @@ void hv_fp_enter(HvCpu *cpu);
 void hv_fp_leave(HvCpu *cpu);
 
 void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what);
-
-/* Stats lines printed (HvMachine.stats_interval), for the tests. */
-extern uint64_t hv_stats_lines;
-/* Set by the host: more lines for the stats, from the devices' data paths (network, sound), over `seconds`. */
-extern void (*hv_stats_io)(double seconds);
 
 #endif
