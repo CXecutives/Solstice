@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "light.h"
+#include "mmu.h"
 
 DECLARE_PROGRAM(p_svc);
 DECLARE_PROGRAM(p_brk_undef);
