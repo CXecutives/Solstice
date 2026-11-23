@@ -12,7 +12,7 @@ struct SettingsView: View {
     @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = false
     @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
     @State private var safeMode = SafeMode.active
-    @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = JITBootstrap.defaultCodeCacheMB
+    @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = Device.profile.codeCacheMB
     @ObservedObject private var stream = LogStream.shared
     @AppStorage(LogStream.enabledKey) private var streamOn = false
     @AppStorage(LogStream.hostKey) private var streamHost = ""
@@ -100,7 +100,7 @@ struct SettingsView: View {
                     Toggle("Quicker wake from idle", isOn: $wfiSpin)
                     Toggle("Superblocks (experimental)", isOn: $superblocks)
                     Picker("Code cache", selection: $codeCacheMB) {
-                        ForEach(JITBootstrap.codeCacheChoices, id: \.self) { mb in
+                        ForEach(DeviceProfile.codeCacheChoices, id: \.self) { mb in
                             Text(mb < 1024 ? "\(mb) MB" : String(format: "%g GB", Double(mb) / 1024)).tag(mb)
                         }
                     }

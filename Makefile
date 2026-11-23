@@ -262,6 +262,10 @@ test-identity: $(B)/test_device_identity
 	$(B)/test_device_identity
 .PHONY: test-identity
 
+# The device table: memory classes, CPUs, code cache and guest RAM cap from values passed in.
+$(B)/test_device_profile: ios/Henge/DeviceProfile.swift tests/test_device_profile.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
 # A physical mouse's right/middle swap, kept from press to release.
 $(B)/test_physical_mouse_buttons: ios/Henge/PhysicalMouseButtons.swift tests/test_physical_mouse_buttons.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
