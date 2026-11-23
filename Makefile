@@ -318,8 +318,16 @@ test-touch-gestures: $(B)/test_touch_gestures
 	$(B)/test_touch_gestures
 .PHONY: test-touch-gestures
 
+# Keys go to the Mac in the order they were asked for: a paste that waits holds back what is typed after it.
+$(B)/test_key_queue: ios/Henge/KeyQueue.swift tests/test_key_queue.swift | $(B)
+	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
+
+test-key-queue: $(B)/test_key_queue
+	$(B)/test_key_queue
+.PHONY: test-key-queue
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
 SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons \
-	test-lifecycle test-key-layout test-touch-gestures
+	test-lifecycle test-key-layout test-touch-gestures test-key-queue
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test
