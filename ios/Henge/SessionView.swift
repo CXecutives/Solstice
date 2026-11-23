@@ -19,7 +19,7 @@ struct SessionView: View {
     @State private var framesIn: UInt64 = 0
     @State private var log: [String] = []
     @State private var started = Date()
-    @State private var thermalState = ProcessInfo.processInfo.thermalState
+    @ObservedObject private var power = PowerPolicy.shared // heat: the Mac may be paused for it
     @State private var bootRAM: UInt64 = 0 /* what the Mac was started with, which a save is for */
     @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
     @AppStorage("henge.matchScreenColors") private var matchScreenColors = true
@@ -145,6 +145,10 @@ struct SessionView: View {
                 }
                 if let error { errorCard(error, layout) }
                 if storagePaused && state != 2 { storageCard(layout) }
+                if power.holding && state != 2 {
+                    HeatNotice().frame(width: min(layout.touch.width, 390) - 32)
+                        .position(x: layout.fillsPhone ? layout.touch.midX : layout.pad.midX, y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
+                }
                 KeyboardCatcher(active: $typing).frame(width: 0, height: 0)
             }
             .frame(width: full.width, height: full.height)
@@ -556,7 +560,7 @@ struct SessionView: View {
             List {
                 Section(phase) {
                     LabeledContent("CPUs on", value: "\(cpusOn) of \(cpus)")
-                    LabeledContent("Temperature", value: Self.thermalLabel(thermalState))
+                    LabeledContent("Temperature", value: PowerPolicy.label(power.thermal))
                     LabeledContent("Translated blocks", value: String(format: "%.1f M/s", blocksPerSecond / 1e6))
                     LabeledContent("Network frames", value: "\(framesOut) out, \(framesIn) in")
                     LabeledContent("Up", value: "\(Int(Date().timeIntervalSince(started))) s")
@@ -629,16 +633,6 @@ struct SessionView: View {
     }
 
     // MARK: Running
-
-    private static func thermalLabel(_ state: ProcessInfo.ThermalState) -> String {
-        switch state {
-        case .nominal: return "Normal"
-        case .fair: return "Warm"
-        case .serious: return "Hot — performance reduced"
-        case .critical: return "Critical"
-        @unknown default: return "Unknown"
-        }
-    }
 
     private func run() async {
         error = nil
@@ -737,11 +731,6 @@ struct SessionView: View {
                 refreshDetails()
             }
             if Sharing.helperRunning != helperRunning { helperRunning = Sharing.helperRunning }
-            let heat = ProcessInfo.processInfo.thermalState
-            if heat.rawValue != thermalState.rawValue {
-                thermalState = heat
-                HengeLog.log("session", "thermal state: \(Self.thermalLabel(heat))")
-            }
             if state == 2 {
                 SafeMode.macLive(false)
                 typing = false
@@ -763,7 +752,7 @@ struct SessionView: View {
                 let gpuFrames = henge_vm_gpu_frames()
                 HengeLog.log("perf", "blocks/s \(String(format: "%.0f", rate)), GPU frames/10s \(gpuFrames &- lastGPUFrames), "
                              + "network tx \(henge_vm_net_frames(1)), rx \(henge_vm_net_frames(0)), dns \(henge_vm_dns(0)) answered \(henge_vm_dns(2)) unanswered, "
-                             + "thermal \(Self.thermalLabel(heat))")
+                             + "thermal \(PowerPolicy.label(power.thermal))")
                 lastGPUFrames = gpuFrames
                 JITBootstrap.releaseLingeringDebugger()
             }

@@ -9,8 +9,9 @@ enum InstantResume {
     static let key = "henge.instantResume"
     static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
 
-    /// Saving and running on take turns on one queue, never on the main thread: a save takes a few seconds.
-    private static let queue = DispatchQueue(label: "henge.instant-resume", qos: .userInitiated)
+    /// Saving and running on take turns on one queue, never on the main thread: a save takes a few seconds. Pausing
+    /// for heat (PowerPolicy) takes its turn here too.
+    static let queue = DispatchQueue(label: "henge.instant-resume", qos: .userInitiated)
 
     static func file(for mac: VirtualMac) -> URL { mac.directory.appendingPathComponent("resume.hsnap") }
 
@@ -125,13 +126,19 @@ enum InstantResume {
 
     /// Back in the foreground before iOS closed Henge (or active again after a moment inactive): the saved file, if
     /// any, is out of date the moment the Mac runs on. The memory asked for only for the background goes back.
-    /// A Mac paused for want of storage stays paused (StorageGuard): it runs on when the user says so.
+    /// A Mac paused for want of storage stays paused (StorageGuard): it runs on when the user says so. One paused for
+    /// heat, or that would be (PowerPolicy), runs on by itself once the device has cooled.
     @MainActor static func cameBack(_ mac: VirtualMac) {
         MemoryRelief.afterBackground()
         guard !StorageGuard.holding else { return }
+        let hot = PowerPolicy.shared.keepsPaused()
         queue.async {
             guard henge_vm_state() == 4 else { return }
             discard(for: mac)
+            if hot {
+                HengeLog.log("resume", "back: the Mac stays paused until the device cools")
+                return
+            }
             HengeLog.log("resume", henge_vm_continue() == 0 ? "back: the Mac runs on" : "back: the Mac could not run on")
         }
     }

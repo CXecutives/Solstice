@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "pvg_vblank_clock.h"
@@ -88,11 +89,52 @@ static void grid_times_and_deadline(void) {
     printf("vblank grid: %u refreshes at grid times over random polls; 600 in 10 s polled at each deadline\n", events);
 }
 
+/* The presenter (pvg_metal.m, presentLoop) over 10 s of a guest drawing at every refresh of its mode: woken by a new
+   frame, it waits as hv_present_wait says and then shows the newest frame there is; the cap can change at switch_at
+   (henge_vm_set_power_profile, live). Returns the presents; *stale is the oldest a shown frame was when it went out. */
+static unsigned paced(unsigned mode_hz, int cap_before, int cap_after, double switch_at, double *stale) {
+    const double mode_every = 1.0 / mode_hz;
+    double last = -1e9, worst = 0;
+    unsigned n = 0;
+    for (uint64_t k = 0; k < 10ull * mode_hz;) { /* frame k is drawn at k * mode_every */
+        double woke = (double)k * mode_every;
+        double every = hv_present_every(mode_every, woke < switch_at ? cap_before : cap_after);
+        double at = woke + hv_present_wait(last, woke, mode_every, every);
+        uint64_t newest = (uint64_t)floor(at * mode_hz + 1e-6);
+        assert(newest >= k);
+        if (at - (double)newest * mode_every > worst) worst = at - (double)newest * mode_every;
+        if (n && every > mode_every) assert(at - last >= every - 1e-9); /* never faster than the cap */
+        last = at;
+        n++;
+        k = newest + 1; /* asleep until a frame newer than the one it showed */
+    }
+    *stale = worst;
+    return n;
+}
+
+static void present_pacing(void) {
+    assert(hv_present_every(1.0 / 60, 0) == 1.0 / 60);
+    assert(hv_present_every(1.0 / 60, 30) == 1.0 / 30);
+    assert(hv_present_every(1.0 / 30, 60) == 1.0 / 30); /* a cap above the mode's rate changes nothing */
+    double stale;
+    assert(paced(60, 0, 0, 99, &stale) == 600 && stale < 1e-9); /* uncapped: every frame, as it comes */
+    assert(paced(60, 120, 120, 99, &stale) == 600);
+    unsigned capped = paced(60, 30, 30, 99, &stale);
+    assert(capped >= 299 && capped <= 301 && stale < 1.0 / 60); /* the newest frame, not a queued one */
+    unsigned fast = paced(120, 30, 30, 99, &stale);
+    assert(fast >= 299 && fast <= 301 && stale < 1.0 / 120);
+    unsigned hot = paced(60, 0, 30, 5, &stale), cooled = paced(60, 30, 0, 5, &stale); /* the cap changes live */
+    assert(hot >= 448 && hot <= 452 && cooled >= 448 && cooled <= 452);
+    printf("present pacing: 60 Hz frames, %u presents in 10 s under a 30 Hz cap, %u and %u with it on and off halfway\n",
+           capped, hot, cooled);
+}
+
 int main(void) {
     cadence(30); cadence(60); cadence(120);
     boundary_and_stall();
     wrap_and_invalid_period();
     grid_times_and_deadline();
-    puts("vblank clock: cadence, exact deadlines, long stalls and counter wrap passed");
+    present_pacing();
+    puts("vblank clock: cadence, exact deadlines, long stalls, counter wrap and present pacing passed");
     return 0;
 }
