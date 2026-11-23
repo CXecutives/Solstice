@@ -140,7 +140,7 @@ void hv_mmu_walk(HvCpu *cpu, uint64_t va, HvAccess acc, int el, HvWalk *out) {
 int hv_tlb_tmajor;
 
 void hv_tlb_flush(HvCpu *cpu) {
-    if (cpu->pc_state) HV_ST(cpu).tlb_flushes++, HV_ST(cpu).reset_why[0]++;
+    if (cpu->pc_state) HV_ST(cpu).tlb_flushes++, HV_ST(cpu).reset_why[0]++, HV_ST(cpu).user_reset_why[2]++;
     hv_ijc_reset(cpu, 0); /* mappings changed: branch targets cached by VA are no longer trusted */
     hv_ijc_reset(cpu, 1);
     /* Only the entries filled since the last flush can be valid (both logs, unless one ran over). */
@@ -468,7 +468,7 @@ static int ijc_drop_va(HvCpu *cpu, uint64_t va, int asid, int remote) {
             st->reset_why[kernel ? 3 : 2]++;
             uint64_t page = va & ~((1ull << HV_TLB_PAGE_BITS) - 1);
             if (kernel) ijc_clear_page(cpu, page, 1, cpu->ijc_salt[1], !remote);
-            else if (asid < 0) st->reset_why[5]++, hv_ijc_reset(cpu, 0); /* every address space: their slots differ, so start the user half over */
+            else if (asid < 0) st->reset_why[5]++, st->user_reset_why[0]++, hv_ijc_reset(cpu, 0); /* every address space: their slots differ, so start the user half over */
             else ijc_clear_page(cpu, page, 0, current_asid(cpu) < 0 ? cpu->ijc_salt[0] : (uint64_t)cpu->asid_cid[asid] << 48, !remote);
         }
     }
@@ -511,7 +511,7 @@ void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid) {
     HvMachine *m = cpu->m;
     if (!m) return;
     if (asid < 0) { /* every address space */
-        HV_ST(cpu).reset_why[5]++;
+        HV_ST(cpu).reset_why[5]++, HV_ST(cpu).user_reset_why[1]++;
         hv_ijc_reset(cpu, 0);
         return;
     }
@@ -865,6 +865,10 @@ int hv_tlb_refill(HvCpu *cpu, uint64_t va, uint32_t flags) {
     /* In the page, but where the fast check cannot pass (it allows HV_TLB_ADJ bytes of every access, so a small one in a
        page's last HV_TLB_ADJ bytes misses): a refill would come straight back here. */
     if (bytes <= HV_TLB_ADJ + 1 && off + HV_TLB_ADJ > PAGE_MASK) return 1;
+    {   /* what the slot held: nothing, or an entry of another page (or of this one without the right) */
+        const HvTlbEntry *o = hv_tlb_ent(cpu, (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), table);
+        HV_ST(cpu).refill_kind[(el ? 2 : 0) + (o->read_tag != HV_TLB_INVALID || o->write_tag != HV_TLB_INVALID || o->exec_tag != HV_TLB_INVALID)]++;
+    }
     HvWalk w;
     walk_begin(cpu, va);
     hv_mmu_walk(cpu, va, write ? HV_ACC_WRITE : HV_ACC_READ, el, &w);
@@ -889,10 +893,11 @@ static void ijc_make_room(HvCpu *cpu) {
     if (!pcs || !ijc_full(pcs)) return;
     if (pcs->ucode_count + 1 >= (1u << HV_UCODE_BITS) / 2) { /* half full: start the user half over */
         ucode_clear(pcs);
+        HV_ST(cpu).user_reset_why[3]++;
         hv_ijc_reset(cpu, 0);
     }
     if (pcs->ijc_keyed_count >= (1u << 17)) { /* an eighth full: start the cache and the filter over */
-        HV_ST(cpu).reset_why[6]++;
+        HV_ST(cpu).reset_why[6]++, HV_ST(cpu).user_reset_why[4]++;
         hv_ijc_reset(cpu, 0);
         hv_ijc_reset(cpu, 1);
         memset(pcs->ijc_keyed, 0, sizeof pcs->ijc_keyed);
@@ -995,6 +1000,7 @@ void hv_ijc_drop_code_page(HvCpu *cpu, uint64_t v) {
         return;
     }
     if (cpu->nasid_log > HV_ASID_LOG) { /* the ids given out are not all known: start the user half over */
+        HV_ST(cpu).user_reset_why[6]++;
         hv_ijc_reset(cpu, 0);
         return;
     }
@@ -1257,6 +1263,7 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
             s = &p->stash[0];
             for (int i = 1; i < HV_STASHES; i++)
                 if (p->stash[i].used < s->used) s = &p->stash[i];
+            p->own.stats.stash_evict++;
         }
         __atomic_store_n(&s->ttbr0, old, __ATOMIC_SEQ_CST);
         s->saved_gen = __atomic_load_n(&s->gen, __ATOMIC_SEQ_CST);
@@ -1280,11 +1287,13 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
             for (int t = 0; t < 3; t++)
                 if (user_entry(hv_tlb_ent(cpu, i, t))) memset(hv_tlb_ent(cpu, i, t), 0x80, sizeof(HvTlbEntry));
     }
-    if (s) s->n = k;
+    if (s) s->n = k, p->own.stats.stash_out += k;
 
+    int found = 0;
     for (int i = 0; i < HV_STASHES; i++) {
         HvTlbStash *r = &p->stash[i];
         if (r->ttbr0 != now) continue;
+        found = 1;
         int fresh = __atomic_load_n(&r->gen, __ATOMIC_SEQ_CST) == r->saved_gen;
         __atomic_store_n(&r->ttbr0, 0, __ATOMIC_SEQ_CST); /* used up either way: the live TLB has them now */
         if (!fresh) {
@@ -1321,5 +1330,6 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
         if (m->stats_interval) p->own.stats.stash_entries += r->n;
         break;
     }
+    if (!found) p->own.stats.stash_miss++;
     walk_end(cpu);
 }

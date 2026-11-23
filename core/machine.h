@@ -134,6 +134,14 @@ typedef struct HvStats {
     uint64_t dev_polls;       /* CPU 0's device polls (vmapple.c) */
     uint64_t pv_waits, pv_kicks; /* paravirtual ticket locks: waits for a kick (VCPU_WFK), kicks (VCPU_KICK; exception.c) */
     uint64_t cc_tenured;      /* blocks translated into the code cache's tenured segments (codecache.c) */
+    /* mmu.c: what process switches cost (counted always, one increment each). */
+    uint64_t refill_kind[4];  /* hv_tlb_refill: EL0 slot empty, EL0 slot held another entry, EL1 empty, EL1 another */
+    uint64_t stash_miss;      /* process switches that found no stash for the incoming address space */
+    uint64_t stash_evict;     /* stashes taken over from another address space (least recently used) */
+    uint64_t stash_out;       /* entries copied into stashes at process switches */
+    uint64_t user_reset_why[7]; /* user-half branch-cache resets by cause: all-ASID TLBI by VA, all-ASID big range,
+                                   whole-TLB flush, (id, page) set half full, keyed filter full, code under several VA
+                                   pages, ASID log overflow (the rest of ijc_reset_kind[0]: code-cache epochs) */
     /* Not summed: tables of the first few values seen, and debugging rings (per CPU). */
     struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 regions mapped under 16 KB were */
     struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */

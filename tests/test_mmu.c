@@ -206,6 +206,193 @@ static void remap_test(void) {
     free(rt_pt);
 }
 
+/* ---- Process switches (hv_tlb_switch_user, the stashes): address spaces of 16 KB pages, 48-bit VA (levels 0-3),
+   their tables and data pages in one RAM region at their host addresses (as remap_test). ---- */
+#define SW_TABLES 96
+#define SW_DATA 32
+#define SW_USER (3ull | 1ull << 10 | 3ull << 8 | 1ull << 6 | 1ull << 11) /* page, accessed, inner shareable, EL0 RW, nG */
+static uint8_t *sw_mem;
+static unsigned sw_next;
+
+static uint64_t sw_table(void) {
+    if (sw_next == SW_TABLES) {
+        printf("  FAIL switch test: out of page tables\n");
+        exit(1);
+    }
+    uint8_t *t = sw_mem + (size_t)sw_next++ * 16384;
+    memset(t, 0, 16384);
+    return ADDR(t);
+}
+
+static uint64_t sw_data(int k) {
+    return ADDR(sw_mem) + (uint64_t)(SW_TABLES + k) * 16384;
+}
+
+/* va's descriptor at level (0-3) under root, making the tables above it. */
+static uint64_t *sw_desc(uint64_t root, uint64_t va, int level) {
+    uint64_t table = root;
+    for (int l = 0;; l++) {
+        uint64_t *e = (uint64_t *)(uintptr_t)table + ((va >> (14 + 11 * (3 - l))) & (l == 0 ? 1 : 0x7ff));
+        if (l == level) return e;
+        if (!(*e & 1)) *e = sw_table() | 3;
+        table = *e & 0x0000ffffffffc000ull;
+    }
+}
+
+static void sw_cpu(HvCpu *c, HvMachine *m, uint32_t index, uint64_t ttbr0) {
+    hv_cpu_reset_index(c, m, index);
+    c->tcr_el1 = 16 | 2u << 14 | 1u << 23 | 5ull << 32; /* T0SZ 16, TG0 16 KB, EPD1, 48-bit PA */
+    c->mair_el1 = 0xff;
+    c->sctlr_el1 |= 1;
+    c->ttbr0_el1 = ttbr0;
+    hv_ijc_switch(c);
+}
+
+static void sw_switch(HvCpu *c, uint64_t ttbr0) {
+    c->el = 1;
+    c->x[3] = ttbr0;
+    hv_sysreg_msr(c, 0xd5182003u, 0); /* msr ttbr0_el1, x3 */
+}
+
+static void sw_tlbi(HvCpu *c, uint32_t insn, uint64_t xt) {
+    c->el = 1;
+    c->x[1] = xt;
+    hv_sysreg_sys(c, insn | 1, 0); /* tlbi ..., x1 */
+}
+#define TLBI_VAE1 0xd5088720u    /* this CPU */
+#define TLBI_VAE1IS 0xd5088320u  /* every CPU */
+#define TLBI_VAAE1IS 0xd5088360u /* every CPU, every ASID */
+#define TLBI_ASIDE1IS 0xd5088340u
+#define TLBI_VA(va, asid) ((uint64_t)(asid) << 48 | ((va) >> 12 & 0xfffffffffffull))
+
+static void sw_fill(HvCpu *c, uint64_t va) {
+    uint64_t pa;
+    hv_mmu_access(c, va, HV_ACC_READ, 0, &pa);
+}
+
+/* The host page c's EL0 TLB entry for va leads to, 0 if it has none for va. */
+static uint64_t sw_live(HvCpu *c, uint64_t va) {
+    const HvTlbEntry *e = hv_tlb_ent(c, (uint32_t)(va >> 14) & (HV_TLB_SIZE - 1), 0);
+    if (e->read_tag == HV_TLB_INVALID || e->read_tag + HV_TLB_ADJ != (va & ~0x3fffull)) return 0;
+    return (va & ~0x3fffull) + (uint64_t)e->addend;
+}
+
+static void sw_expect(const char *what, HvCpu *c, uint64_t va, uint64_t want) {
+    uint64_t got = sw_live(c, va);
+    checks++;
+    if (got != want) {
+        printf("  FAIL %s: va %llx leads to %llx, expected %llx\n", what, (unsigned long long)va, (unsigned long long)got,
+               (unsigned long long)want);
+        failures++;
+    }
+}
+
+#define SW_SPACES 12
+#define SW_P(i) (0x100000000ull + ((uint64_t)(i) << 14)) /* a process's own pages: each space maps them elsewhere */
+
+/* Twelve address spaces (ASIDs 1-12), each with its own tables, page SW_P(i) of space k at data page (k + i) % SW_DATA. */
+static uint64_t sw_space(int k) {
+    uint64_t root = sw_table();
+    for (int i = 0; i < 8; i++) *sw_desc(root, SW_P(i), 3) = sw_data((k + i) % SW_DATA) | SW_USER;
+    return root | (uint64_t)(k + 1) << 48;
+}
+
+static void stash_test(void) {
+    static HvMachine sm;
+    static HvCpu c0, c1;
+    if (hv_machine_init(&sm, 1 << 20) != 0) exit(1);
+    sm.stats_interval = 3600; /* counted as on a device, never printed here */
+    sw_mem = aligned_alloc(16384, (SW_TABLES + SW_DATA) * 16384);
+    sw_next = 0;
+    hv_machine_add_ram(&sm, ADDR(sw_mem), (SW_TABLES + SW_DATA) * 16384, sw_mem, 0);
+    uint64_t sp[SW_SPACES];
+    for (int k = 0; k < SW_SPACES; k++) sp[k] = sw_space(k);
+    sw_cpu(&c0, &sm, 0, sp[0]);
+    sw_cpu(&c1, &sm, 1, sp[1]);
+    HvStats *st = &c0.pc_state->own.stats;
+#define PG(k, i) sw_data(((k) + (i)) % SW_DATA)
+
+    /* Refills by what the slot held: empty, then another page (128 MB on: the same slot). */
+    {
+        const uint64_t q = SW_P(0) + ((uint64_t)HV_TLB_SIZE << 14);
+        *sw_desc(sp[0] & 0x0000fffffffffffeull, q, 3) = sw_data(31) | SW_USER;
+        uint64_t e0 = st->refill_kind[0], t0 = st->refill_kind[1];
+        int r1 = hv_tlb_refill(&c0, SW_P(0), 0), r2 = hv_tlb_refill(&c0, q, 0);
+        checks += 2;
+        if (r1 || r2) printf("  FAIL refills of mapped pages: %d %d\n", r1, r2), failures++;
+        if (st->refill_kind[0] != e0 + 1 || st->refill_kind[1] != t0 + 1)
+            printf("  FAIL refill kinds: empty +%llu, slot taken +%llu\n", (unsigned long long)(st->refill_kind[0] - e0),
+                   (unsigned long long)(st->refill_kind[1] - t0)), failures++;
+        hv_tlb_flush(&c0);
+    }
+
+    /* Out and back: the entries come back; the second time out only what was filled since is copied. */
+    for (int i = 0; i < 4; i++) sw_fill(&c0, SW_P(i));
+    uint64_t miss0 = st->stash_miss, out0 = st->stash_out, hits0 = st->stash_hits;
+    sw_switch(&c0, sp[1]);
+    checks += 3;
+    if (st->stash_miss != miss0 + 1) printf("  FAIL a first switch to a space found a stash\n"), failures++;
+    if (st->stash_out != out0 + 4) printf("  FAIL switch out copied %llu entries, want 4\n", (unsigned long long)(st->stash_out - out0)), failures++;
+    sw_expect("switched out", &c0, SW_P(0), 0);
+    sw_fill(&c0, SW_P(0));
+    sw_expect("the other space's own page", &c0, SW_P(0), PG(1, 0));
+    sw_switch(&c0, sp[0]);
+    if (st->stash_hits != hits0 + 1) printf("  FAIL switching back found no stash\n"), failures++;
+    for (int i = 0; i < 4; i++) sw_expect("switched back", &c0, SW_P(i), PG(0, i));
+    sw_fill(&c0, SW_P(4));
+    out0 = st->stash_out;
+    sw_switch(&c0, sp[1]);
+    checks++;
+    if (st->stash_out != out0 + 1) printf("  FAIL switch out again copied %llu entries, want 1 (the one filled since)\n", (unsigned long long)(st->stash_out - out0)), failures++;
+    sw_expect("its own entry back", &c0, SW_P(0), PG(1, 0));
+    sw_switch(&c0, sp[0]);
+    for (int i = 0; i < 5; i++) sw_expect("back with the new one", &c0, SW_P(i), PG(0, i));
+
+    /* TLBIs reach the entries put back, live and in the stash: here, from another CPU, by ASID. */
+    sw_tlbi(&c0, TLBI_VAE1, TLBI_VA(SW_P(1), 1));
+    sw_expect("TLBI here", &c0, SW_P(1), 0);
+    sw_tlbi(&c1, TLBI_VAE1IS, TLBI_VA(SW_P(2), 1));
+    hv_cpu_process_requests(&c0);
+    sw_expect("TLBI from another CPU", &c0, SW_P(2), 0);
+    sw_switch(&c0, sp[1]);
+    sw_switch(&c0, sp[0]);
+    sw_expect("TLBI here, out and back", &c0, SW_P(1), 0);
+    sw_expect("TLBI from another CPU, out and back", &c0, SW_P(2), 0);
+    sw_expect("untouched, out and back", &c0, SW_P(3), PG(0, 3));
+    sw_tlbi(&c1, TLBI_VAE1IS, TLBI_VA(SW_P(3), 1));
+    sw_switch(&c0, sp[1]); /* the other CPU's TLBI while switched out */
+    hv_cpu_process_requests(&c0);
+    sw_switch(&c0, sp[0]);
+    sw_expect("TLBI from another CPU while out", &c0, SW_P(3), 0);
+    sw_expect("its neighbour", &c0, SW_P(4), PG(0, 4));
+    sw_tlbi(&c1, TLBI_ASIDE1IS, 1ull << 48);
+    hv_cpu_process_requests(&c0);
+    sw_expect("TLBI by ASID", &c0, SW_P(4), 0);
+    sw_fill(&c0, SW_P(5));
+    sw_switch(&c0, sp[1]);
+    sw_switch(&c0, sp[0]);
+    sw_expect("TLBI by ASID, out and back", &c0, SW_P(4), 0);
+    sw_expect("filled after the TLBI by ASID", &c0, SW_P(5), PG(0, 5));
+
+    /* Twelve processes in turn, then back to each: all twelve were kept. Then an all-ASID TLBI of one page from
+       another CPU drops it from every stash, and one of a page no stash holds drops nothing. */
+    for (int k = 0; k < SW_SPACES; k++) sw_switch(&c0, sp[k]), sw_fill(&c0, SW_P(6)), sw_fill(&c0, SW_P(7));
+    hits0 = st->stash_hits;
+    for (int k = 0; k < SW_SPACES; k++) sw_switch(&c0, sp[k]), sw_expect("one of twelve", &c0, SW_P(6), PG(k, 6));
+    checks++;
+    if (st->stash_hits != hits0 + SW_SPACES) printf("  FAIL twelve processes: %llu stashes found\n", (unsigned long long)(st->stash_hits - hits0)), failures++;
+    sw_tlbi(&c1, TLBI_VAAE1IS, TLBI_VA(SW_P(6), 0));
+    sw_tlbi(&c1, TLBI_VAAE1IS, TLBI_VA(SW_P(0) + (40ull << 14), 0));
+    hv_cpu_process_requests(&c0);
+    for (int k = 0; k < SW_SPACES; k++) {
+        sw_switch(&c0, sp[k]);
+        sw_expect("all-ASID TLBI, every stash", &c0, SW_P(6), 0);
+        sw_expect("all-ASID TLBI of another page", &c0, SW_P(7), PG(k, 7));
+    }
+#undef PG
+    free(sw_mem);
+}
+
 /* O8b: a TTBR0 write (a process switch) does the TLBIs other CPUs asked of this one first. */
 static void switch_does_requests(HvMachine *m) {
     static HvCpu c;
@@ -633,6 +820,7 @@ int main(void) {
     }
 
     switch_does_requests(&m);
+    stash_test();
     remap_test();
 
     printf("%d checks, %d failures\n", checks, failures);

@@ -406,6 +406,7 @@ void hv_cpu_process_requests(HvCpu *cpu) {
         for (uint32_t i = 0; i < n; i++) hv_tlbi_apply(cpu, q[i].op1, q[i].crn, q[i].crm, q[i].op2, q[i].xt);
     }
     if (flags & HV_REQ_IJC_RESET) {
+        HV_ST(cpu).user_reset_why[5]++; /* code under several VA pages (or more changed pages queued than fit) */
         hv_ijc_reset(cpu, 0);
         hv_ijc_reset(cpu, 1);
     } else {
@@ -807,6 +808,7 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
            half-written entry and jump into the wrong code. */
         if (c == hv_self) {
             if (v == ~0ull) {
+                if (c->pc_state) HV_ST(c).user_reset_why[5]++;
                 hv_ijc_reset(c, 0);
                 hv_ijc_reset(c, 1);
             } else {
