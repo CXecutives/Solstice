@@ -41,9 +41,10 @@ uintptr_t hv_resume(HvCpu *cpu) {
         if (stats) p->own.stats.fr_fail[2]++;
         return 0;
     }
-    /* Its timer due: the dispatcher's tick takes the interrupt. Without a clock to read here, the kicker sets exit_req
-       at the deadline instead (machine.c, kicker_pass). */
-    uint64_t due = __atomic_load_n(&cpu->timer_due, __ATOMIC_RELAXED);
+    /* Its guest timer due: the dispatcher's tick takes the interrupt. Without a clock to read here, the kicker sets
+       exit_req at the deadline instead (machine.c, kicker_pass). Only the guest's timer: CPU 0's device deadlines (in
+       timer_due) refused its syscalls near every refresh and poll, and the kicker brings it out at those anyway. */
+    uint64_t due = __atomic_load_n(&p->guest_due, __ATOMIC_RELAXED);
     if (due && __atomic_load_n(&hv_light_clock, __ATOMIC_RELAXED) && light_now() >= due) {
         if (stats) p->own.stats.fr_fail[3]++;
         return 0;

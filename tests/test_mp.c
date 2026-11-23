@@ -8,6 +8,7 @@
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <pthread/qos.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -44,6 +45,7 @@ static uint64_t tick(HvMachine *mm, HvCpu *cpu) {
     int fired = on && now - cpu->cntvoff >= cpu->cntv_cval;
     __atomic_store_n(&p->irq_line, fired, __ATOMIC_SEQ_CST);
     uint64_t due = on && !fired ? cpu->cntv_cval + cpu->cntvoff : 0;
+    __atomic_store_n(&p->guest_due, due, __ATOMIC_RELAXED); /* the guest timer's alone, as vmapple.c's */
     if (cpu->index == 0 && refresh_on) {
         const uint64_t period = 24000000 / 60;
         uint64_t vb = hv_vblank_next(&vclock);
@@ -209,9 +211,11 @@ static void timers(void) {
     check("timers: the kicker brought the spinning CPUs out at their deadlines (nearly every interrupt)", kicks >= 2 * n * 8 / 10);
 }
 
-/* O9 + GFX-3: CPU 0's refresh deadline. A second with CPU 0 spinning (the kicker brings it out at each refresh and polls
-   it every millisecond), then a second with every CPU in WFI (they wake at their own deadlines: the refresh, the 100 ms
-   cap; the kicker looks only after those). Every refresh comes (60 a second), and the idle machine wakes rarely. */
+/* O9 + GFX-3: CPU 0's refresh deadline. A second with CPU 0 spinning and no device work waiting for a poll (the kicker
+   brings it out at each refresh and polls nothing else), a second with such work (a display channel waiting for
+   another's stamp: then it polls at each kicker wakeup, every millisecond), then a second with every CPU in WFI (they
+   wake at their own deadlines: the refresh, the 100 ms cap; the kicker looks only after those). Every refresh comes
+   (60 a second), and the idle machine wakes rarely. */
 static void refresh_and_idle(void) {
     const uint64_t period = 24000000 / 60;
     double slack_kicker = overshoot_us(QOS_CLASS_USER_INTERACTIVE, HV_POLL_BUSY), slack_wfi = overshoot_us(QOS_CLASS_DEFAULT, period);
@@ -224,26 +228,35 @@ static void refresh_and_idle(void) {
     memset(&vclock, 0, sizeof vclock);
     poll_due = 0;
     kicker_start();
-    for (int phase = 0; phase < 2; phase++) {
+    for (int phase = 0; phase < 3; phase++) {
         static const char *const busy[NCPU] = {mp_spin, mp_idle, mp_idle, mp_idle}, *const idle[NCPU] = {mp_idle, mp_idle, mp_idle, mp_idle};
-        start(phase ? idle : busy, 0, 0, NULL);
+        static const char *const what[3] = {"spinning", "spinning, unsignalled work", "asleep"};
+        start(phase == 2 ? idle : busy, 0, 0, NULL);
+        hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, phase == 1);
         usleep(300000); /* settled */
         uint64_t r0 = atomic_load(&refreshes), p0 = atomic_load(&polls), k0 = kicker_wakes(), w0 = wfis();
+        uint64_t kp0 = __atomic_load_n(&m.stats.kicker_polls, __ATOMIC_RELAXED);
         uint64_t t0 = mach_absolute_time();
         usleep(1000000);
         double dt = (double)(mach_absolute_time() - t0) / 24e6;
         double r = (double)(atomic_load(&refreshes) - r0) / dt, p = (double)(atomic_load(&polls) - p0) / dt;
         double k = (double)(kicker_wakes() - k0) / dt, w = (double)(wfis() - w0) / dt;
-        printf("refresh, cpu 0 %s: refreshes %.1f/s, device polls %.0f/s, kicker wakeups %.0f/s, WFI wakeups %.0f/s\n",
-               phase ? "asleep" : "spinning", r, p, k, w);
-        char msg[160];
-        if (!phase) { /* kicked at each refresh deadline: the kicker wakes far more often than 60 times a second */
-            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: every 60 Hz refresh came (%.1f/s)", r);
+        double kp = (double)(__atomic_load_n(&m.stats.kicker_polls, __ATOMIC_RELAXED) - kp0) / dt;
+        printf("refresh, cpu 0 %s: refreshes %.1f/s, device polls %.0f/s (kicker's %.0f/s), kicker wakeups %.0f/s, WFI wakeups %.0f/s\n",
+               what[phase], r, p, kp, k, w);
+        char msg[200];
+        if (phase < 2) { /* kicked at each refresh deadline */
+            snprintf(msg, sizeof msg, "refresh, cpu 0 %s: every 60 Hz refresh came (%.1f/s)", what[phase], r);
             check(msg, r >= 57 && r <= 61.5);
+        }
+        if (phase == 0) { /* nothing waits for a poll: the kicker asks for none, CPU 0 polls at its refreshes */
+            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: no poll asked by the kicker (%.0f/s), polls at the refreshes (%.0f/s)", kp, p);
+            check(msg, kp == 0 && p <= r + 3);
+        } else if (phase == 1) {
             /* How often the kicker gets to run is the host's call (a busy CI VM gave 84/s against 181 it promised a
                moment before), so check what the engine decides: a poll at each kicker wakeup, not just at refreshes. */
-            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: devices polled at each kicker wakeup (%.0f/s, %.0f wakeups/s; %.0f allowed by this host)", p, k, want_polls);
-            check(msg, p >= 0.9 * k && p > r);
+            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning, unsignalled work: devices polled at each kicker wakeup (%.0f/s, %.0f wakeups/s; %.0f allowed by this host)", p, k, want_polls);
+            check(msg, p >= 0.9 * k && p > r && kp > 0);
         } else { /* asleep until each refresh deadline: one refresh per wakeup */
             snprintf(msg, sizeof msg, "refresh, cpu 0 asleep: a refresh at each deadline (%.1f/s; %.1f allowed by this host)", r, want_asleep);
             check(msg, r >= 0.85 * want_asleep - 1 && r <= 61.5);
@@ -254,10 +267,77 @@ static void refresh_and_idle(void) {
             snprintf(msg, sizeof msg, "idle: CPUs wake rarely (%.0f/s)", w);
             check(msg, w <= 160);
         }
-        finish(phase ? "idle" : "refresh");
+        finish(phase == 2 ? "idle" : "refresh");
+        hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, 0);
     }
     kicker_end();
     refresh_on = 0;
+}
+
+/* CPU 0's syscalls near its device deadlines: CPU 0 takes SVCs (the light path resumes them) while the refreshes come
+   on their grid, its guest timer off. A refresh due is no reason to refuse the fast resume (the kicker brings CPU 0
+   out for it): only its guest timer is. */
+static void resume_near_device_deadlines(void) {
+    static const char *const prog[NCPU] = {mp_svc, mp_idle, mp_idle, mp_idle};
+    refresh_on = 1;
+    memset(&vclock, 0, sizeof vclock);
+    poll_due = 0;
+    HvStats *st = &m.percpu[0].own.stats;
+    uint64_t refused0 = st->fr_fail[3], fast0 = st->fast_resumes, r0 = atomic_load(&refreshes);
+    kicker_start();
+    start(prog, 3000000, 0, NULL);
+    pthread_join(threads[0], NULL), threads[0] = 0;
+    __atomic_store_n(flag, 1, __ATOMIC_SEQ_CST);
+    for (int i = 1; i < NCPU; i++) hv_cpu_wake(&cpus[i]);
+    for (int i = 1; i < NCPU; i++) pthread_join(threads[i], NULL), threads[i] = 0;
+    kicker_end();
+    refresh_on = 0;
+    uint64_t refused = st->fr_fail[3] - refused0, fast = st->fast_resumes - fast0, r = atomic_load(&refreshes) - r0;
+    printf("resume: cpu 0 took 3M SVCs over %llu refreshes: %llu fast resumes, %llu refused for its timer\n",
+           (unsigned long long)r, (unsigned long long)fast, (unsigned long long)refused);
+    check("resume: every SVC reached the vector", cpus[0].x[20] == 3000000);
+    if (fast && r) check("resume: no fast resume refused for a device deadline (guest timer off)", refused == 0);
+    else printf("resume: (fast resumes or refreshes missing here: nothing to check)\n");
+}
+
+/* A wake for a running CPU is exit_req, SEV and wake_pending: it never takes the CPU's wake_mu. One for a CPU that is
+   not running signals it under wake_mu (the lost-wakeup argument is at hv_cpu_wake; pv_locks runs it 6000 times). */
+static _Atomic int woke;
+static void *wake_one(void *c) {
+    hv_cpu_wake(c);
+    atomic_store(&woke, 1);
+    return NULL;
+}
+static int woke_within(int ms) {
+    for (int i = 0; i < ms && !atomic_load(&woke); i++) usleep(1000);
+    return atomic_load(&woke);
+}
+static void wake_running(void) {
+    HvCpu *c = &cpus[1];
+    HvPerCpu *p = c->pc_state;
+    pthread_t t;
+    pthread_mutex_lock(&p->wake_mu);
+    __atomic_store_n(&p->active, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&p->wake_pending, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&c->exit_req, 0, __ATOMIC_SEQ_CST);
+    atomic_store(&woke, 0);
+    pthread_create(&t, NULL, wake_one, c);
+    int done = woke_within(1000);
+    check("wake: a running CPU is woken without its wake_mu", done);
+    check("wake: ...with exit_req and wake_pending", __atomic_load_n(&c->exit_req, __ATOMIC_SEQ_CST) == 1 &&
+          __atomic_load_n(&p->wake_pending, __ATOMIC_SEQ_CST) == 1);
+    pthread_mutex_unlock(&p->wake_mu);
+    pthread_join(t, NULL);
+    pthread_mutex_lock(&p->wake_mu);
+    __atomic_store_n(&p->active, 0, __ATOMIC_SEQ_CST);
+    atomic_store(&woke, 0);
+    pthread_create(&t, NULL, wake_one, c);
+    done = woke_within(50);
+    check("wake: a parked CPU is signalled under its wake_mu", !done);
+    pthread_mutex_unlock(&p->wake_mu);
+    pthread_join(t, NULL);
+    __atomic_store_n(&p->wake_pending, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&c->exit_req, 0, __ATOMIC_SEQ_CST);
 }
 
 static void pv_setup(HvCpu *c, int i) {
@@ -384,9 +464,30 @@ static void spinlock(void) {
     check("spinlock: no WFE through the full helper", after.helper[HV_OP_WFE] == before.helper[HV_OP_WFE]);
 }
 
+/* A hang: where each CPU is and what the kicker last did, then fail. */
+static void hung(int sig) {
+    (void)sig;
+    uint64_t now = mach_absolute_time();
+    for (int i = 0; i < NCPU; i++) {
+        HvCpu *c = &cpus[i];
+        HvPerCpu *p = &m.percpu[i];
+        printf("hung: cpu %d pc %llx el%u daif %llx x0 %llu x21 %llu ctl %llx cval %+lld us timer_due %+lld us guest_due %+lld us "
+               "exit_req %u active %d irq %u wake_pending %d wfi %llu\n", i, (unsigned long long)c->pc, c->el,
+               (unsigned long long)c->daif, (unsigned long long)c->x[0], (unsigned long long)c->x[21], (unsigned long long)c->cntv_ctl,
+               (long long)((int64_t)(c->cntv_cval - (now - c->cntvoff)) / 24), (long long)((int64_t)(c->timer_due - now) / 24),
+               (long long)((int64_t)(p->guest_due - now) / 24), (unsigned)c->exit_req, p->active, (unsigned)p->irq_line,
+               p->wake_pending, (unsigned long long)p->own.stats.wfi);
+    }
+    printf("hung: kicker wakes %llu kicks %llu polls %llu, kick_at %+lld us, on %d\n", (unsigned long long)m.stats.kicker_wakes,
+           (unsigned long long)m.stats.kicker_kicks, (unsigned long long)m.stats.kicker_polls,
+           (long long)((int64_t)(m.kick_at - now) / 24), m.kicker_on);
+    _exit(3);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
-    alarm(240); /* a multi-CPU test that hangs fails */
+    signal(SIGALRM, hung);
+    alarm(240); /* a multi-CPU test that hangs fails, saying where each CPU was */
     if (hv_machine_init(&m, 16 << 20) != 0) return 1;
     m.stats_interval = 3600; /* counted as on a device (HV_STATS), never printed here */
     m.tick = tick;
@@ -396,6 +497,8 @@ int main(void) {
     counters();
     timers();
     refresh_and_idle();
+    resume_near_device_deadlines();
+    wake_running();
     pv_calls();
     pv_locks();
     spinlock();

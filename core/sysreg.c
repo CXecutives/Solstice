@@ -311,6 +311,7 @@ static void irq_check(HvCpu *cpu) {
 }
 
 int hv_sysreg_msr(HvCpu *cpu, uint32_t insn, uint64_t pc) {
+    hv_storm_msr(cpu, ((insn >> 19) & 3) == 0 ? 0x10000u | ((insn >> 16) & 7) << 3 | ((insn >> 5) & 7) : (insn >> 5) & 0xffff);
     if (((insn >> 19) & 3) == 0) { /* MSR (immediate) to a PSTATE field */
         uint32_t op1 = (insn >> 16) & 7, op2 = (insn >> 5) & 7, imm = (insn >> 8) & 0xf;
         uint32_t field = op1 << 3 | op2;
