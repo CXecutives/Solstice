@@ -172,6 +172,10 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
            (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3, (unsigned long long)tot.cc_tenured,
            (unsigned long long)cc->stale, (unsigned long long)cc->check_bad, (unsigned long long)tot.block_flushes,
            (unsigned long long)tot.flush_full, (unsigned long long)nchanges);
+    printf("%s: branch caches caught up: %llu scanned (%.0f ms, %llu entries dropped), %llu reset\n", name,
+           (unsigned long long)cc->ijc_scans, (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped,
+           (unsigned long long)cc->ijc_resets);
+    if (!cc->ijc_scans || !cc->ijc_dropped) printf("%s: no branch cache caught up by dropping entries: FAIL\n", name), failed++;
     if (bad) printf("%s: %llu runs wrong: FAIL\n", name, (unsigned long long)bad), failed++;
     if (cc->check_bad) printf("%s: a freed segment was still reachable: FAIL\n", name), failed++;
     if (laps < min_laps) printf("%s: the cache went round %.1f times, want %.0f: FAIL\n", name, laps, min_laps), failed++;
