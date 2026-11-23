@@ -208,6 +208,13 @@ static void fill_ring(HvVirtioSnd *d) {
     }
 }
 
+/* Nothing signals the clock's progress: while it drains with buffers waiting, the kicker has CPU 0 poll every
+   millisecond, so they go back at the stream's pace. At the 16-20 ms polls otherwise, a guest that keeps less than
+   that queued would run dry at every poll, and the clock restarting there would play it slow. */
+static void note_clock(HvVirtioSnd *d) {
+    hv_machine_unsignalled(d->vio.m, HV_UNSIG_SND_CLOCK, d->clock_on && d->phead != d->ptail);
+}
+
 static void take_tx(HvVirtioSnd *d) {
     HvVirtio *v = &d->vio;
     if (!(v->status & 4) || !v->q[TXQ].enabled) return;
@@ -216,6 +223,7 @@ static void take_tx(HvVirtioSnd *d) {
         d->ptail++;
     }
     fill_ring(d);
+    note_clock(d);
 }
 
 void hv_virtio_snd_poll(HvVirtioSnd *d) {
@@ -242,9 +250,6 @@ void hv_virtio_snd_poll(HvVirtioSnd *d) {
         uint64_t cur = atomic_load(&d->consumed);
         while (target > cur && !atomic_compare_exchange_weak(&d->consumed, &cur, target)) {}
     }
-    /* Nothing signals the clock's progress: while it drains, the kicker has CPU 0 poll every millisecond, so the
-       guest's buffers go back at their pace and not in 20 ms bursts. */
-    if (clock != d->clock_on) hv_machine_unsignalled(v->m, HV_UNSIG_SND_CLOCK, clock);
     d->clock_on = clock;
     take_tx(d);
     uint64_t c = atomic_load_explicit(&d->consumed, memory_order_acquire);
@@ -265,6 +270,7 @@ void hv_virtio_snd_poll(HvVirtioSnd *d) {
         hv_virtio_interrupt(v);
         take_tx(d); /* room for more */
     }
+    note_clock(d);
 }
 
 uint32_t hv_virtio_snd_pull(HvVirtioSnd *d, void *buf, uint32_t len) {

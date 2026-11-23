@@ -772,7 +772,16 @@ static void test_virtio_snd_forward(void) {
     atomic_store(&d->consumed, 0);
     atomic_store(&d->host_off, 1);
     hv_virtio_snd_poll(d);
-    check("snd: while the clock drains, the kicker polls for it", (d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK) != 0, 1);
+    check("snd: the clock drains with no buffer waiting: no polling for it", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    uint32_t head = d->phead; /* one buffer waiting, its audio not all played yet */
+    d->phead = head - 1, d->pending_end[(head - 1) % HV_VSND_PENDING] = UINT64_MAX;
+    hv_virtio_snd_poll(d);
+    check("snd: the clock drains with a buffer waiting: the kicker polls for it", (d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK) != 0, 1);
+    d->phead = head;
+    hv_virtio_snd_poll(d);
+    check("snd: no buffer waiting any more: no polling for it", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    d->phead = head - 1;
+    hv_virtio_snd_poll(d);
     atomic_store(&snd_race_stop, 0);
     atomic_store(&snd_race_back, 0);
     pthread_t t;
@@ -787,6 +796,7 @@ static void test_virtio_snd_forward(void) {
     atomic_store(&d->host_off, 0);
     hv_virtio_snd_poll(d);
     check("snd: the player back, the kicker stops polling for the clock", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    d->phead = head;
     d->running = 0, d->backend = (HvVirtioSndBackend){0};
     atomic_store(&d->written, 0);
     atomic_store(&d->consumed, 0);

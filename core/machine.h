@@ -536,10 +536,8 @@ void hv_machine_wake(HvMachine *m);
 /* Device work no thread signals, which only a poll finds (HV_UNSIG_* bits, set and cleared by the device): while any
    is set, the kicker has CPU 0 poll every HV_POLL_BUSY while it runs. With none, CPU 0 polls when a device signals
    (hv_machine_wake), at its device deadlines (the display's refresh) and every HV_DEV_SAFETY. */
-enum {
-    HV_UNSIG_PVG_CHAN = 1u << 0,  /* a display channel waits for another channel's stamp (pvg_lite.c) */
-    HV_UNSIG_SND_CLOCK = 1u << 1, /* sound drains by the wall clock (virtio_snd.c) */
-};
+enum { HV_UNSIG_PVG_CHAN = 1u << 0 /* a display channel waits for another channel's stamp (pvg_lite.c) */ };
+enum { HV_UNSIG_SND_CLOCK = 1u << 1 /* sound drains by the wall clock with buffers waiting (virtio_snd.c) */ };
 void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on);
 
 /* Interrupt storms (an idle CPU taken out of WFI by an interrupt tens of thousands of times a second): each CPU counts
