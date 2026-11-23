@@ -251,7 +251,7 @@ typedef struct HvWalk {
     CAMetalLayer *layer; /* screen_lock protects the target and its generation */
     uint64_t layer_generation;
     __weak CAMetalLayer *prepared_layer; /* presenter only: each target needs its own setup */
-    id<MTLRenderPipelineState> screen_pipe, linear_pipe, cursor_pipe;
+    id<MTLRenderPipelineState> screen_pipe, cursor_pipe;
     id<MTLFunction> stand_in; /* computeStandIn */
     /* Compiled pipelines kept across sessions (pipelineState:descriptor:). iOS clears its own shader cache between
        launches, so without this every boot compiles each of macOS's pipelines again, about half a second apiece. */
@@ -434,6 +434,8 @@ static float hv_half_shown(float v, int mode) { /* what the screen shows for a h
 #include "pvg_metal/decode.m" /* the serialized calls: render, compute, blit, object queries */
 
 #include "pvg_metal/exec.m" /* an exec: its resources, its command buffers, its completion */
+
+#include "pvg_metal/screen.m" /* the screen scaled to the target's pixels */
 
 #include "pvg_metal/display.m" /* the pointer and the screen: presenter, pointer layer, CPU frames */
 

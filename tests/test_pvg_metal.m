@@ -180,6 +180,104 @@ static void test_video_surface(HvReplay *r) {
     printf("video surface: planes copied as the guest changed them (%s)\n", by_gpu ? "by the GPU" : "by the CPU: no GPU copy here");
 }
 
+/* The screen scaled into a target of ow x oh pixels, read back (BGRA). */
+static uint8_t *scaled(HvReplay *r, id<MTLTexture> src, uint32_t ow, uint32_t oh, HvFit *fit_out) {
+    HvFit fit = screen_fit(ow, oh, (uint32_t)src.width, (uint32_t)src.height);
+    *fit_out = fit;
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:ow height:oh mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget;
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> out = [r->device newTextureWithDescriptor:td];
+    id<MTLBuffer> rb = [r->device newBufferWithLength:(NSUInteger)ow * oh * 4 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [r->queue commandBuffer];
+    id<MTLRenderCommandEncoder> e = [r drawScreen:src half:NO fit:fit into:out commandBuffer:cb];
+    [e endEncoding];
+    id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+    [b copyFromTexture:out sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(ow, oh, 1)
+              toBuffer:rb destinationOffset:0 destinationBytesPerRow:(NSUInteger)ow * 4 destinationBytesPerImage:(NSUInteger)ow * oh * 4];
+    [b endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    uint8_t *px = malloc((size_t)ow * oh * 4);
+    memcpy(px, rb.contents, (size_t)ow * oh * 4);
+    return px;
+}
+
+static id<MTLTexture> picture(HvReplay *r, uint32_t w, uint32_t h, uint32_t (^bgra)(uint32_t x, uint32_t y)) {
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+    td.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> t = [r->device newTextureWithDescriptor:td];
+    uint32_t *px = malloc((size_t)w * h * 4);
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) px[y * w + x] = bgra(x, y) | 0xff000000u;
+    [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:px bytesPerRow:w * 4];
+    free(px);
+    return t;
+}
+
+static uint32_t at(const uint8_t *px, uint32_t ow, uint32_t x, uint32_t y) { uint32_t v; memcpy(&v, px + ((size_t)y * ow + x) * 4, 4); return v; }
+
+/* Black where the picture is not: the columns left and right of it (or rows above and below). */
+static int bars_black(const uint8_t *px, uint32_t ow, uint32_t oh, HvFit f) {
+    for (uint32_t y = 0; y < oh; y++)
+        for (uint32_t x = 0; x < ow; x++) {
+            BOOL inside = x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
+            if (!inside && at(px, ow, x, y) != 0xff000000u) return 0;
+        }
+    return 1;
+}
+
+/* Every channel of the picture's pixels between lo and hi. */
+static int picture_within(const uint8_t *px, uint32_t ow, HvFit f, int lo, int hi) {
+    for (uint32_t y = f.y; y < f.y + f.h; y++)
+        for (uint32_t x = f.x; x < f.x + f.w; x++)
+            for (int c = 0; c < 3; c++) {
+                int v = px[((size_t)y * ow + x) * 4 + c];
+                if (v < lo || v > hi) return 0;
+            }
+    return 1;
+}
+
+static void test_scaler(HvReplay *r) {
+    if (![r makeScreenPipelines]) { check("screen pipelines", 0); return; }
+    HvFit f;
+    /* 2x: every Mac pixel exactly 2x2, centred between black bars where the target is wider. */
+    id<MTLTexture> colours = picture(r, 6, 4, ^uint32_t(uint32_t x, uint32_t y) { return (x * 40 + 7) | (y * 60 + 11) << 8 | ((x ^ y) * 30) << 16; });
+    uint8_t *px = scaled(r, colours, 16, 8, &f);
+    check("2x: a whole factor, exact", f.mode == FIT_EXACT && f.w == 12 && f.h == 8);
+    check("2x: centred", f.x == 2 && f.y == 0 && bars_black(px, 16, 8, f));
+    int exact = 1;
+    for (uint32_t y = 0; y < 8; y++)
+        for (uint32_t x = 0; x < 12; x++) {
+            uint32_t want = ((x / 2) * 40 + 7) | ((y / 2) * 60 + 11) << 8 | (((x / 2) ^ (y / 2)) * 30) << 16 | 0xff000000u;
+            if (at(px, 16, f.x + x, y) != want) exact = 0;
+        }
+    check("2x: each pixel the Mac's own", exact);
+    free(px);
+    /* 1.4x: a flat picture stays flat; a step does not ring (no halo past its two sides); centred. */
+    id<MTLTexture> grey = picture(r, 10, 10, ^uint32_t(uint32_t x, uint32_t y) { return 0x808080u; });
+    px = scaled(r, grey, 20, 14, &f);
+    check("1.4x: enlarged, sharpened", f.mode == FIT_SHARP && f.w == 14 && f.h == 14);
+    check("1.4x: centred", f.x == 3 && f.y == 0 && bars_black(px, 20, 14, f));
+    check("1.4x: flat stays flat", picture_within(px, 20, f, 127, 129));
+    free(px);
+    id<MTLTexture> step = picture(r, 10, 10, ^uint32_t(uint32_t x, uint32_t y) { return x < 5 ? 0x404040u : 0xc0c0c0u; });
+    px = scaled(r, step, 14, 14, &f);
+    check("1.4x: no ringing at an edge", picture_within(px, 14, f, 0x40 - 1, 0xc0 + 1));
+    int rising = 1;
+    for (uint32_t x = 1; x < 14; x++) rising &= px[(7 * 14 + x) * 4] >= px[(7 * 14 + x - 1) * 4];
+    check("1.4x: an edge rises without a dip", rising);
+    free(px);
+    /* 0.75x: a 1-pixel checkerboard averages out instead of aliasing; centred. */
+    id<MTLTexture> checker = picture(r, 16, 16, ^uint32_t(uint32_t x, uint32_t y) { return (x ^ y) & 1 ? 0xffffffu : 0; });
+    px = scaled(r, checker, 16, 12, &f);
+    check("0.75x: shrunk", f.mode == FIT_SHRINK && f.w == 12 && f.h == 12);
+    check("0.75x: centred", f.x == 2 && f.y == 0 && bars_black(px, 16, 12, f));
+    check("0.75x: averaged", picture_within(px, 16, f, 64, 192));
+    free(px);
+    puts("scaler: 2x exact, 1.4x sharp without ringing, 0.75x averaged, all centred");
+}
+
 int main(void) {
     alarm(120);
     @autoreleasepool {
@@ -190,6 +288,7 @@ int main(void) {
         dispatch_sync(r->worker, ^{ test_short_records(r); });
         dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
         dispatch_sync(r->worker, ^{ test_video_surface(r); });
+        test_scaler(r);
         hv_pvg_metal_destroy(m);
     }
     if (failures) printf("%d failures\n", failures);

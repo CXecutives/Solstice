@@ -96,48 +96,8 @@ static const uint8_t *half_to_byte(void) {
     drawn_x = x0, drawn_y = y0, drawn_w = x1 - x0, drawn_h = y1 - y0;
 }
 
-static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
-    "using namespace metal;\n"
-    "struct V { float4 at [[position]]; float2 uv; };\n"
-    "vertex V screen_v(uint i [[vertex_id]], constant float4 &rect [[buffer(0)]]) {\n"
-    "  float2 c = float2(i & 1, (i >> 1) & 1);\n"
-    "  V o; o.at = float4(rect.xy + c * rect.zw, 0, 1); o.uv = float2(c.x, 1 - c.y); return o; }\n"
-    "fragment float4 screen_plain(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float &bright [[buffer(1)]]) {\n"
-    "  return float4(t.sample(s, v.uv).rgb * bright, 1); }\n"
-    "fragment float4 screen_linear(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant uint &mode [[buffer(0)]],\n"
-    "                              constant float &bright [[buffer(1)]]) {\n"
-    "  float3 c = saturate(t.sample(s, v.uv).rgb);\n"
-    "  if (mode == 1) c = select(1.055 * powr(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);\n"
-    "  return float4(c * bright, 1); }\n"
-    "fragment float4 screen_cursor(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float &bright [[buffer(1)]]) {\n"
-    "  float4 c = t.sample(s, v.uv); return float4(c.rgb * bright, c.a); }\n";
-
 - (BOOL)prepareScreenForLayer:(CAMetalLayer *)target {
-    if (!screen_pipe || !linear_pipe || !cursor_pipe) {
-        NSError *err = nil;
-        id<MTLLibrary> lib = [device newLibraryWithSource:screen_shaders options:nil error:&err];
-        if (!lib) { [self complain:[NSString stringWithFormat:@"screen shaders: %@", err.localizedDescription]]; return NO; }
-        MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
-        d.vertexFunction = [lib newFunctionWithName:@"screen_v"];
-        d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-        d.fragmentFunction = [lib newFunctionWithName:@"screen_plain"];
-        screen_pipe = [device newRenderPipelineStateWithDescriptor:d error:&err];
-        d.fragmentFunction = [lib newFunctionWithName:@"screen_linear"];
-        linear_pipe = [device newRenderPipelineStateWithDescriptor:d error:&err];
-        d.fragmentFunction = [lib newFunctionWithName:@"screen_cursor"];
-        d.colorAttachments[0].blendingEnabled = YES;
-        d.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
-        d.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        d.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-        d.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        cursor_pipe = [device newRenderPipelineStateWithDescriptor:d error:&err];
-        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
-        sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
-        screen_sampler = [device newSamplerStateWithDescriptor:sd];
-        sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterNearest;
-        cursor_sampler = [device newSamplerStateWithDescriptor:sd];
-        if (!screen_pipe || !linear_pipe || !cursor_pipe || !screen_sampler || !cursor_sampler) { [self complain:[NSString stringWithFormat:@"screen pipelines: %@", err.localizedDescription]]; return NO; }
-    }
+    if (![self makeScreenPipelines]) return NO;
     // Pipelines are shared, but a newly connected monitor has a fresh layer.
     if (prepared_layer != target) {
         [CATransaction begin];
@@ -224,6 +184,10 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
     os_unfair_lock_unlock(&screen_lock);
 }
 
+/* The pointer's layer moves at most this often: the fastest panel (ProMotion, 120 Hz); Core Animation shows the newest
+   at a slower one's refresh. Under a present cap, at the cap. */
+static const double CURSOR_EVERY = 1.0 / 120;
+
 /* One layer update on its way, at most one a refresh: the newest position is read when it runs. screen_lock held. */
 - (void)queueCursorUpdate {
     if (cursor_queued || atomic_load(&stopping) || !cursor_queue) return;
@@ -299,7 +263,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
     CGFloat scale = cursor_scale();
     os_unfair_lock_lock(&screen_lock);
     cursor_queued = NO;
-    cursor_next = now_seconds() + hv_present_every(present_every, hv_pvg_present_hz()); /* paced as the screen */
+    cursor_next = now_seconds() + hv_present_every(CURSOR_EVERY, hv_pvg_present_hz()); /* paced as the panel, or the cap */
     CAMetalLayer *target = atomic_load(&stopping) ? nil : layer;
     BOOL visible = target && cursor_layer_ok && !overlay_hold && cursor && screen_w && screen_h;
     uint32_t W = screen_w, H = screen_h, cw = cursor_w, ch = cursor_h, stride = cursor_stride;
@@ -319,15 +283,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
     const uint8_t *page = target && lite ? hv_pvg_lite_display_page(lite) : NULL; /* target: not stopping */
     uint32_t where = page ? __atomic_load_n((const uint32_t *)(page + 0xe00), __ATOMIC_ACQUIRE) : 0xffffffff;
     if (where == 0xffffffff || !(shown || page[0xe04])) visible = NO;
-    CGRect bounds = target ? target.bounds : CGRectZero;
-    NSString *gravity = target.contentsGravity;
-    CGRect content = bounds;
-    if (W && H && bounds.size.width > 0 && bounds.size.height > 0 && ![gravity isEqualToString:kCAGravityResize]) {
-        CGFloat sx = bounds.size.width / W, sy = bounds.size.height / H;
-        CGFloat s = [gravity isEqualToString:kCAGravityResizeAspectFill] ? MAX(sx, sy) : MIN(sx, sy);
-        content = CGRectMake(bounds.origin.x + (bounds.size.width - W * s) / 2, bounds.origin.y + (bounds.size.height - H * s) / 2, W * s, H * s);
-        if (![gravity isEqualToString:kCAGravityResizeAspect] && ![gravity isEqualToString:kCAGravityResizeAspectFill]) visible = NO;
-    }
+    CGRect content = fit_in_layer(target, W, H); /* where the presenter draws the screen */
     if (content.size.width <= 0 || content.size.height <= 0) visible = NO;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -404,7 +360,9 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
             if (changed) continue;
             return;
         }
-        CGSize want = CGSizeMake(W, H);
+        uint32_t OW, OH; /* the target's own pixels: the presenter scales, not Core Animation */
+        target_pixels(target, W, H, &OW, &OH);
+        CGSize want = CGSizeMake(OW, OH);
         if (!CGSizeEqualToSize(target.drawableSize, want)) {
             [CATransaction begin];
             [CATransaction setDisableActions:YES];
@@ -463,23 +421,10 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
             continue;
         }
         id<MTLCommandBuffer> cb = [queue commandBuffer];
-        MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture = drawable.texture;
-        pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:pass];
-        [e setRenderPipelineState:half ? linear_pipe : screen_pipe];
-        float rect[4] = {-1, -1, 2, 2};
-        [e setVertexBytes:rect length:sizeof rect atIndex:0];
-        [e setFragmentTexture:tex atIndex:0];
-        [e setFragmentSamplerState:screen_sampler atIndex:0];
-        if (half) {
-            uint32_t half_mode = (uint32_t)hv_half_mode_get();
-            [e setFragmentBytes:&half_mode length:sizeof half_mode atIndex:0];
-        }
-        float bright = brightness_now();
-        [e setFragmentBytes:&bright length:sizeof bright atIndex:1];
-        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        id<MTLTexture> out = drawable.texture; /* its size, not OW x OH: the layout may have changed since */
+        uint32_t TW = (uint32_t)out.width, TH = (uint32_t)out.height;
+        HvFit fit = screen_fit(TW, TH, W, H);
+        id<MTLRenderCommandEncoder> e = [self drawScreen:tex half:half fit:fit into:out commandBuffer:cb];
         const uint8_t *page = hv_pvg_lite_display_page(lite);
         uint32_t where = page ? __atomic_load_n((const uint32_t *)(page + 0xe00), __ATOMIC_ACQUIRE) : 0xffffffff;
         if (pointer_in_frame && ctex && where != 0xffffffff && (shown || page[0xe04])) {
@@ -495,7 +440,8 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
             uint32_t MW = W, MH = H;
             hv_pvg_lite_mode(&MW, &MH);
             if (!MW || !MH) MW = W, MH = H;
-            float r[4] = {x / MW * 2 - 1, 1 - (y + ch) / MH * 2, cw / MW * 2, ch / MH * 2};
+            float px = fit.x + x / MW * fit.w, py = fit.y + y / MH * fit.h, pw = cw / MW * fit.w, ph = ch / MH * fit.h;
+            float r[4] = {px / TW * 2 - 1, 1 - (py + ph) / TH * 2, pw / TW * 2, ph / TH * 2};
             [e setRenderPipelineState:cursor_pipe];
             [e setVertexBytes:r length:sizeof r atIndex:0];
             [e setFragmentTexture:ctex atIndex:0];
@@ -506,20 +452,24 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
         [e endEncoding];
 #if !TARGET_OS_IPHONE
         if (getenv("HV_PVG_GPU_TEST")) { /* the same pixels for a screenshot: this is the path a phone runs */
-            NSUInteger bytes = (NSUInteger)W * H * 4;
+            NSUInteger bytes = (NSUInteger)TW * TH * 4;
             if (!test_readback || test_readback.length < bytes) test_readback = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
             id<MTLBuffer> rb = test_readback;
             id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
-            [b copyFromTexture:drawable.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1)
-                      toBuffer:rb destinationOffset:0 destinationBytesPerRow:(NSUInteger)W * 4 destinationBytesPerImage:bytes];
+            [b copyFromTexture:out sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(TW, TH, 1)
+                      toBuffer:rb destinationOffset:0 destinationBytesPerRow:(NSUInteger)TW * 4 destinationBytesPerImage:bytes];
             [b endEncoding];
             [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
                 (void)done;
                 dispatch_async(self->worker, ^{
-                    if (!self->frame || self->frame_w != W || self->frame_h != H) {
-                        self->frame = malloc((size_t)W * H * 4), self->frame_w = W, self->frame_h = H;
+                    if (!self->frame || self->frame_w != TW || self->frame_h != TH) {
+                        if (self->frame) { /* a reader may still hold it, as in present: */
+                            if (!self->retired_frames) self->retired_frames = [NSMutableArray new];
+                            [self->retired_frames addObject:[NSValue valueWithPointer:self->frame]];
+                        }
+                        self->frame = malloc((size_t)TW * TH * 4), self->frame_w = TW, self->frame_h = TH;
                     }
-                    memcpy(self->frame, rb.contents, (size_t)W * H * 4);
+                    memcpy(self->frame, rb.contents, (size_t)TW * TH * 4);
                     self->frames++;
                 });
             }];
