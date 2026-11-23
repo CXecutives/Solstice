@@ -59,14 +59,21 @@ Siehe `PLAN.md`. Zusätzlich: Air 4 bekommt 2 GB/2 vCPUs/Large-Screen über die 
   (AMD USB 3.20, PCI DEV_43F7) ab → iPhone nach ~10 s weg.
 - Lösung: iPhone **hinten an einen Port des Prozessor-USB** (AMD USB 3.10, DEV_15B6) + Apple-Treiber **538.0.0.0**
   aus dem Microsoft Update Catalog (amd64-Cab, `pnputil /add-driver AppleUsb.inf /install`). 45 s stabil.
-- Installiert: Apple Mobile Device Support 19.4 + iTunes 12.13 (winget), iloader 2.4.2 (winget `nabdev.iloader`).
-  Nach erfolgreichem Sideloading kann alles Apple-/iloader-Zeug wieder runter (SideStore frischt auf dem iPhone auf).
-- Ablauf: iloader → SideStore (Stable) → Entwickler vertrauen → Entwicklermodus → SideStore anmelden →
-  GetMoreRam (IML an `com.henge.app.<TEAM>`) → Solstice → in SideStore „Reinstall“ → JIT-Kopplung auf dem iPhone.
+- **Entscheidung 23.11.: Impactor statt SideStore** (claration/Impactor 2.7.3, portable unter
+  `%LOCALAPPDATA%\Programs\Impactor\Impactor.exe`, Verknüpfung Startmenü + Desktop, SHA-256 geprüft).
+  Grund: beantragt `increased-memory-limit` direkt aus den Entitlements und registriert die JIT-Erweiterung;
+  kein GetMoreRam/Reinstall/SideStore-Login (SideStores Standard-Anisette `ani.sidestore.io` lieferte 502 → -45063).
+  Preis: Auffrischen alle 7 Tage über den PC (laut Doku automatisch per WLAN, wenn Impactor läuft).
+- Ablauf: Impactor starten → Apple-ID (Besitzer) → `out/Solstice.ipa` installieren → Entwickler vertrauen →
+  Solstice öffnen → JIT-Kopplung auf dem iPhone. Entwicklermodus ist schon an; LocalDevVPN bleibt.
+- PC behält: Apple Mobile Device Support 19.4 + iTunes 12.13 (Impactor braucht Apples Treiber/Dienst) und
+  Treiber 538. Entfernt: iloader samt Keyring-Einträgen und Datenordnern. iPhone: SideStore kann gelöscht werden.
+- Ersetzt Windows Update den Treiber wieder durch 552 (iPhone fällt nach ~10 s raus): Cab „Apple, Inc. -
+  USBDevice - 538.0.0.0“ (amd64) aus dem Microsoft Update Catalog, `pnputil /add-driver AppleUsb.inf /install`.
 
 ## Als Nächstes
-1. Solstice + GetMoreRam aufs iPhone 16 Pro, macOS installieren, Log-Stream an PC
+1. Solstice per Impactor aufs iPhone 16 Pro, macOS installieren, Log-Stream an PC
    (`py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log`, PC <PC-ADDRESS>:7777).
 2. Log auswerten (IML, largest mapping, Jetsam, Flushes, „code cache:“-Zeile, TLBI-Warten), Startwerte justieren.
 3. iPad Air 4 einrichten (gleicher Weg).
-4. Aufräumen: gemergte Remote-Branches (`picks`, `solstice/*`), lokale `pr-*`-Kopien, Apple-Software nach Sideload.
+4. Aufgeräumt: Worktrees, gemergte Branches (lokal + origin), `pr-*`-Kopien, iloader. Nur noch `main`.
