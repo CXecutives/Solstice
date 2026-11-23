@@ -199,6 +199,16 @@ static void test_wrong_kind_refused(HvReplay *r) {
     [cb commit];
     [cb waitUntilCompleted];
     check("the command buffer still runs", cb.status == MTLCommandBufferStatusCompleted);
+    /* An answer about a render pipeline (info 457) for a ref that is a buffer. */
+    uint8_t *page = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    HvObject *answers = put_object(r, 9, [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared]);
+    answers->mapped = page, answers->length = 0x4000, answers->checked = r->walk_epoch;
+    uint32_t q[4] = {11, 9, 0, 0};
+    [r info:457 rec:(Rec){(const uint8_t *)q, 16} task:1];
+    check("asked about a buffer as a render pipeline: refused", complained(r, @"info 457: object 11 is a"));
+    answers->mapped = NULL;
+    munmap(page, 0x4000);
+    drop_object(r, 9);
     drop_object(r, 11);
     puts("wrong kinds: a buffer named as a pipeline or a state is refused");
 }

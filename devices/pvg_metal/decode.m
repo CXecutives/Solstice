@@ -47,8 +47,8 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
 #define ATTACH(a, o, k)                                              \
     do {                                                             \
         refs[k] = U32((o));                                          \
-        a.texture = [self get:refs[k] task:task];                    \
-        a.resolveTexture = [self get:U32((o) + 4) task:task];        \
+        a.texture = [self get:refs[k] task:task as:@protocol(MTLTexture)]; \
+        a.resolveTexture = [self get:U32((o) + 4) task:task as:@protocol(MTLTexture)]; \
         a.level = U16((o) + 8), a.slice = U16((o) + 10);             \
         a.depthPlane = U16((o) + 12), a.resolveLevel = U16((o) + 14); \
         a.resolveSlice = U16((o) + 16), a.resolveDepthPlane = U16((o) + 18); \
@@ -86,7 +86,7 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
     /* After the attachments: the visibility buffer and the render target's size. */
     if (r.size >= 0x248) {
         uint32_t visibility = U32(0x22c);
-        if (visibility) d.visibilityResultBuffer = [self get:visibility task:task];
+        if (visibility) d.visibilityResultBuffer = [self get:visibility task:task as:@protocol(MTLBuffer)];
         uint64_t layers = U64(0x230), rw = U64(0x238), rh = U64(0x240);
         if (layers) d.renderTargetArrayLength = (NSUInteger)layers;
         if (rw) d.renderTargetWidth = (NSUInteger)rw;
@@ -868,6 +868,13 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
     if (!out || !obj) {
         [self complain:[NSString stringWithFormat:@"info %u: ref %u buffer %u (%s, %llu bytes) offset %llu: %s", tag, ref, bufref,
                         !to ? "unknown" : to->mapped ? "mapped" : "not mapped", to ? to->length : 0, off, out ? "no object" : "no buffer"]];
+        return;
+    }
+    /* What each answer reads from the object: a ref of the wrong kind would crash on it. */
+    Protocol *kind = tag == 450 ? @protocol(MTLComputePipelineState) : tag == 457 ? @protocol(MTLRenderPipelineState) : tag == 461 ? @protocol(MTLBuffer) : nil;
+    BOOL usable = kind ? of_kind(obj, kind) != nil : !(tag == 462 || tag == 464 || (tag >= 466 && tag <= 468)) || [obj respondsToSelector:@selector(gpuResourceID)];
+    if (!usable) {
+        [self complain:[NSString stringWithFormat:@"info %u: object %u is a %@", tag, ref, NSStringFromClass([obj class])]];
         return;
     }
     if (tag >= 460 && tag <= 463) mark_told([self object:ref task:task]); /* an identifier, address or id the guest keeps */
