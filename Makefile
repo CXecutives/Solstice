@@ -266,6 +266,19 @@ test-identity: $(B)/test_device_identity
 $(B)/test_device_profile: ios/Henge/DeviceProfile.swift tests/test_device_profile.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
+test-device-profile: $(B)/test_device_profile
+	$(B)/test_device_profile
+.PHONY: test-device-profile
+
 # A physical mouse's right/middle swap, kept from press to release.
 $(B)/test_physical_mouse_buttons: ios/Henge/PhysicalMouseButtons.swift tests/test_physical_mouse_buttons.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
+
+test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
+	$(B)/test_physical_mouse_buttons
+.PHONY: test-physical-mouse-buttons
+
+# Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
+SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-physical-mouse-buttons
+swift-test: $(SWIFT_TESTS)
+.PHONY: swift-test
