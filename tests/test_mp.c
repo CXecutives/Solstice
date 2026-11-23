@@ -183,6 +183,9 @@ static double overshoot_us(qos_class_t qos, uint64_t ticks) {
    cap) cannot tell that from a lost timer, so it is only made when the host itself did not stall. */
 static _Atomic int stall_watch;
 static double stall_worst_us;
+/* With stall_period_us set: how many such periods those stalls spanned (a wait that comes back later than a period
+   took that many deadlines with it, and one more for the one it was in). */
+static double stall_period_us, stall_periods;
 static void *watch_stalls(void *arg) {
     (void)arg;
     pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -197,6 +200,7 @@ static void *watch_stalls(void *arg) {
         uint64_t dt = mach_absolute_time() - t0;
         double late = dt > ticks ? (double)(dt - ticks) / 24.0 : 0;
         if (late > stall_worst_us) stall_worst_us = late;
+        if (stall_period_us > 0 && late > stall_period_us) stall_periods += late / stall_period_us + 1;
     }
     return NULL;
 }
@@ -267,9 +271,20 @@ static void refresh_and_idle(void) {
         usleep(300000); /* settled */
         uint64_t r0 = atomic_load(&refreshes), p0 = atomic_load(&polls), k0 = kicker_wakes(), w0 = wfis();
         uint64_t kp0 = __atomic_load_n(&m.stats.kicker_polls, __ATOMIC_RELAXED);
+        /* The host's own stalls over the same second: a refresh whose deadline passed while every thread stood still
+           is the host's, not the engine's. */
+        pthread_t watcher;
+        stall_worst_us = stall_periods = 0;
+        stall_period_us = (double)period / 24.0;
+        atomic_store(&stall_watch, 1);
+        pthread_create(&watcher, NULL, watch_stalls, NULL);
         uint64_t t0 = mach_absolute_time();
         usleep(1000000);
         double dt = (double)(mach_absolute_time() - t0) / 24e6;
+        atomic_store(&stall_watch, 0);
+        pthread_join(watcher, NULL);
+        stall_period_us = 0;
+        double stalled = stall_periods / dt;
         double r = (double)(atomic_load(&refreshes) - r0) / dt, p = (double)(atomic_load(&polls) - p0) / dt;
         double k = (double)(kicker_wakes() - k0) / dt, w = (double)(wfis() - w0) / dt;
         double kp = (double)(__atomic_load_n(&m.stats.kicker_polls, __ATOMIC_RELAXED) - kp0) / dt;
@@ -277,8 +292,8 @@ static void refresh_and_idle(void) {
                what[phase], r, p, kp, k, w);
         char msg[200];
         if (phase < 2) { /* kicked at each refresh deadline */
-            snprintf(msg, sizeof msg, "refresh, cpu 0 %s: every 60 Hz refresh came (%.1f/s)", what[phase], r);
-            check(msg, r >= 57 && r <= 61.5);
+            snprintf(msg, sizeof msg, "refresh, cpu 0 %s: every 60 Hz refresh came (%.1f/s; this host's stalls spanned %.1f)", what[phase], r, stalled);
+            check(msg, r >= 57 - stalled && r <= 61.5);
         }
         if (phase == 0) { /* nothing waits for a poll: the kicker asks for none, CPU 0 polls at its refreshes */
             snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: no poll asked by the kicker (%.0f/s), polls at the refreshes (%.0f/s)", kp, p);
