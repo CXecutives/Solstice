@@ -52,6 +52,21 @@ struct DeviceProfileTests {
 
         // The fallback when a region cannot be had is under every size asked for, so halving has somewhere to go.
         check(DeviceProfile.codeCacheChoices.allSatisfy { $0 > DeviceProfile.minCodeCacheMB }, "the least region is under every choice")
+        // A Mac's memory and CPUs: Settings offers only what boots, and suggests one of those.
+        for row in DeviceProfile.rows {
+            let p = DeviceProfile(physicalMB: row.belowMB == .max ? 64_000 : row.belowMB - 1, performanceCores: 2,
+                                  memoryLimitMB: 64_000, extendedAddressing: true, isPad: false)
+            let top = p.memoryChoicesGB.upperBound
+            if let cap = row.guestCapMB { check(UInt64(top) << 10 == cap, "the largest memory choice is the boot cap") }
+            else { check(top == DeviceProfile.largestMacGB, "no cap: the largest Mac") }
+            check(p.memoryChoicesGB.contains(p.suggestedGB) && p.suggestedGB <= p.ramGB, "the suggested memory is a choice")
+            check(p.cpus(chosen: nil) == p.cpus, "a Mac without its own CPU count gets the device's")
+            for chosen in [-1, 0, 1, 4, 99] {
+                let got = p.cpus(chosen: chosen)
+                check(DeviceProfile.cpuChoices.contains(got), "a stored CPU count comes back as a choice")
+                if DeviceProfile.cpuChoices.contains(chosen) { check(got == chosen, "a valid CPU count is kept") }
+            }
+        }
 
         if failures > 0 { print("\(failures) failed"); exit(1) }
         print("device profile: all passed")

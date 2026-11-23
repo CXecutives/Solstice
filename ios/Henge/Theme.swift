@@ -31,7 +31,6 @@ enum Desk {
 /// Settings › Appearance.
 enum DeskAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
-    static let key = "appearance"
     var id: String { rawValue }
     var title: String {
         switch self {

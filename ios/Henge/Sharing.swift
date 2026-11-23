@@ -29,10 +29,9 @@ enum Sharing {
     }
 
     /// Settings: what is copied on this device goes to the Mac's clipboard too, while Solstice is in front.
-    static let syncClipboardKey = "henge.sharing.syncClipboard"
 
     /// What is copied on the Mac is copied here too. The other way needs the system's paste button, or, if the
-    /// person turned it on, `syncClipboardKey`: iOS asks for permission whenever an app reads the clipboard on its own.
+    /// person turned it on, `SettingKey.syncClipboard`: iOS asks for permission whenever an app reads the clipboard on its own.
     @MainActor static func followMacClipboard() async {
         var seen = -1 // the device's clipboard as last sent (or set from the Mac): what changes it is news
         while !Task.isCancelled {
@@ -42,7 +41,7 @@ enum Sharing {
                 free(text)
                 seen = board.changeCount
             }
-            if UserDefaults.standard.bool(forKey: syncClipboardKey), board.changeCount != seen,
+            if UserDefaults.standard.bool(forKey: SettingKey.syncClipboard.rawValue), board.changeCount != seen,
                UIApplication.shared.applicationState == .active {
                 seen = board.changeCount
                 if board.hasStrings, let text = board.string { henge_share_set_clipboard(text) }

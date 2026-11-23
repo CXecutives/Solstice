@@ -8,8 +8,7 @@ struct MacOSRelease {
     let url: URL
     let bytes: Int64
     let note: String
-    /// The image's SHA-256, checked as it downloads; nil until one is known from a source to trust (each download logs
-    /// the hash it computed, so it can be pinned here).
+    /// The image's SHA-256, checked as it downloads (each download logs the hash it computed). nil: not checked.
     var sha256: String? = nil
     /// Room the new Mac takes once installed and set up, with a margin for its first updates and caches
     /// (installed and set up on the Mac in phone mode: Sonoma 21 GB, Ventura 19 GB).
@@ -22,7 +21,9 @@ struct MacOSRelease {
     static let current = MacOSRelease(
         id: "24G90", name: "macOS Sequoia 15.6.1",
         url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
-        bytes: 16_035 << 20, note: "The version Solstice is built and tuned for.")
+        bytes: 16_035 << 20, note: "The version Solstice is built and tuned for.",
+        // Hashed from Apple's CDN (16,814,137,790 bytes) and the same in the public IPSW catalogue.
+        sha256: "3d87686b691ac765eb6a6b3082b2334e2af9710096a00432dd519af89ff2ea78")
 }
 
 /// Downloads a restore image and installs it on a new virtual Mac, on the
@@ -98,7 +99,7 @@ final class Installer: NSObject, ObservableObject {
         grace = .invalid
     }
 
-    func start(_ release: MacOSRelease, name: String, ramMB: Int, cpus: Int, keepImage: Bool) {
+    func start(_ release: MacOSRelease, name: String, ramMB: Int, keepImage: Bool) {
         guard !busy else { return }
         phase = .checking
         machineName = name
@@ -125,7 +126,7 @@ final class Installer: NSObject, ObservableObject {
                     while !JITBootstrap.ready { try await Task.sleep(nanoseconds: 1_000_000_000) }
                 }
                 phase = .installing
-                try await install(mac, ipsw: ipsw, cpus: cpus)
+                try await install(mac, ipsw: ipsw)
                 if !keepImage { Self.deleteAfterInstall(ipsw) }
                 HengeLog.log("install", "\(name): installed \(release.name)")
                 phase = .done("\(release.name) is installed on \(name). Starting it now.")
@@ -251,7 +252,8 @@ final class Installer: NSObject, ObservableObject {
 
     // MARK: The restore
 
-    private func install(_ mac: VirtualMac, ipsw: URL, cpus: Int) async throws {
+    private func install(_ mac: VirtualMac, ipsw: URL) async throws {
+        let cpus = mac.cpus
         guard JITBootstrap.ready else { throw message("Turn on JIT first: the installer runs the Mac's own restore system, which needs it.") }
         // The restore needs 2 GB, whatever the Mac is set to use afterwards, and gets at most 4 GB: the restore system
         // caches the ~15 GB it writes, so it fills all the memory it is given, and 10 GB of a 12 GB iPhone's RAM in use

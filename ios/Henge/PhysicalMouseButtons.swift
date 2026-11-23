@@ -3,7 +3,6 @@ import Foundation
 /// Compatibility mapping for GameController physical mice/trackpads only.
 /// Guest button IDs are 0 = left, 1 = right, 2 = middle; touch controls retain those IDs.
 struct PhysicalMouseButtons {
-    static let swapKey = "henge.mouse.swapRightAndMiddle"
 
     /// Captured when the VM session starts, so a held button's release uses the same mapping.
     let swapsRightAndMiddle: Bool

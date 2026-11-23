@@ -50,7 +50,7 @@ struct RootView: View {
     @State private var autoStarted = false
     /// Said once, when safe mode comes on.
     @State private var safeModeNotice = SafeMode.justCameOn
-    @AppStorage(DeskAppearance.key) private var appearance = DeskAppearance.system
+    @AppStorage(SettingKey.appearance.rawValue) private var appearance = DeskAppearance.system
 
     var body: some View {
         ZStack {

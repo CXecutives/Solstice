@@ -34,9 +34,27 @@ Das Repo ist öffentlich; die Geschichte wurde vorher von privaten Angaben berei
 - **Eigene App-Kennung** im Schluss-Build (`io.github.cxecutives.solstice`): der Mac wird danach einmal neu installiert.
 - Herkunftszeile unter Einstellungen → Info und in der README.
 
-## Ablauf des Umbaus (Details in `PLAN.md`)
-1. Phase 0: Repo öffentlich, schnellere Prüfung, Regeln.
-2. Welle 1 (parallel): S Schlank+Struktur (Swift) · E1 MMU · E2 Code-Cache/Übersetzer/Messung · E3 Wecken/Timer/Bildtakt ·
-   E4 Datenwege · E5 Grafik → Build 1 aufs iPhone, Zähler vergleichen.
-3. Welle 2 (parallel): I Steuerung · D Bild · L Lebenszyklus · U Einstellungen · K Knopf-Tabelle.
-4. Drei unabhängige Prüfungen, Schluss-Build, frische Installation auf iPhone 16 Pro und iPad Air 4.
+## Stand des Umbaus (23.11.2026, abends)
+**In `main` (alle Engine-Tests normal / wie ausgeliefert + LTO / mit UB-Fallen, Swift-Tests und App-Build liefen im Sammellauf):**
+S Schlank+Struktur · E1 MMU · E2 Code-Cache/Übersetzer/Messung · E3 Wecken/Timer/Bildtakt · E4 Datenwege · E5 Grafik
+(Replay in `devices/pvg_metal/*.m`, eigener Skalierer) · D Bildschirmgrößen · I Steuerung · L Lebenszyklus, dazu die
+Behebungen aus den Prüfungen von E3/E4.
+
+**Unterwegs (je ein Zweig `solstice/<name>`, danach in `main`):**
+- `picture-fixes`: 12 Prüfer-Funde im Bildweg. Nr. 1 ist der iPad-Air-4-Fehler (Bild tot nach „GPU Address Fault“): ein
+  Puffer, dessen GPU-Adresse der Gast kennt, wird bei einem Remap ersetzt und freigegeben; dazu Erholung nach einem
+  GPU-Fehler und ein Ring der letzten Remaps im Log.
+- `app-fixes`: 10 Funde (Speicherstand nie bei bloßem Startfehler löschen, Stop während des Starts, hängende Taste,
+  Reihenfolge beim Einfügen, abgebrochene Berührung ≠ Klick, Force Off blockiert nicht mehr, ENOSPC endgültig …).
+- `codecache-fixes`: 7 Funde (heißer Code behält seine Marke auch über den leichten Pfad, Rücksprung-Vorhersage,
+  ein Durchlauf pro Epoche, Statistik, kleinere JIT-Region als Rückfall).
+- `settings` (U), `knobs` (K, `core/knobs.def`), `rename` (R, sichtbar überall „Solstice“, `host/brand.h`).
+
+**Danach:** Build 1 (mit iPad-Fix und Umbenennung; im Mac einmal „Set Up“ neu) → Zähler mit der Tabelle oben vergleichen ·
+Bildschirmfotos aller Ansichten aus dem Simulator (Schein-Engine) für die Durchsicht des Aussehens · Texte in einen Katalog
+(`Strings.swift`) · `-Werror`, `MAP.md`, `tools/WHERE.md` · drei Schluss-Prüfungen · eigene App-Kennung · Schluss-Build,
+frische Installation auf iPhone 16 Pro und iPad Air 4, Alltagstest.
+
+**Offen / nur am Gerät zu klären:** SHA-256 der Restore-Datei festschreiben (`Installer.swift`); Ein/Aus-Knopf (PL061)
+fährt macOS wirklich herunter?; Rechtsklick per Zwei-Finger-Klick; ISO-Tastatur (`^`/`<`); Schlüsselbund nach erneutem
+Signieren; Ursache des Leerlauf-Sturms (Detektor loggt sie).
