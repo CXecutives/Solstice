@@ -619,13 +619,30 @@ int main(void) {
             printf("  FAIL another ASID's TLBI dropped our entry\n");
             failures++;
         }
+        /* Every address space's TLBI of page Q: that page's targets go under every live id (ASID 9's too), the rest
+           stay, and no process loses its id (the whole user half used to start over). */
+        static HvBlock other[2];
+        cpu.ttbr0_el1 = 9ull << 48;
+        hv_ijc_switch(&cpu);
+        uint64_t salt9 = cpu.ijc_salt[0];
+        other[0] = (HvBlock){.va = vas[2] + 0x40, .flags = 0, .code_off = 0x1234}; /* ASID 9's, in Q */
+        hv_ijc_fill(&cpu, &other[0]);
+        cpu.ttbr0_el1 = 7ull << 48;
+        hv_ijc_switch(&cpu);
+        other[1] = (HvBlock){.va = 0x10000c020ull, .flags = 0, .code_off = 0x1234}; /* ASID 7's, in page R */
+        hv_ijc_fill(&cpu, &other[1]);
+        uint16_t cid7 = cpu.asid_cid[7], cid9 = cpu.asid_cid[9];
         hv_tlb_flush_va_asid(&cpu, 0x100008000ull, -1); /* all address spaces */
-        checks++;
+        checks += 4;
         uint64_t now = vas[2] ^ cpu.ijc_salt[0]; /* what a lookup would compare against now */
         if (m.percpu[0].ijc[(size_t)hv_ijc_index(now) * 2] == now) {
             printf("  FAIL an all-ASID TLBI kept the entry\n");
             failures++;
         }
+        uint64_t t9 = other[0].va ^ salt9, tr = other[1].va ^ salt;
+        if (m.percpu[0].ijc[(size_t)hv_ijc_index(t9) * 2] == t9) printf("  FAIL an all-ASID TLBI kept another process's entry in the page\n"), failures++;
+        if (m.percpu[0].ijc[(size_t)hv_ijc_index(tr) * 2] != tr) printf("  FAIL an all-ASID TLBI dropped an entry in another page\n"), failures++;
+        if (cpu.asid_cid[7] != cid7 || cpu.asid_cid[9] != cid9) printf("  FAIL an all-ASID TLBI of one page gave processes new ids\n"), failures++;
     }
 
     /* A big range TLBI (128 MB) of one address space: only the cached targets in it go, found through the 32 MB chunks
@@ -664,31 +681,54 @@ int main(void) {
         int knob = hv_knob[HV_K_IJCPAGES];
         hv_knob[HV_K_IJCPAGES] = 1;
         HvRam *r = &m.ram[0];
-        const uint64_t P = 0x100004000ull, Q = 0x100008000ull;
-        static HvBlock fb[2];
-        struct { uint64_t note; int p_kept, q_kept; const char *what; } cases[] = {
-            {P | 2, 0, 1, "noted at P"}, {0, 1, 1, "noted nowhere"}, {~0ull, 0, 0, "noted at several"}};
-        for (int c = 0; c < 3; c++) {
+        const uint64_t P = 0x100004000ull, Q = 0x100008000ull, R = 0x10000c000ull;
+        static HvBlock fb[3];
+        struct { uint64_t note[2]; int kept[3]; const char *what; } cases[] = {
+            {{P | 2, 0}, {0, 1, 1}, "noted at P"}, {{0, 0}, {1, 1, 1}, "noted nowhere"},
+            {{P | 2, Q | 2}, {0, 0, 1}, "noted at P and Q"}, {{~0ull, 0}, {0, 0, 0}, "noted at more than fit"}};
+        for (int c = 0; c < 4; c++) {
             uint64_t salt = cpu.ijc_salt[0];
-            uint64_t *ents[2];
-            for (int i = 0; i < 2; i++) {
-                fb[i] = (HvBlock){.va = (i ? Q + 0x20 : P + 0x10), .flags = 0, .code_off = 0x1234};
+            uint64_t *ents[3];
+            for (int i = 0; i < 3; i++) {
+                fb[i] = (HvBlock){.va = (i == 0 ? P : i == 1 ? Q : R) + 0x10 * (uint64_t)(i + 1), .flags = 0, .code_off = 0x1234};
                 hv_ijc_fill(&cpu, &fb[i]);
                 ents[i] = m.percpu[0].ijc + (size_t)hv_ijc_index(fb[i].va ^ salt) * 2;
             }
             r->code_pages[10] = 1;
-            r->ijc_va[10] = cases[c].note;
+            r->ijc_va[10 * HV_IJC_VAS] = cases[c].note[0];
+            r->ijc_va[10 * HV_IJC_VAS + 1] = cases[c].note[1];
             hv_invalidate_code(&m, r->pa + (10ull << 14));
-            for (int i = 0; i < 2; i++) {
+            for (int i = 0; i < 3; i++) {
                 int kept = ents[i][0] == (fb[i].va ^ salt) && cpu.ijc_salt[0] == salt;
                 checks++;
-                if (kept != (i ? cases[c].q_kept : cases[c].p_kept)) {
-                    printf("  FAIL code change %s: the target in %s %s\n", cases[c].what, i ? "Q" : "P", kept ? "kept" : "dropped");
+                if (kept != cases[c].kept[i]) {
+                    printf("  FAIL code change %s: the target in %c %s\n", cases[c].what, "PQR"[i], kept ? "kept" : "dropped");
                     failures++;
                 }
             }
-            checks++;
-            if (r->ijc_va[10] != 0) printf("  FAIL code change left the page's note\n"), failures++;
+            for (int j = 0; j < HV_IJC_VAS; j++) {
+                checks++;
+                if (r->ijc_va[10 * HV_IJC_VAS + j] != 0) printf("  FAIL code change left the page's note %d\n", j), failures++;
+            }
+        }
+        /* Caching notes the VA pages: the first HV_IJC_VAS each in a slot, one more makes it "more than fit". */
+        {
+            r->code_pages[12] = 1;
+            uint64_t pa = r->pa + (12ull << 14), host = (uint64_t)(uintptr_t)r->host + (12ull << 14);
+            static HvBlock nb[HV_IJC_VAS + 1];
+            for (int i = 0; i <= HV_IJC_VAS; i++) {
+                uint64_t va = 0x100100000ull + ((uint64_t)i << 14);
+                HvTlbEntry *e = hv_tlb_ent(&cpu, (uint32_t)(va >> 14) & (HV_TLB_SIZE - 1), 0);
+                e->addend = (int64_t)(host - va);
+                e->exec_tag = hv_exec_key(va, e->addend);
+                nb[i] = (HvBlock){.va = va + 0x40, .pa = pa + 0x40, .gen = r->page_gen[12], .flags = 0, .code_off = 0x1234, .ram = 0};
+                checks++;
+                if (!hv_ijc_fill_checked(&cpu, &nb[i])) printf("  FAIL a block on a mapped page was not cached\n"), failures++;
+                checks++;
+                uint64_t want = i < HV_IJC_VAS ? (va | 2) : ~0ull, got = r->ijc_va[12 * HV_IJC_VAS + (i < HV_IJC_VAS ? i : 0)];
+                if (got != want) printf("  FAIL note %d: %llx, want %llx\n", i, (unsigned long long)got, (unsigned long long)want), failures++;
+            }
+            hv_invalidate_code(&m, pa);
         }
         hv_knob[HV_K_IJCPAGES] = knob;
         hv_self = self;

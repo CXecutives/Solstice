@@ -22,8 +22,9 @@ typedef struct HvRam {
        were more. When the page becomes code only those are dropped, not a whole
        TLB scanned. */
     uint64_t *whint;     /* CPU-major: whint[cpu * npages + page], so CPUs filling the same pages write their own lines */
-    /* Per page: the VA page (| 2) its blocks have been cached as branch targets under since its code last changed;
-       0 none, ~0 more than one. So a code change drops just those cached targets (hv_invalidate_code). */
+    /* Per page, HV_IJC_VAS slots: the VA pages (| 2) its blocks have been cached as branch targets under since its
+       code last changed; 0 a free slot, ~0 in the first: more than fit. So a code change drops just those cached
+       targets (hv_invalidate_code). */
     uint64_t *ijc_va;
     /* Per page: the exits from other pages chained into it (a slot + 1, 0 none), listed through HvMachine.slot_xnext,
        so its code changing unchains just those (it scanned every such exit, under the translation lock: 2.3% of the
@@ -63,6 +64,7 @@ _Static_assert(sizeof(HvBlock) == 40, "HvBlock: 40 bytes");
 #define HV_BLOCK_PAN   8u        /* EL1 with PSTATE.PAN set (selects TLB table 2) */
 
 #define HV_MAX_RAM 8
+#define HV_IJC_VAS 4 /* VA pages a code page's cached targets are noted under (HvRam.ijc_va) */
 #define HV_MAX_MMIO 48
 #define HV_JC_BITS 16
 #define HV_PROF_RING (1 << 16)

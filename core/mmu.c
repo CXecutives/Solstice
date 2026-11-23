@@ -431,6 +431,22 @@ static void ijc_clear_page(HvCpu *cpu, uint64_t page, int kernel, uint64_t salt,
     if (local && hk == key) h->key = 0, h->bits = 0;
 }
 
+/* Every live user id's cached targets in a user page (the (id, page) set says which ids cached any there): the ids
+   given out since the user half last started over are the ASID log's, the older ones are dead. 0 if the log ran over
+   (the ids are not all known): the caller starts the user half over. Only cpu itself. */
+static int ijc_drop_user_page(HvCpu *cpu, uint64_t page) {
+    if (current_asid(cpu) < 0) { /* no ASIDs: each switch gave a fresh id, so only the current one is live */
+        ijc_clear_page(cpu, page, 0, cpu->ijc_salt[0], 1);
+        return 1;
+    }
+    if (cpu->nasid_log > HV_ASID_LOG) return 0;
+    for (uint32_t k = 0; k < cpu->nasid_log; k++) {
+        uint32_t cid = cpu->asid_cid[cpu->asid_log[k]];
+        if (cid && ucode_has(cpu->pc_state, cid, page)) ijc_clear_page(cpu, page, 0, (uint64_t)cid << 48, 1);
+    }
+    return 1;
+}
+
 /* The page may hold cached branch targets even if its TLB entry is gone: forget
    them, if the filters say it has any. */
 /* remote: another CPU doing it (hv_tlbi_drop_remote_va): returns 0 instead of
@@ -469,7 +485,9 @@ static int ijc_drop_va(HvCpu *cpu, uint64_t va, int asid, int remote) {
             st->reset_why[kernel ? 3 : 2]++;
             uint64_t page = va & ~((1ull << HV_TLB_PAGE_BITS) - 1);
             if (kernel) ijc_clear_page(cpu, page, 1, cpu->ijc_salt[1], !remote);
-            else if (asid < 0) st->reset_why[5]++, st->user_reset_why[0]++, hv_ijc_reset(cpu, 0); /* every address space: their slots differ, so start the user half over */
+            else if (asid < 0) { /* every address space: each live id's targets in the page, or (ids not all known) all */
+                if (!ijc_drop_user_page(cpu, page)) st->reset_why[5]++, st->user_reset_why[0]++, hv_ijc_reset(cpu, 0);
+            }
             else ijc_clear_page(cpu, page, 0, current_asid(cpu) < 0 ? cpu->ijc_salt[0] : (uint64_t)cpu->asid_cid[asid] << 48, !remote);
         }
     }
@@ -977,12 +995,26 @@ static int ijc_note_page(HvMachine *m, const HvBlock *b) {
     HvRam *r = b->ram < m->nram ? hv_block_ram(m, b) : NULL;
     if (!r || !r->ijc_va) return 1;
     uint64_t pg = (b->pa - r->pa) >> HV_TLB_PAGE_BITS, v = (b->va & ~(uint64_t)PAGE_MASK) | 2;
-    uint64_t *slot = &r->ijc_va[pg];
-    uint64_t old = __atomic_load_n(slot, __ATOMIC_RELAXED);
-    /* Noted already (v, or ~0): what this read saw is what the next change's exchange sees first, so that change
-       drops this target too (its request reaches this CPU after the fill). Else noted here, in the order. */
-    while (old != v && old != ~0ull)
-        if (__atomic_compare_exchange_n(slot, &old, old ? ~0ull : v, 0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) break;
+    uint64_t *slots = &r->ijc_va[pg * HV_IJC_VAS];
+    /* Noted already (v in a slot, or ~0): what this read saw is what the next change's exchange of that slot sees first,
+       so that change drops this target too (its request reaches this CPU after the fill). Else noted here, in the
+       order: in a free slot, or ~0 in the first when none is free (each slot as the one slot was). */
+    for (;;) {
+        int free = -1, have = 0;
+        for (int j = 0; j < HV_IJC_VAS && !have; j++) {
+            uint64_t o = __atomic_load_n(&slots[j], __ATOMIC_RELAXED);
+            if (o == v || o == ~0ull) have = 1;
+            else if (!o && free < 0) free = j;
+        }
+        if (have) break;
+        uint64_t old = 0;
+        if (free >= 0) {
+            if (__atomic_compare_exchange_n(&slots[free], &old, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) break;
+            continue; /* another fill took it: look again */
+        }
+        old = __atomic_load_n(&slots[0], __ATOMIC_RELAXED);
+        if (old && __atomic_compare_exchange_n(&slots[0], &old, ~0ull, 0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) break;
+    }
     return __atomic_load_n(&r->page_gen[pg], __ATOMIC_SEQ_CST) == b->gen;
 }
 
@@ -996,19 +1028,9 @@ void hv_ijc_drop_code_page(HvCpu *cpu, uint64_t v) {
         ijc_clear_page(cpu, page, 1, cpu->ijc_salt[1], 1);
         return;
     }
-    if (current_asid(cpu) < 0) {
-        ijc_clear_page(cpu, page, 0, cpu->ijc_salt[0], 1);
-        return;
-    }
-    if (cpu->nasid_log > HV_ASID_LOG) { /* the ids given out are not all known: start the user half over */
+    if (!ijc_drop_user_page(cpu, page)) { /* the ids given out are not all known: start the user half over */
         HV_ST(cpu).user_reset_why[6]++;
         hv_ijc_reset(cpu, 0);
-        return;
-    }
-    /* Every live process id that cached a target in the page (the (id, page) set says which). */
-    for (uint32_t k = 0; k < cpu->nasid_log; k++) {
-        uint32_t cid = cpu->asid_cid[cpu->asid_log[k]];
-        if (cid && ucode_has(cpu->pc_state, cid, page)) ijc_clear_page(cpu, page, 0, (uint64_t)cid << 48, 1);
     }
 }
 

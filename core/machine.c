@@ -249,7 +249,7 @@ int hv_machine_trim(HvMachine *m) {
     hv_cc_trim(m);
     for (int i = 0; i < m->nram; i++) { /* the pages' notes of cached targets: none are left */
         HvRam *r = &m->ram[i];
-        hv_pages_zero(r->ijc_va, r->npages * sizeof *r->ijc_va);
+        hv_pages_zero(r->ijc_va, r->npages * HV_IJC_VAS * sizeof *r->ijc_va);
     }
     for (int i = 0; i < m->ncpus; i++) {
         HvCpu *c = m->cpus[i];
@@ -678,7 +678,7 @@ void hv_machine_free(HvMachine *m) {
         free(m->ram[i].code_pages);
         free(m->ram[i].page_gen);
         free(m->ram[i].whint);
-        hv_pages_free(m->ram[i].ijc_va, m->ram[i].npages * sizeof *m->ram[i].ijc_va);
+        hv_pages_free(m->ram[i].ijc_va, m->ram[i].npages * HV_IJC_VAS * sizeof *m->ram[i].ijc_va);
         hv_pages_free(m->ram[i].xhead, m->ram[i].npages * sizeof *m->ram[i].xhead);
         free(m->ram[i].code_hash);
     }
@@ -728,7 +728,7 @@ int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int
     r->page_gen = calloc(pages, sizeof *r->page_gen);
     r->npages = pages;
     r->whint = calloc(pages * HV_MAX_CPUS, sizeof *r->whint);
-    r->ijc_va = hv_pages_alloc(pages * sizeof *r->ijc_va); /* given back by hv_machine_trim, xhead by a full flush */
+    r->ijc_va = hv_pages_alloc(pages * HV_IJC_VAS * sizeof *r->ijc_va); /* given back by hv_machine_trim, xhead by a full flush */
     r->xhead = hv_pages_alloc(pages * sizeof *r->xhead);
     r->code_hash = getenv("HV_CODE_CHECK") ? calloc(pages, sizeof *r->code_hash) : NULL;
     return r->code_pages && r->page_gen && r->whint && r->ijc_va && r->xhead ? 0 : -1;
@@ -794,13 +794,18 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
     pthread_mutex_unlock(&m->tr_mu);
     /* The indirect-branch cache may lead into the stale blocks: drop those entries (or, without HV_IJC_PAGES, the
        whole cache), here at once and on the other CPUs before they next leave a block (their cache lookups and
-       chained exits check exit_req first). Which entries: the page's blocks were cached under one VA page (ijc_va,
-       read after the generation went up; a fill notes its page before checking the generation, see
-       hv_ijc_fill_checked), so only that page's; under none, only the return predictions go; under several, all. */
-    uint64_t v = __atomic_exchange_n(&r->ijc_va[pg], 0, __ATOMIC_SEQ_CST);
-    if (!hv_knob[HV_K_IJCPAGES]) v = ~0ull;
-    if (m->stats_interval) hv_stats_here(m)->code_ijc[!v ? 0 : v == ~0ull ? 2 : 1]++;
-    if (!v) v = 1;
+       chained exits check exit_req first). Which entries: the page's blocks were cached under up to HV_IJC_VAS VA pages
+       (ijc_va, read after the generation went up; a fill notes its page before checking the generation, see
+       hv_ijc_fill_checked), so only those pages'; under none, only the return predictions go; under more, all. */
+    uint64_t vs[HV_IJC_VAS];
+    int nv = 0, all = !hv_knob[HV_K_IJCPAGES];
+    for (int j = 0; j < HV_IJC_VAS; j++) {
+        uint64_t v = __atomic_exchange_n(&r->ijc_va[pg * HV_IJC_VAS + j], 0, __ATOMIC_SEQ_CST);
+        if (v == ~0ull) all = 1;
+        else if (v) vs[nv++] = v;
+    }
+    if (m->stats_interval) hv_stats_here(m)->code_ijc[all ? 2 : nv ? 1 : 0]++;
+    if (!nv) vs[nv++] = 1;
     for (int i = 0; i < m->ncpus; i++) {
         HvCpu *c = m->cpus[i];
         if (!c) continue;
@@ -808,17 +813,17 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
            or no CPU running yet) it is a request, or a running CPU could read a
            half-written entry and jump into the wrong code. */
         if (c == hv_self) {
-            if (v == ~0ull) {
+            if (all) {
                 if (c->pc_state) HV_ST(c).user_reset_why[5]++;
                 hv_ijc_reset(c, 0);
                 hv_ijc_reset(c, 1);
             } else {
-                hv_ijc_drop_code_page(c, v);
+                for (int j = 0; j < nv; j++) hv_ijc_drop_code_page(c, vs[j]);
             }
-        } else if (v == ~0ull) {
+        } else if (all) {
             hv_cpu_post(c, HV_REQ_IJC_RESET);
         } else {
-            hv_cpu_post_ijc_page(c, v);
+            for (int j = 0; j < nv; j++) hv_cpu_post_ijc_page(c, vs[j]);
         }
     }
     hv_stats_here(m)->reset_why[4]++;
