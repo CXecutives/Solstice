@@ -394,7 +394,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
         if (copy_all < 0) copy_all = getenv("HV_PVG_PLANAR_COPY") != NULL;
         if (copy_all || !surface->mapping_in_buffer) [self newIOSurface:surface mapping:mapping];
     }
-    fprintf(stderr, "hengevm: pvg-metal: surface %llu: %llux%llu, row %llu, %llu KB, fourcc %c%c%c%c planes %u\n", mapping, (unsigned long long)sw, (unsigned long long)sh, row, alloc >> 10, desc[7], desc[6], desc[5], desc[4], planes);
+    if (hv_pvg_trace_on()) fprintf(stderr, "trace: surface %llu: %llux%llu, row %llu, %llu KB, fourcc %c%c%c%c planes %u\n", mapping, (unsigned long long)sw, (unsigned long long)sh, row, alloc >> 10, desc[7], desc[6], desc[5], desc[4], planes);
         return surface;
 }
 
