@@ -82,6 +82,9 @@ int hv_vm_finish_pause(void);
 int hv_vm_paused(void);
 int hv_vm_continue(void);
 int hv_vm_pause_clean(void); /* paused with no disk request in flight: it can be saved */
+/* Paused: every translation dropped and the engine's tables given back (hv_machine_trim), so a Mac waiting in the
+   background costs only its own memory; it translates again as it runs on. 0, or -1 if it is not paused. */
+int hv_vm_trim(void);
 uint64_t hv_vm_paused_counter(void); /* the guest's virtual counter when it paused */
 /* The counter to go on from after a pause or a restore made at wall_ns (CLOCK_REALTIME): see vm.c. */
 uint64_t hv_vm_resume_counter(uint64_t counter, int64_t wall_ns);

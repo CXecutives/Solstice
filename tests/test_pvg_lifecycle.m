@@ -77,7 +77,7 @@ static uint32_t *exec_cmd(uint32_t stamp, int nbuf, const void *bufs, uint32_t *
 static void test_replay(void) {
     HvCfgParams cfg = {.nr_cpus = 2};
     if (hv_machine_init(&machine, 4 << 20) ||
-        hv_vmapple_create(&board, &machine, cpus, 64 << 20, NULL, NULL, &cfg, NULL)) { failures++; return; }
+        hv_vmapple_reserve_ram(&board, 64 << 20) || hv_vmapple_create(&board, &machine, cpus, NULL, NULL, &cfg, NULL)) { failures++; return; }
     hv_vmapple_reset_cpu(&board);
     for (int i = 0; i < 16; i++) memset(gpage(G0 + (uint64_t)i), 0, 0x4000);
     uint32_t *root = (uint32_t *)gpage(G0), *table = (uint32_t *)gpage(G0 + 1);
@@ -192,7 +192,7 @@ static void test_refresh_rate_per_start(void) {
         setenv("HV_HZ", hz, 1);
         HvCfgParams cfg = {.nr_cpus = 2};
         if (hv_machine_init(&machine, 4 << 20) ||
-            hv_vmapple_create(&board, &machine, cpus, 64 << 20, NULL, NULL, &cfg, NULL)) { failures++; break; }
+            hv_vmapple_reserve_ram(&board, 64 << 20) || hv_vmapple_create(&board, &machine, cpus, NULL, NULL, &cfg, NULL)) { failures++; break; }
         size_t size = hv_pvg_lite_state(board.pvg, NULL, 0);
         uint8_t *blob = malloc(size);
         hv_pvg_lite_state(board.pvg, blob, size);
@@ -225,7 +225,7 @@ int main(void) {
     for (int cycle = 0; cycle < 6; cycle++) @autoreleasepool {
         HvCfgParams cfg = {.nr_cpus = 2};
         if (hv_machine_init(&machine, 4 << 20) ||
-            hv_vmapple_create(&board, &machine, cpus, 64 << 20, NULL, NULL, &cfg, NULL)) return 1;
+            hv_vmapple_reserve_ram(&board, 64 << 20) || hv_vmapple_create(&board, &machine, cpus, NULL, NULL, &cfg, NULL)) return 1;
         hv_vmapple_reset_cpu(&board);
         HvPvgMetal *metal = hv_pvg_metal_create(board.pvg);
         if (!metal) { fprintf(stderr, "Metal replay unavailable; lifecycle test cannot run\n"); return 1; }

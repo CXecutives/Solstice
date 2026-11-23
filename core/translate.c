@@ -455,9 +455,9 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
     uint64_t *slot = HV_SLOT(e->m, slot_index);
     *slot = 0;
     slot[1] = target; /* hv_chain_thunk reads it there, so the stub holds only the slot's address */
-    e->m->slot_site[slot_index] = NULL; /* until placed: what it held is a dropped block's */
-    e->m->slot_stub[slot_index] = NULL;
-    e->m->slot_cond[slot_index] = NULL;
+    e->m->slot_site[slot_index] = 0; /* until placed: what it held is a dropped block's */
+    e->m->slot_stub[slot_index] = 0;
+    e->m->slot_cond[slot_index] = 0;
     e->m->slot_xa[slot_index] = xa;
     e->m->slot_xpa[slot_index] = 0;
     e->m->slot_xnext[slot_index] = e->m->slot_xprev[slot_index] = 0; /* (a freed slot's link to the next free one) */
@@ -2140,10 +2140,11 @@ void hv_translate_discard_slots(HvMachine *m) {
     Emit *e = &E;
     for (uint32_t k = 0; k < e->nsite; k++) {
         uint32_t idx = e->site[k].slot;
-        __atomic_store_n(&m->slot_site[idx], NULL, __ATOMIC_RELAXED);
+        __atomic_store_n(&m->slot_site[idx], 0, __ATOMIC_RELAXED);
         __atomic_store_n(HV_SLOT(m, idx), 0, __ATOMIC_RELAXED);
-        m->slot_stub[idx] = m->slot_cond[idx] = NULL;
-        m->slot_xa[idx] = m->slot_xpa[idx] = 0;
+        m->slot_stub[idx] = m->slot_cond[idx] = 0;
+        m->slot_xa[idx] = 0;
+        m->slot_xpa[idx] = 0;
         hv_cc_slot_put(m, idx);
     }
     e->nsite = 0;
@@ -2317,10 +2318,10 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
         if (t == b->va) code = dst;
         else {
             uint64_t pa = (b->pa & ~((1ull << HV_TLB_PAGE_BITS) - 1)) | (t & ((1ull << HV_TLB_PAGE_BITS) - 1));
-            HvBlock *tb = hv_block_find(m, hv_block_hash(t, pa, b->flags), t, pa, b->flags, b->gen);
+            HvBlock *tb = hv_block_find(m, hv_block_hash(m, t, pa, b->flags), t, pa, b->flags, b->gen);
             /* Only to this CPU's own blocks: one another CPU just wrote must be
                entered through an isb first (the dispatcher, a light lookup). */
-            if (tb && tb->maker == b->maker) code = tb->code;
+            if (tb && tb->maker == b->maker) code = hv_block_code(m, tb);
         }
         if (!code) continue;
         *HV_SLOT(m, slot) = (uint64_t)(uintptr_t)code;
@@ -2339,17 +2340,17 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
         hv_jit_write(&m->jit, cold + e->pool_at, e->pool, e->npool * 8);
     }
     hv_jit_finish2(&m->jit, dst, e->nhot, e->flat ? NULL : cold, e->flat ? 0 : e->ncold); /* one wait for both parts */
-    b->code = dst;
+    b->code_off = (uint32_t)(dst - m->jit.base);
     __atomic_fetch_add(&hv_xlate_counts.blocks, 1, __ATOMIC_RELAXED);
     __atomic_fetch_add(&hv_xlate_counts.insns, b->ninsns, __ATOMIC_RELAXED);
     __atomic_fetch_add(&hv_xlate_counts.hot, e->flat ? e->pool_at : e->nhot, __ATOMIC_RELAXED);
     __atomic_fetch_add(&hv_xlate_counts.cold, e->flat ? 0 : e->pool_at, __ATOMIC_RELAXED);
     __atomic_fetch_add(&hv_xlate_counts.pool, e->npool * 2, __ATOMIC_RELAXED);
     for (uint32_t k = 0; k < e->nsite; k++) {
-        m->slot_stub[e->site[k].slot] = (e->site[k].stub_cold ? cold : dst) + e->site[k].stub;
-        m->slot_cond[e->site[k].slot] = e->site[k].has_cond ? dst + e->site[k].cond_at : NULL;
+        m->slot_stub[e->site[k].slot] = hv_jit_ref(m, (e->site[k].stub_cold ? cold : dst) + e->site[k].stub);
+        m->slot_cond[e->site[k].slot] = e->site[k].has_cond ? hv_jit_ref(m, dst + e->site[k].cond_at) : 0;
         /* The site last: an eviction's scan takes an exit as placed by it (codecache.c). */
-        __atomic_store_n(&m->slot_site[e->site[k].slot], (e->site[k].cold ? cold : dst) + e->site[k].at, __ATOMIC_RELEASE);
+        __atomic_store_n(&m->slot_site[e->site[k].slot], hv_jit_ref(m, (e->site[k].cold ? cold : dst) + e->site[k].at), __ATOMIC_RELEASE);
     }
     return 0;
 }

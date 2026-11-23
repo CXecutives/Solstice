@@ -32,6 +32,9 @@ int henge_vm_suspend(const char *path, const char *ident, char *err, size_t errl
 /* The two halves of henge_vm_suspend. Pausing needs the GPU (what only it holds goes back into the Mac's memory), which
    iOS refuses an app in the background: pause when Henge stops being active, save once it is in the background. */
 int henge_vm_pause(char *err, size_t errlen);
+/* Paused (state 4): drops the translated code and gives the engine's tables back, so the waiting Mac costs only its
+   own memory until it runs on (it translates again). 0, or -1 if it is not paused. */
+int henge_vm_trim(void);
 int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_continue(void);
 int henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
@@ -124,6 +127,9 @@ void henge_vm_free_display(const uint8_t *pixels);
    increased virtual addressing entitlement raises it). */
 uint64_t henge_largest_reservation_gb(void); /* measuring: the biggest PROT_NONE reservation, in GB */
 uint64_t henge_largest_mapping_mb(void);
+/* The address space the engine's tables take beside guest RAM, in MB, for the JIT region there is now and this many
+   CPUs (hv_machine_table_bytes): guest RAM is reserved first, then these. */
+uint64_t henge_engine_tables_mb(int cpus);
 /* Bytes this process may still allocate before jetsam (os_proc_available_memory). */
 size_t henge_available_memory(void);
 /* The whole system's available memory as jetsam counts it (free and file-backed pages: what iOS can hand out without

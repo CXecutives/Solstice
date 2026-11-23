@@ -161,11 +161,16 @@ static uint32_t hint_slot(uint64_t key) {
     return (uint32_t)((key * 0x9e3779b97f4a7c15ull) >> 52);
 }
 
+/* Only the tables a fill used (a user's flags are 0 or FPOFF: six of its eight never are), and with fresh pages
+   rather than a memset: 4 MB each, written again only as fills come. Only the owner fills and clears its tables;
+   another CPU's TLBI may zero entries meanwhile (ijc_clear_page), which either copy takes as well. */
 static void ijc_clear(HvCpu *cpu, int kernel) {
-    if (!cpu->pc_state) return;
-    memset(cpu->pc_state->ijc_hint[kernel], 0, sizeof cpu->pc_state->ijc_hint[kernel]);
+    HvPerCpu *p = cpu->pc_state;
+    if (!p) return;
+    memset(p->ijc_hint[kernel], 0, sizeof p->ijc_hint[kernel]);
     for (int t = kernel; t < HV_IJC_TABLES; t += 2)
-        memset(cpu->pc_state->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8), 0, HV_IJC_TABLE_BYTES);
+        if (p->ijc_tables_used >> t & 1) hv_pages_zero(p->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8), HV_IJC_TABLE_BYTES);
+    p->ijc_tables_used &= kernel ? 0x5555u : 0xaaaau; /* the other half's (even: user, odd: kernel) stay */
 }
 
 /* ASIDs live in TTBR0 unless TCR.A1 puts them in TTBR1; then every process looks alike to us. */
@@ -185,7 +190,7 @@ static uint32_t ucode_slot(uint64_t key) {
 
 static void ucode_clear(HvPerCpu *m) {
     if (m) m->last_fill[0] = 0;
-    if (m && m->ucode) memset(m->ucode, 0, (sizeof *m->ucode) << HV_UCODE_BITS);
+    if (m && m->ucode) hv_pages_zero(m->ucode, (sizeof *m->ucode) << HV_UCODE_BITS);
     if (m) m->ucode_count = 0;
 }
 
@@ -197,7 +202,9 @@ static int ucode_has(HvPerCpu *m, uint32_t cid, uint64_t va) {
     }
 }
 
-void hv_ucode_add(HvCpu *cpu, uint64_t va) {
+/* A user target was cached in va's page under the current address space's id. There is room (ijc_make_room): this
+   only adds, so the light path (hv_ijc_resolve) reaches no reset and nothing of libc through it. */
+static void ucode_put(HvCpu *cpu, uint64_t va) {
     HvPerCpu *m = cpu->pc_state;
     uint32_t cid = (uint32_t)(cpu->ijc_salt[0] >> 48);
     if (!m || !cid) return;
@@ -205,14 +212,6 @@ void hv_ucode_add(HvCpu *cpu, uint64_t va) {
     uint32_t i = ucode_slot(key);
     for (; m->ucode[i]; i = (i + 1) & ((1u << HV_UCODE_BITS) - 1))
         if (m->ucode[i] == key) return;
-    if (m->ucode_count >= (1u << HV_UCODE_BITS) / 2) { /* half full: start the user half over */
-        ucode_clear(m);
-        hv_ijc_reset(cpu, 0);
-        hv_ijc_switch(cpu);
-        cid = (uint32_t)(cpu->ijc_salt[0] >> 48);
-        key = ucode_key(cid, va);
-        i = ucode_slot(key);
-    }
     m->ucode[i] = key;
     m->ucode_count++;
 }
@@ -220,7 +219,7 @@ void hv_ucode_add(HvCpu *cpu, uint64_t va) {
 /* A user id no tag in the tables uses yet; when they run out, empty the user tables and start over. */
 static uint16_t fresh_cid(HvCpu *cpu) {
     if (cpu->next_cid == 0 || cpu->next_cid > 0xffff) {
-        if (cpu->pc_state && cpu->pc_state->cid_chunks) memset(cpu->pc_state->cid_chunks, 0, 65536 * sizeof *cpu->pc_state->cid_chunks);
+        if (cpu->pc_state && cpu->pc_state->cid_chunks) hv_pages_zero(cpu->pc_state->cid_chunks, 65536 * sizeof *cpu->pc_state->cid_chunks);
         if (cpu->pc_state) cpu->pc_state->last_fill[0] = cpu->pc_state->last_fill[1] = 0;
         ijc_clear(cpu, 0);
         ucode_clear(cpu->pc_state);
@@ -878,9 +877,32 @@ int hv_tlb_refill(HvCpu *cpu, uint64_t va, uint32_t flags) {
     return tag != HV_TLB_INVALID && tag + HV_TLB_ADJ == (va & ~(uint64_t)PAGE_MASK) ? 0 : 1;
 }
 
-/* Put block b in this CPU's indirect-branch cache under its VA (b->va must be in
-   the half its flags say: kernel blocks, kernel VAs). */
-void hv_ijc_fill(HvCpu *cpu, HvBlock *b) {
+/* The filters a fill adds to are full: the cache starts over before it (the (id, page) set at half, the keyed
+   filter at an eighth). Only from the dispatcher (hv_ijc_fill, hv_ijc_fill_checked): resets clear tables with libc,
+   so the light path (hv_ijc_resolve) refuses a fill then instead (FAIL(1)), and what it calls never resets. */
+static int ijc_full(const HvPerCpu *pcs) {
+    return pcs->ijc_keyed_count >= (1u << 17) || pcs->ucode_count + 1 >= (1u << HV_UCODE_BITS) / 2;
+}
+
+static void ijc_make_room(HvCpu *cpu) {
+    HvPerCpu *pcs = cpu->pc_state;
+    if (!pcs || !ijc_full(pcs)) return;
+    if (pcs->ucode_count + 1 >= (1u << HV_UCODE_BITS) / 2) { /* half full: start the user half over */
+        ucode_clear(pcs);
+        hv_ijc_reset(cpu, 0);
+    }
+    if (pcs->ijc_keyed_count >= (1u << 17)) { /* an eighth full: start the cache and the filter over */
+        HV_ST(cpu).reset_why[6]++;
+        hv_ijc_reset(cpu, 0);
+        hv_ijc_reset(cpu, 1);
+        memset(pcs->ijc_keyed, 0, sizeof pcs->ijc_keyed);
+        pcs->ijc_keyed_count = 0;
+    }
+}
+
+/* Put block b in this CPU's indirect-branch cache under its VA (b->va must be in the half its flags say: kernel
+   blocks, kernel VAs). The filters have room (ijc_make_room): nothing here resets, or calls out. */
+static void ijc_put(HvCpu *cpu, HvBlock *b) {
     HvMachine *m = cpu->m;
     HvPerCpu *pcs = cpu->pc_state;
     int kernel = b->flags & HV_BLOCK_EL1;
@@ -889,7 +911,7 @@ void hv_ijc_fill(HvCpu *cpu, HvBlock *b) {
     uint64_t *ent = t + (size_t)hv_ijc_index(tag) * 2;
     if (ent[0] != tag && ent[0]) ent[2] = ent[0], ent[3] = ent[1]; /* way 0's goes to way 1 (over this one's, if there) */
     ent[0] = tag;
-    ent[1] = (uint64_t)(uintptr_t)b->code;
+    ent[1] = (uint64_t)(uintptr_t)hv_block_code(m, b);
     pcs->ijc_tables_used |= 1u << (b->flags & (HV_IJC_TABLES - 1));
     {   /* the page's hint: which piece has a target now */
         uint64_t key = ((b->va & ~(uint64_t)PAGE_MASK) ^ cpu->ijc_salt[kernel]) | 1, bit = 1ull << ((b->va >> 8) & 63);
@@ -902,24 +924,23 @@ void hv_ijc_fill(HvCpu *cpu, HvBlock *b) {
     uint64_t pkey = (b->va & ~(uint64_t)PAGE_MASK) ^ cpu->ijc_salt[kernel] ^ 1;
     if (pcs->last_fill[kernel] == pkey) return;
     if (!kernel) {
-        hv_ucode_add(cpu, b->va);
+        ucode_put(cpu, b->va);
         uint32_t h = (uint32_t)(b->va >> HV_TLB_PAGE_BITS) & 0xffff;
         pcs->ijc_pages[0][h >> 6] |= 1ull << (h & 63);
-        uint32_t ch = (uint32_t)(b->va >> 25) & 255, cid = (uint32_t)(cpu->ijc_salt[0] >> 48); /* the id after any reset in ucode_add */
+        uint32_t ch = (uint32_t)(b->va >> 25) & 255, cid = (uint32_t)(cpu->ijc_salt[0] >> 48);
         pcs->cid_chunks[cid][ch >> 6] |= 1ull << (ch & 63);
     }
     uint32_t k = hv_ijc_key(b->va, cpu->ijc_salt[kernel]);
     if (!(pcs->ijc_keyed[k >> 6] >> (k & 63) & 1)) {
         pcs->ijc_keyed[k >> 6] |= 1ull << (k & 63);
-        if (++pcs->ijc_keyed_count > (1u << 17)) { /* an eighth full: start the cache and the filter over */
-            HV_ST(cpu).reset_why[6]++;
-            hv_ijc_reset(cpu, 0);
-            hv_ijc_reset(cpu, 1);
-            memset(pcs->ijc_keyed, 0, sizeof pcs->ijc_keyed);
-            pcs->ijc_keyed_count = 0;
-        }
+        pcs->ijc_keyed_count++;
     }
-    pcs->last_fill[kernel] = (b->va & ~(uint64_t)PAGE_MASK) ^ cpu->ijc_salt[kernel] ^ 1; /* the salt after any reset above */
+    pcs->last_fill[kernel] = pkey;
+}
+
+void hv_ijc_fill(HvCpu *cpu, HvBlock *b) {
+    ijc_make_room(cpu);
+    ijc_put(cpu, b);
 }
 
 /* An indirect-branch cache miss in translated code, before the dispatcher: if
@@ -934,8 +955,9 @@ static int tlb_maps_block(HvCpu *cpu, const HvBlock *b) {
     int table = !(b->flags & HV_BLOCK_EL1) ? 0 : (b->flags & HV_BLOCK_PAN) ? 2 : 1;
     const HvTlbEntry *e = hv_tlb_ent(cpu, (b->va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), table);
     uint64_t page_va = b->va & ~(uint64_t)PAGE_MASK, page_pa = b->pa & ~(uint64_t)PAGE_MASK;
+    const HvRam *r = hv_block_ram(cpu->m, b);
     return __atomic_load_n(&e->exec_tag, __ATOMIC_RELAXED) == hv_exec_key(page_va, e->addend) &&
-           (uint64_t)e->addend == (uint64_t)(uintptr_t)(b->ram->host + (page_pa - b->ram->pa)) - page_va;
+           (uint64_t)e->addend == (uint64_t)(uintptr_t)(r->host + (page_pa - r->pa)) - page_va;
 }
 
 /* The dispatcher caching a block it found for va: only while the TLB still
@@ -945,8 +967,8 @@ static int tlb_maps_block(HvCpu *cpu, const HvBlock *b) {
    hv_invalidate_code), then check b is still current. Both read-modify-writes and the load are sequentially
    consistent, against the generation bump and the note's exchange there: either the change sees this note, or this
    sees the new generation and caches nothing. */
-static int ijc_note_page(const HvBlock *b) {
-    HvRam *r = b->ram;
+static int ijc_note_page(HvMachine *m, const HvBlock *b) {
+    HvRam *r = b->ram < m->nram ? hv_block_ram(m, b) : NULL;
     if (!r || !r->ijc_va) return 1;
     uint64_t pg = (b->pa - r->pa) >> HV_TLB_PAGE_BITS, v = (b->va & ~(uint64_t)PAGE_MASK) | 2;
     uint64_t *slot = &r->ijc_va[pg];
@@ -983,18 +1005,24 @@ void hv_ijc_drop_code_page(HvCpu *cpu, uint64_t v) {
     }
 }
 
-int hv_ijc_fill_checked(HvCpu *cpu, HvBlock *b) {
+/* The filters have room (the light path checks ijc_full, the dispatcher makes room first). */
+static int ijc_fill_checked(HvCpu *cpu, HvBlock *b) {
     HvPerCpu *p = cpu->pc_state;
-    if (!p) {
+    if (!ijc_note_page(cpu->m, b)) return 0;
+    __atomic_add_fetch(&p->ijc_seq, 1, __ATOMIC_SEQ_CST);
+    int ok = tlb_maps_block(cpu, b);
+    if (ok) ijc_put(cpu, b);
+    __atomic_add_fetch(&p->ijc_seq, 1, __ATOMIC_RELEASE);
+    return ok;
+}
+
+int hv_ijc_fill_checked(HvCpu *cpu, HvBlock *b) {
+    if (!cpu->pc_state) {
         hv_ijc_fill(cpu, b);
         return 1;
     }
-    if (!ijc_note_page(b)) return 0;
-    __atomic_add_fetch(&p->ijc_seq, 1, __ATOMIC_SEQ_CST);
-    int ok = tlb_maps_block(cpu, b);
-    if (ok) hv_ijc_fill(cpu, b);
-    __atomic_add_fetch(&p->ijc_seq, 1, __ATOMIC_RELEASE);
-    return ok;
+    ijc_make_room(cpu);
+    return ijc_fill_checked(cpu, b);
 }
 
 static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags);
@@ -1009,7 +1037,7 @@ static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags) {
     int kernel = flags & HV_BLOCK_EL1;
 #define FAIL(k) do { if (m->stats_interval) HV_ST(cpu).light_fail[k]++; return 0; } while (0)
     if (!m->chain || va == m->stop_pc || va == m->stop_pc2 || (int)((va >> 55) & 1) != kernel || (va & 3)) FAIL(0);
-    if (pcs->ijc_keyed_count >= (1u << 17) || pcs->ucode_count + 1 >= (1u << HV_UCODE_BITS) / 2) FAIL(1);
+    if (ijc_full(pcs)) FAIL(1); /* starting over is the dispatcher's (ijc_make_room: libc) */
     int table = !kernel ? 0 : (flags & HV_BLOCK_PAN) ? 2 : 1;
     HvTlbEntry *e = hv_tlb_ent(cpu, (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), table);
     if (e->exec_tag != hv_exec_key(va & ~(uint64_t)PAGE_MASK, e->addend)) {
@@ -1035,7 +1063,7 @@ static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags) {
     uint32_t j = (uint32_t)((va >> 2) ^ (va >> 18) ^ ((uint64_t)flags << 13)) & ((1u << HV_JC_BITS) - 1);
     HvBlock *b = pcs->jc[j].va == va ? pcs->jc[j].b : NULL;
     if (!(b && b->pa == pa && b->flags == flags && b->gen == gen && hv_block_live(m, b))) {
-        b = hv_block_find(m, hv_block_hash(va, pa, flags), va, pa, flags, gen);
+        b = hv_block_find(m, hv_block_hash(m, va, pa, flags), va, pa, flags, gen);
         if (!b) FAIL(3);
 #undef FAIL
         pcs->jc[j].va = va, pcs->jc[j].b = b;
@@ -1054,8 +1082,8 @@ static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags) {
         if (!kernel) HV_ST(cpu).light_region[(va - 0x180000000ull) < 0x100000000ull ? 0 : 1]++;
     }
     /* Cached only while the TLB still maps it, inside ijc_seq (see hv_ijc_fill_checked). */
-    if (!hv_ijc_fill_checked(cpu, b)) return 0;
-    return b->code;
+    if (!ijc_fill_checked(cpu, b)) return 0;
+    return hv_block_code(m, b);
 }
 
 /* ---- user TLB entries kept across process switches (HvTlbStash) ---- */

@@ -67,6 +67,9 @@ typedef struct HvCodeCache {
 
 int hv_cc_init(struct HvMachine *m);
 void hv_cc_free(struct HvMachine *m);
+/* The bytes of its tables for max_blocks records (hv_machine_table_bytes), and those given back (hv_machine_trim). */
+size_t hv_cc_table_bytes(uint32_t max_blocks);
+void hv_cc_trim(struct HvMachine *m);
 /* A full flush (every CPU stopped, the translation lock held): every segment free, sized again from the JIT region. */
 void hv_cc_reset(struct HvMachine *m);
 /* Which stream a block about to be placed goes to. Any thread. */

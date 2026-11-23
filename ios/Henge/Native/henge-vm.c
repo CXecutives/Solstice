@@ -186,6 +186,20 @@ int henge_vm_pause(char *err, size_t errlen) {
     return 0;
 }
 
+int henge_vm_trim(void) {
+    pthread_rwlock_rdlock(&api_lock);
+    int r = state == 4 ? hv_vm_trim() : -1;
+    pthread_rwlock_unlock(&api_lock);
+    if (r == 0) fprintf(stderr, "henge: paused: the translated code is dropped and the engine's tables given back\n");
+    return r;
+}
+
+uint64_t henge_engine_tables_mb(int cpus) {
+    HengeDualMapping *jit = henge_ios_jit_get_mapping();
+    size_t bytes = jit ? jit->size : 0;
+    return (uint64_t)((hv_machine_table_bytes(bytes, cpus) + (1u << 20) - 1) >> 20);
+}
+
 int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen) {
     pthread_rwlock_rdlock(&api_lock);
     if (state != 4) {

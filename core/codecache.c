@@ -105,15 +105,25 @@ void hv_cc_reset(HvMachine *m) {
     __atomic_store_n(&cc->slot_top, 0, __ATOMIC_SEQ_CST); /* the slots start over from 0 (m->nslots) */
 }
 
+/* Tenure marks: a byte per hashed key, about one for every two blocks. */
+static uint32_t evicted_bits(uint32_t max_blocks) {
+    uint32_t bits = 12;
+    while (bits < 23 && (1u << bits) < max_blocks / 2) bits++;
+    return bits;
+}
+
+size_t hv_cc_table_bytes(uint32_t max_blocks) {
+    return (size_t)1 << evicted_bits(max_blocks);
+}
+
 int hv_cc_init(HvMachine *m) {
     HvCodeCache *cc = &m->cc;
     cc->rec_chunk = m->max_blocks >= (1u << 20) ? 1024 : 64;
     cc->nrec_chunks = m->max_blocks / cc->rec_chunk;
     cc->rec_len = calloc(cc->nrec_chunks ? cc->nrec_chunks : 1, sizeof *cc->rec_len);
     cc->rec_next = calloc(cc->nrec_chunks ? cc->nrec_chunks : 1, sizeof *cc->rec_next);
-    uint32_t bits = 12;
-    while (bits < 23 && (1u << bits) < m->max_blocks / 2) bits++;
-    cc->evicted = calloc((size_t)1 << bits, 1); /* untouched until evictions: costs nothing before */
+    uint32_t bits = evicted_bits(m->max_blocks);
+    cc->evicted = hv_pages_alloc((size_t)1 << bits); /* untouched until evictions: costs nothing before */
     cc->evicted_mask = (1u << bits) - 1;
     cc->words_cap = 2 * SCAN_STEP;
     cc->words = malloc(cc->words_cap * sizeof *cc->words);
@@ -127,11 +137,21 @@ void hv_cc_free(HvMachine *m) {
     HvCodeCache *cc = &m->cc;
     free(cc->rec_len);
     free(cc->rec_next);
-    free(cc->evicted);
+    if (cc->evicted) hv_pages_free(cc->evicted, (size_t)cc->evicted_mask + 1);
     free(cc->words);
 }
 
+void hv_cc_trim(HvMachine *m) {
+    HvCodeCache *cc = &m->cc;
+    if (cc->evicted) hv_pages_zero(cc->evicted, (size_t)cc->evicted_mask + 1);
+}
+
 /* ---- records, slots, lists ---- */
+
+/* Chunk c's records (m->blocks[0] is no block: index 0 ends a hash bucket). */
+static inline HvBlock *chunk_recs(HvMachine *m, uint32_t c) {
+    return &m->blocks[1 + (size_t)c * m->cc.rec_chunk];
+}
 
 static HvBlock *rec_alloc(HvMachine *m, uint32_t s) {
     HvCodeCache *cc = &m->cc;
@@ -147,7 +167,7 @@ static HvBlock *rec_alloc(HvMachine *m, uint32_t s) {
         cc->rec_tail[s] = c;
     }
     cc->nrec[s]++;
-    return &m->blocks[(size_t)c * cc->rec_chunk + cc->rec_len[c]++];
+    return &chunk_recs(m, c)[cc->rec_len[c]++];
 }
 
 uint32_t hv_cc_slot_take(HvMachine *m) {
@@ -190,13 +210,13 @@ void hv_cc_xlink(HvMachine *m, HvRam *ram, uint64_t pg, uint32_t idx) {
 
 /* Off its target page's list (an exit chained to another page). */
 static void xunlink(HvMachine *m, uint32_t idx) {
-    uint64_t xpa = m->slot_xpa[idx] & ~1ull;
+    uint32_t xpa = m->slot_xpa[idx];
     uint32_t prev = m->slot_xprev[idx], next = m->slot_xnext[idx];
     if (prev) {
         m->slot_xnext[prev - 1] = next;
     } else {
-        HvRam *ram = hv_ram_lookup(m, xpa);
-        uint64_t pg = ram ? (xpa - ram->pa) >> HV_TLB_PAGE_BITS : 0;
+        HvRam *ram = hv_xpa_ram(xpa) < (uint32_t)m->nram ? &m->ram[hv_xpa_ram(xpa)] : NULL;
+        uint64_t pg = hv_xpa_pg(xpa);
         if (ram && pg < ram->npages && ram->xhead[pg] == idx + 1) ram->xhead[pg] = next;
     }
     if (next) m->slot_xprev[next - 1] = prev;
@@ -220,7 +240,7 @@ static void flush_words(HvMachine *m) {
 /* An exit chained into a block that is going: back to its stub (the conditional branch too), as hv_invalidate_code
    does for a page. Other CPUs may be running the old branch: it still goes where it went until they catch up. */
 static void unpatch(HvMachine *m, uint32_t idx) {
-    uint32_t *site = m->slot_site[idx], *stub = m->slot_stub[idx], *cond = m->slot_cond[idx];
+    uint32_t *site = hv_jit_word(m, m->slot_site[idx]), *stub = hv_jit_word(m, m->slot_stub[idx]), *cond = hv_jit_word(m, m->slot_cond[idx]);
     __atomic_store_n(HV_SLOT(m, idx), 0, __ATOMIC_RELEASE);
     if (m->slot_xpa[idx]) xunlink(m, idx);
     if (!site || !stub) return;
@@ -369,9 +389,11 @@ int hv_cc_publish(HvMachine *m, const HvBlock *nb, uint32_t h, HvBlock **out) {
         if (v && !hv_cc_code_live(m, (const uint32_t *)(uintptr_t)v)) unpatch(m, idx);
     }
     flush_words(m);
+    uint32_t idx = (uint32_t)(b - m->blocks);
     *b = *nb;
     b->next = m->hash[h];
-    __atomic_store_n(&m->hash[h], b, __ATOMIC_RELEASE);
+    if (m->block_jit_gen) m->block_jit_gen[idx] = __atomic_load_n(&m->jit_gen, __ATOMIC_RELAXED); /* no flush meanwhile: the lock */
+    __atomic_store_n(&m->hash[h], idx, __ATOMIC_RELEASE);
     m->nblocks++;
     *out = b;
     return HV_CC_OK;
@@ -391,9 +413,10 @@ static int epoch_passed(HvMachine *m, uint32_t e) {
 }
 
 static void hash_unlink(HvMachine *m, HvBlock *b) {
-    HvBlock **pp = &m->hash[hv_block_hash(b->va, b->pa, b->flags)];
-    for (HvBlock *c = *pp; c; pp = &c->next, c = *pp)
-        if (c == b) {
+    uint32_t idx = (uint32_t)(b - m->blocks);
+    uint32_t *pp = &m->hash[hv_block_hash(m, b->va, b->pa, b->flags)];
+    for (uint32_t c = *pp; c; pp = &m->blocks[c].next, c = *pp)
+        if (c == idx) {
             /* b->next stays: a lookup standing on b goes on along the bucket (b is not reused before the epoch). */
             __atomic_store_n(pp, b->next, __ATOMIC_RELEASE);
             return;
@@ -410,21 +433,21 @@ static void check_gone(HvMachine *m, uint32_t s) {
     for (uint32_t idx = 0, hw = slots_hw(m); idx < hw; idx++) {
         uint64_t v = __atomic_load_n(HV_SLOT(m, idx), __ATOMIC_RELAXED);
         if (v && in_seg(m, (const uint32_t *)(uintptr_t)v, s)) check_bad(m, "an exit still chained into a freed segment", idx);
-        uint32_t *site = __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE);
+        uint32_t *site = hv_jit_word(m, __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE));
         if (site && in_seg(m, site, s)) check_bad(m, "an exit of a freed segment kept", idx);
     }
     for (uint32_t c = cc->rec_head[s]; c != NONE; c = cc->rec_next[c])
         for (uint32_t i = 0; i < cc->rec_len[c]; i++) {
-            HvBlock *b = &m->blocks[(size_t)c * cc->rec_chunk + i];
-            for (HvBlock *x = m->hash[hv_block_hash(b->va, b->pa, b->flags)]; x; x = x->next)
-                if (x == b) check_bad(m, "a block of a freed segment still in the hash", b->va);
+            HvBlock *b = &chunk_recs(m, c)[i];
+            for (uint32_t x = m->hash[hv_block_hash(m, b->va, b->pa, b->flags)]; x; x = m->blocks[x].next)
+                if (&m->blocks[x] == b) check_bad(m, "a block of a freed segment still in the hash", b->va);
         }
     for (int i = 0; i < m->ncpus; i++) { /* those caught up (one parked then may be on its way back to do it) */
         HvCpu *c = m->cpus[i];
         if (!c || !c->pc_state || (int32_t)(__atomic_load_n(&c->pc_state->cc_seen, __ATOMIC_SEQ_CST) - cc->job_epoch) < 0) continue;
         for (uint32_t j = 0; j < (1u << HV_JC_BITS); j++) {
             HvBlock *b = __atomic_load_n(&c->pc_state->jc[j].b, __ATOMIC_RELAXED);
-            if (b && in_seg(m, b->code, s)) check_bad(m, "a front cache still holding a block of a freed segment", b->va);
+            if (b && in_seg(m, hv_block_code(m, b), s)) check_bad(m, "a front cache still holding a block of a freed segment", b->va);
         }
     }
 }
@@ -440,7 +463,7 @@ static int job_step(HvMachine *m) {
         uint8_t mk = (uint8_t)cc->nevict ? (uint8_t)cc->nevict : 1;
         for (uint32_t n = 0; n < UNLINK_STEP && cc->job_cursor != NONE;) {
             uint32_t c = cc->job_cursor, len = cc->rec_len[c];
-            HvBlock *arr = &m->blocks[(size_t)c * cc->rec_chunk];
+            HvBlock *arr = chunk_recs(m, c);
             for (; cc->job_sub < len && n < UNLINK_STEP; cc->job_sub++, n++) {
                 HvBlock *b = &arr[cc->job_sub];
                 __atomic_store_n(&cc->evicted[tenure_key(cc, b->va, b->pa, b->flags)], mk, __ATOMIC_RELAXED);
@@ -462,7 +485,7 @@ static int job_step(HvMachine *m) {
         for (uint32_t idx = cc->job_cursor; idx < end; idx++) {
             uint64_t v = __atomic_load_n(HV_SLOT(m, idx), __ATOMIC_RELAXED);
             if (!v || !in_seg(m, (const uint32_t *)(uintptr_t)v, s)) continue;
-            uint32_t *site = __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE);
+            uint32_t *site = hv_jit_word(m, __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE));
             /* Not placed yet (hv_cc_publish sees to it), or an exit of the segment itself (freed with it). */
             if (!site || in_seg(m, site, s)) continue;
             unpatch(m, idx);
@@ -489,12 +512,12 @@ static int job_step(HvMachine *m) {
         uint32_t hw = slots_hw(m), end = cc->job_cursor + SCAN_STEP < hw ? cc->job_cursor + SCAN_STEP : hw;
         uint32_t first = NONE, last = NONE;
         for (uint32_t idx = cc->job_cursor; idx < end; idx++) {
-            uint32_t *site = __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE);
+            uint32_t *site = hv_jit_word(m, __atomic_load_n(&m->slot_site[idx], __ATOMIC_ACQUIRE));
             if (!site || !in_seg(m, site, s)) continue;
             if (m->slot_xpa[idx]) xunlink(m, idx);
             __atomic_store_n(HV_SLOT(m, idx), 0, __ATOMIC_RELAXED);
-            __atomic_store_n(&m->slot_site[idx], NULL, __ATOMIC_RELAXED);
-            m->slot_stub[idx] = m->slot_cond[idx] = NULL;
+            __atomic_store_n(&m->slot_site[idx], 0, __ATOMIC_RELAXED);
+            m->slot_stub[idx] = m->slot_cond[idx] = 0;
             m->slot_xa[idx] = 0;
             m->slot_xnext[idx] = first == NONE ? 0 : first + 1;
             if (first == NONE) last = idx;
@@ -601,14 +624,14 @@ HvBlock *hv_block_at(HvMachine *m, const uint32_t *pc) {
     for (uint32_t c = cc->rec_head[s]; c != NONE && c < cc->nrec_chunks && walked++ < cc->nrec_chunks; c = cc->rec_next[c]) {
         uint32_t len = cc->rec_len[c];
         if (!len || len > cc->rec_chunk) continue;
-        HvBlock *arr = &m->blocks[(size_t)c * cc->rec_chunk];
+        HvBlock *arr = chunk_recs(m, c);
         uint32_t lo = 0, hi = len - 1;
         while (lo < hi) {
             uint32_t mid = (lo + hi + 1) / 2;
-            if (arr[mid].code <= pc) lo = mid;
+            if (hv_block_code(m, &arr[mid]) <= pc) lo = mid;
             else hi = mid - 1;
         }
-        if (arr[lo].code && arr[lo].code <= pc && (!best || arr[lo].code > best->code)) best = &arr[lo];
+        if (hv_block_code(m, &arr[lo]) <= pc && (!best || arr[lo].code_off > best->code_off)) best = &arr[lo];
     }
     return best;
 }

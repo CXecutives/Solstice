@@ -83,10 +83,13 @@ typedef struct HvVmapple {
     uint64_t poll_period, poll_due;
 } HvVmapple;
 
-/* Builds the machine around m and cfg->nr_cpus CPUs (cpus is an array of them). Disks may be NULL (no device then).
-   Guest RAM is reserved, not committed: pages are only used once touched. */
-int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpus, uint64_t ram_size, HvDisk *root, HvDisk *aux,
-                      const HvCfgParams *cfg, const uint8_t mac[6]);
+/* Guest RAM, reserved, not committed (pages are only used once touched): first, before the engine's tables (the
+   machine's init) take the address space, as it is the one mapping that must be in one piece. 0 or -1; either way
+   hv_vmapple_destroy releases what it holds. */
+int hv_vmapple_reserve_ram(HvVmapple *b, uint64_t ram_size);
+/* Then builds the machine around m and cfg->nr_cpus CPUs (cpus is an array of them). Disks may be NULL (no device). */
+int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpus, HvDisk *root, HvDisk *aux, const HvCfgParams *cfg,
+                      const uint8_t mac[6]);
 /* Copies a boot ROM image into the firmware region. */
 int hv_vmapple_load_rom(HvVmapple *b, const char *path);
 /* CPU reset: EL1, MMU off, interrupts masked, at the start of the ROM. */
