@@ -79,8 +79,6 @@ enum {
     RUN_ROOMY = 16,    /* nothing is evicted (the reference for how much is translated again) */
 };
 static uint64_t last_translations, last_runs; /* the last run's */
-enum {
-};
 
 /* One run: cap_mb of code cache, ncpu CPUs, until want_laps times round (at least min_laps) or max_s seconds. */
 static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps, double want_laps, double max_s) {
