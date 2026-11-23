@@ -5,32 +5,37 @@ enum Device {
     static let isPad = UIDevice.current.userInterfaceIdiom == .pad
     static let name = isPad ? "iPad" : "iPhone"
 
-    /// A Mac's screen that fills this device on its side: 1920 wide, as tall as the shape asks. iPads and
-    /// squarer phones (iPhone Duo, about 1.46:1) would get bars above and below at 16:9. Phones wider
-    /// than 16:9 come out at 1920×1080, as before.
-    static var fittingScreen: (width: Int, height: Int) {
-        let size = UIScreen.main.bounds.size
-        let shape = max(size.width, size.height) / max(min(size.width, size.height), 1)
-        return (1920, min(max(Int((1920 / shape / 8).rounded()) * 8, 1080), 1440))
+    /// The panel, its density and its landscape insets, as MacScreen sizes a Mac's screen for them.
+    static var screenFacts: ScreenFacts {
+        let screen = UIScreen.main, n = screen.nativeBounds.size
+        return ScreenFacts(panel: PixelSize(width: Int(max(n.width, n.height)), height: Int(min(n.width, n.height))),
+                           scale: Double(screen.nativeScale), sideInset: landscapeSideInset,
+                           ppi: DeviceProfile.ppi(isPad: isPad, scale: Double(screen.scale), mini: marketingName.contains("mini")),
+                           kind: profile.screenClass)
     }
 
-    /// Preserve the iPad's shape while reducing the virtual GPU's pixel work.
-    static var performanceScreen: (width: Int, height: Int) {
-        let fit = fittingScreen
-        return (1600, Int((Double(fit.height) * 5 / 6 / 8).rounded()) * 8)
+    /// What a Mac keeps clear of at each side on its side (the Dynamic Island or notch), the same at both so a turn by
+    /// 180 degrees moves nothing. Upright the island is at the top, and the top inset is the same distance; the bottom
+    /// one is only the home indicator. iPads have none.
+    /// Read once a window is there and kept: a running Mac's screen must not change when the device turns.
+    static var landscapeSideInset: Double {
+        if let sideInset { return sideInset }
+        guard !isPad else { return 0 }
+        let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap { $0.windows }
+        guard let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first else { return 0 }
+        let i = window.safeAreaInsets, upright = window.bounds.height > window.bounds.width
+        let inset = Double(max(i.left, i.right, upright ? i.top : 0))
+        sideInset = inset
+        return inset
     }
+    private static var sideInset: Double?
 
-    /// The panel itself, on its side: every physical pixel, and its real size in mm so that macOS
-    /// sees a Retina density and draws at 2x (looks like half the pixels, sharp as the iPad's own UI).
-    /// Every iPad with an M chip is 264 ppi.
-    static var retinaScreen: (width: Int, height: Int) {
-        let n = UIScreen.main.nativeBounds.size
-        return (Int(max(n.width, n.height)) / 8 * 8, Int(min(n.width, n.height)) / 8 * 8)
-    }
-    static var retinaMM: (width: Int, height: Int) {
-        let s = retinaScreen
-        return (Int((Double(s.width) / 264 * 25.4).rounded()), Int((Double(s.height) / 264 * 25.4).rounded()))
-    }
+    /// The size a Mac's screen preset gives here.
+    static func macScreen(_ preset: ScreenPreset) -> MacScreen { MacScreen.resolve(preset, screenFacts) }
+
+    /// The refresh rates macOS can be told on this panel (Settings > Performance), and the one without a choice.
+    static var refreshChoices: [Int] { DeviceProfile.refreshChoices(panelMax: UIScreen.main.maximumFramesPerSecond) }
+    static let defaultRefresh = DeviceProfile.defaultRefresh
 
     /// This device's starting values (DeviceProfile's table), from its memory, performance cores and signing.
     static let profile = DeviceProfile(
@@ -43,9 +48,11 @@ enum Device {
     /// How much memory to suggest for a new Mac.
     static var suggestedRAMGB: Int { profile.ramGB }
 
-    /// A new Mac's screen before Size of Things.
-    static var newMacScreen: (width: Int, height: Int) {
-        profile.performanceScreen && profile.ramGB > 2 ? performanceScreen : fittingScreen
+    /// The screen a Mac made before presets got here by default (MacScreen.migrate keeps it Recommended).
+    static var legacyScreen: (width: Int, height: Int, uiScale: Double?) {
+        let b = UIScreen.main.bounds.size
+        return MacScreen.legacyDefault(pointsLong: Double(max(b.width, b.height)), pointsShort: Double(min(b.width, b.height)),
+                                       isPad: isPad, lean: profile.row.lean, ramGB: profile.ramGB)
     }
 
     private static func sysctlInt(_ name: String) -> Int? {
