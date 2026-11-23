@@ -44,6 +44,9 @@
 #define SMALL_BODY_MAX (16 * 1024 * 1024) /* a clipboard, or a request's XML */
 #define TEMP_PREFIX ".henge-put-"
 
+/* Seconds a connection may sit without a request before it is closed, so idle keep-alive connections do not keep
+   the MAX_CONNS threads. A clipboard long-poll waits on clip_cond, not in recv, and is not cut short by it. */
+static int idle_seconds = 90;
 /* Seconds a clipboard request without X-Henge-Token (a helper from before the key) is held before its 403: that
    helper retries at once on an answer, so an immediate one would have it loop nonstop. */
 static int keyless_hold_seconds = 25;
@@ -1037,6 +1040,8 @@ static int handle(Conn *c, Request *r) {
 static void *connection(void *arg) {
     Conn *c = arg;
     Request *r = malloc(sizeof *r);
+    struct timeval idle = {.tv_sec = idle_seconds};
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &idle, sizeof idle);
     for (;;) {
         int got = read_request(c, r);
         if (got <= 0) {

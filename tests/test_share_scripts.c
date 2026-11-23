@@ -129,8 +129,47 @@ static void test_server(void) {
     check("a range of an empty file: 416", range_of(0, -1, 0, &from, &to) == -1);
 }
 
+/* Connections that sit idle are closed after idle_seconds, so a full set of them does not keep the next one out. */
+static void test_idle(void) {
+    idle_seconds = 1;
+    const char *path = "/tmp/solstice-share-test.sock";
+    check("the server starts", hv_share_start(root[0] ? root : "/tmp", path, NULL) == 0);
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    strcpy(addr.sun_path, path);
+    int idle[MAX_CONNS];
+    for (int i = 0; i < MAX_CONNS; i++) {
+        idle[i] = socket(AF_UNIX, SOCK_STREAM, 0);
+        for (int tries = 0; connect(idle[i], (struct sockaddr *)&addr, sizeof addr) != 0 && tries < 100; tries++) usleep(10000);
+    }
+    int held = 0;
+    for (int tries = 0; !held && tries < 100; tries++) { /* until the server has a thread on each of them */
+        pthread_mutex_lock(&conns_mu);
+        held = conns == MAX_CONNS;
+        pthread_mutex_unlock(&conns_mu);
+        if (!held) usleep(10000);
+    }
+    check("all connections taken", held);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct timeval wait = {.tv_sec = 10};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
+    setsockopt(idle[0], SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
+    check("one more connects", connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0);
+    static const char req[] = "GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\nConnection: close\r\n\r\n";
+    send_all(fd, req, sizeof req - 1);
+    char out[512];
+    ssize_t n = recv(fd, out, sizeof out - 1, 0);
+    out[n > 0 ? n : 0] = 0;
+    check("with all connections idle, the next one is served once they time out", status_is(out, 200));
+    char ch;
+    check("an idle connection was closed", recv(idle[0], &ch, 1, 0) == 0);
+    for (int i = 0; i < MAX_CONNS; i++) close(idle[i]);
+    close(fd);
+    unlink(path);
+}
+
 int main(void) {
     test_server();
+    test_idle();
     check("tune: sh parses it", sh_parses("tune", tune_script));
     check("lighten: sh parses it", sh_parses("lighten", lighten_script));
     check("unlighten: sh parses it", sh_parses("unlighten", unlighten_script));
