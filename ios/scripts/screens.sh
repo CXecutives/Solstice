@@ -100,8 +100,6 @@ shoot_all() { # label udid
     echo "==> $label done at ${SECONDS}s"
 }
 
-IPHONE_UDID="$(xcrun simctl create "Screens iPhone" "$PHONE" "$RUNTIME")"
-IPAD_UDID="$(xcrun simctl create "Screens iPad" "$PAD" "$RUNTIME")"
 # Whatever happens, the app's crash reports go with the screenshots.
 diagnose() {
     mkdir -p "$OUT/crashes"
@@ -109,32 +107,34 @@ diagnose() {
     rmdir "$OUT/crashes" 2>/dev/null || true
 }
 trap diagnose EXIT
-prepare iPhone "$IPHONE_UDID" &
-boot_job=$!
-prepare iPad "$IPAD_UDID"
-wait "$boot_job"
 # Whatever is left after this many seconds is not photographed, so that what was taken is still uploaded.
-DEADLINE=$((SECONDS + ${SCREENS_MINUTES:-12} * 60))
+DEADLINE=$((SECONDS + ${SCREENS_MINUTES:-30} * 60))
 
-# The app's own list of screens (Screen.all), from the iPhone. The first launch after a boot can be slow.
-container="$(xcrun simctl get_app_container "$IPHONE_UDID" "$BUNDLE" data)"
-listed="$(launch "$IPHONE_UDID" "$container" list 400)"
-[ "$listed" = list ] || {
-    echo "the app did not list its screens ($listed)" >&2
-    mkdir -p "$OUT/logs"
-    cp "$container/Documents/solstice.log" "$OUT/logs/list.log" 2>/dev/null || true
-    limit 30 xcrun simctl io "$IPHONE_UDID" screenshot --type=png "$OUT/logs/list.png" > /dev/null 2>&1 || true
-    limit 60 xcrun simctl spawn "$IPHONE_UDID" log show --last 3m --style compact > "$OUT/logs/list-system.log" 2>&1 || true
-    exit 1
+# One device after the other: two at once on the runner made each step several times slower (2026-11-23).
+device() { # label type
+    local udid container listed
+    udid="$(xcrun simctl create "Screens $1" "$2" "$RUNTIME")"
+    prepare "$1" "$udid"
+    container="$(xcrun simctl get_app_container "$udid" "$BUNDLE" data)"
+    if [ ! -s "$OUT/screens.txt" ]; then
+        # The app's own list of screens (Screen.all). The first launch after a boot can be slow.
+        listed="$(launch "$udid" "$container" list 400)"
+        [ "$listed" = list ] || {
+            echo "the app did not list its screens ($listed)" >&2
+            mkdir -p "$OUT/logs"
+            cp "$container/Documents/solstice.log" "$OUT/logs/list.log" 2>/dev/null || true
+            limit 30 xcrun simctl io "$udid" screenshot --type=png "$OUT/logs/list.png" > /dev/null 2>&1 || true
+            exit 1
+        }
+        cp "$container/tmp/solstice-preview-list" "$OUT/screens.txt"
+        echo "==> $(wc -l < "$OUT/screens.txt" | tr -d ' ') screens"
+    fi
+    shoot_all "$(echo "$1" | tr '[:upper:]' '[:lower:]')" "$udid"
+    limit 120 xcrun simctl shutdown "$udid" || true
+    limit 120 xcrun simctl delete "$udid" || true
 }
-cp "$container/tmp/solstice-preview-list" "$OUT/screens.txt"
-echo "==> $(wc -l < "$OUT/screens.txt" | tr -d ' ') screens"
-
-shoot_all iphone "$IPHONE_UDID" &
-phone_job=$!
-shoot_all ipad "$IPAD_UDID"
-wait "$phone_job"
+device iPhone "$PHONE"
+device iPad "$PAD"
 
 python3 -I "$IOS/scripts/screens_index.py" "$OUT"
-for udid in "$IPHONE_UDID" "$IPAD_UDID"; do xcrun simctl shutdown "$udid" || true; xcrun simctl delete "$udid" || true; done
 echo "==> $(ls "$OUT"/*.png | wc -l | tr -d ' ') screenshots in ${SECONDS}s"

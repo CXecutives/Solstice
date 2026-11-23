@@ -59,13 +59,12 @@ struct Screen {
         Screen(name: "jit-file", root: .jit([.importFile]), jit: false),
         Screen(name: "jit-connect", root: .jit([.connect]), jit: false),
         Screen(name: "jit-enable", root: .jit([.enable]), jit: false),
-        // No Macs: with JIT on, one would start by itself over Settings.
-        Screen(name: "settings", root: .tab(.settings), macs: false),
-        Screen(name: "settings-2", root: .tab(.settings), macs: false, page: 1),
-        Screen(name: "settings-3", root: .tab(.settings), macs: false, page: 2),
-        Screen(name: "settings-4", root: .tab(.settings), macs: false, page: 3),
-        Screen(name: "settings-5", root: .tab(.settings), macs: false, page: 4),
-        Screen(name: "settings-6", root: .tab(.settings), macs: false, page: 5),
+        Screen(name: "settings", root: .tab(.settings)),
+        Screen(name: "settings-2", root: .tab(.settings), page: 1),
+        Screen(name: "settings-3", root: .tab(.settings), page: 2),
+        Screen(name: "settings-4", root: .tab(.settings), page: 3),
+        Screen(name: "settings-5", root: .tab(.settings), page: 4),
+        Screen(name: "settings-6", root: .tab(.settings), page: 5),
         Screen(name: "mac-settings", root: .macSettings),
         Screen(name: "mac-settings-2", root: .macSettings, page: 1),
         Screen(name: "mac-settings-3", root: .macSettings, page: 2),
@@ -136,7 +135,13 @@ enum Screens {
         let d = UserDefaults.standard
         if screen.macs {
             Sample.writeMacs()
-            d.set(false, forKey: SettingKey.autoStartMac.rawValue) // the screen, not a Mac started over it
+            // The screen, not a Mac started over it by itself. Settings shows the switch for that: there it stays as
+            // it comes, and the start holds off as after two that did not get going (its notice is on Home only).
+            if case .tab(.settings) = screen.root {
+                d.set(AutoStart.failureLimit, forKey: SettingKey.autoStartFailures.rawValue)
+            } else {
+                d.set(false, forKey: SettingKey.autoStartMac.rawValue)
+            }
         }
         if !screen.jit { d.set(false, forKey: SettingKey.jitAtLaunch.rawValue) } // no attempt to turn it on
         Sample.writePairing()
@@ -152,7 +157,7 @@ enum Screens {
             }
         }
         await screen.whenUp(session)
-        try? await Task.sleep(nanoseconds: 1_500_000_000) // animations, sheets and the first engine poll
+        try? await Task.sleep(nanoseconds: 1_000_000_000) // animations, sheets and the first engine poll
         if screen.page > 0 {
             guard scroll(to: screen.page) else { return mark("skip") }
             try? await Task.sleep(nanoseconds: 400_000_000)

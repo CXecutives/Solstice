@@ -117,7 +117,7 @@ jobs:
     name: Screens
     if: inputs.screens
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install XcodeGen
