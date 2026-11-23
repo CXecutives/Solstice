@@ -60,6 +60,9 @@ jobs:
         run: |
           [ "$TESTS" = all ] && TESTS=""
           make -j4 core-test T="$TESTS"
+          echo "== again with the settings the app ships (EngineTuning.swift):"
+          python3 tools/shipped_env.py
+          env $(python3 tools/shipped_env.py) make -j4 core-test T="$TESTS"
 
       - name: Engine tests with undefined-behaviour traps
         if: inputs.tests != 'none' && inputs.san

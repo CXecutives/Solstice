@@ -653,13 +653,17 @@ static const char lighten_script[] =
     "  sudo pmset -a powernap 0 </dev/null\n"
     /* Solstice answers macOS's paravirtual ticket-lock calls (exception.c): a CPU waiting for a lock sleeps until the
        holder kicks it. macOS spins 100 WFE rounds first (kern.ticket_lock_spins, xnu's LOCK_SNOOP_SPINS), each up to
-       50 us of emulated waiting here: 8 at every boot, by a LaunchDaemon (the sysctl does not persist). */
+       50 us of emulated waiting here: 8 at every boot, by a LaunchDaemon (the sysctl does not persist). The same
+       daemon lets background work wake the CPUs less: timers of background-QoS threads may slip up to 250 ms
+       (xnu's 100) and those of latency tier 3 (apps in App Nap) up to 150 ms (75), so they share wakeups. Timers
+       of everything on screen keep their 1 ms, or animations would stutter. */
     "  sudo tee " HV_SPINS_PLIST " >/dev/null <<'EOF'\n"
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
     "<plist version=\"1.0\"><dict>\n"
     "<key>Label</key><string>" HV_SPINS_LABEL "</string>\n"
-    "<key>ProgramArguments</key><array><string>/usr/sbin/sysctl</string><string>-w</string><string>kern.ticket_lock_spins=8</string></array>\n"
+    "<key>ProgramArguments</key><array><string>/usr/sbin/sysctl</string><string>-w</string><string>kern.ticket_lock_spins=8</string>"
+    "<string>kern.timer_coalesce_bg_ns_max=250000000</string><string>kern.timer_coalesce_tier3_ns_max=150000000</string></array>\n"
     "<key>RunAtLoad</key><true/>\n"
     "</dict></plist>\n"
     "EOF\n"
@@ -713,7 +717,8 @@ static const char unlighten_script[] =
     "  sudo pmset -a powernap 1 </dev/null\n"
     "  sudo launchctl bootout system/" HV_SPINS_LABEL " 2>/dev/null </dev/null\n"
     "  sudo rm -f " HV_SPINS_PLIST " </dev/null\n"
-    "  sudo sysctl -w kern.ticket_lock_spins=100 >/dev/null 2>&1 </dev/null\n" /* xnu's default */
+    "  sudo sysctl -w kern.ticket_lock_spins=100 >/dev/null 2>&1 </dev/null\n" /* xnu's default; the timer slack
+                                                                              is back at the next restart */
     "fi\n"
     "killall Dock 2>/dev/null\n"
     "echo 'Back as it was, apart from the wallpaper (System Settings, Wallpaper).'\n"
