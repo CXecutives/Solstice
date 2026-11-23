@@ -294,7 +294,7 @@ test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
 	$(B)/test_physical_mouse_buttons
 .PHONY: test-physical-mouse-buttons
 
-# The lifecycle watchdog's limits, the log stream's redaction and local-address check, henge-env.txt's HV_ filter.
+# The lifecycle watchdog's limits, the log stream's redaction and local-address check, solstice-env.txt's HV_ filter.
 $(B)/test_lifecycle: ios/Henge/LifecycleWatchdog.swift ios/Henge/LogPrivacy.swift ios/Henge/EnvOverrides.swift tests/test_lifecycle.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 

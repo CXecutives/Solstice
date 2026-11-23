@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Listen for Henge's log stream and write it to a file.
+"""Listen for Solstice's log stream and write it to a file.
 
-Henge sends every line it logs over TCP to a computer on the same network
+Solstice sends every line it logs over TCP to a computer on the same network
 (Settings > Log stream). Run this on that computer first:
 
-    python3 tools/henge-log-listen.py
+    python3 tools/solstice-log-listen.py
 
-It prints the addresses to type into Henge, then prints each line as it arrives
-and appends it to henge-stream.log. Performance marks (the flag in the session's
+It prints the addresses to type into Solstice, then prints each line as it arrives
+and appends it to solstice-stream.log. Performance marks (the flag in the session's
 controls) are highlighted, and the lines after one say what the engine and the
 GPU did over that window.
 
 Ctrl-C stops it. Nothing is sent back, and the file is plain text in the same
-format as Documents/henge.log on the device. --allow takes only the phone's
+format as Documents/solstice.log on the device. --allow takes only the phone's
 address; control characters (a peer's terminal escapes) are taken out of each
 line, and lines are cut at --max-line characters.
 """
@@ -124,7 +124,7 @@ def serve_connection(conn: socket.socket, peer: str, out, args, lock: threading.
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Receive Henge's log over the network and write it to a file.",
+        description="Receive Solstice's log over the network and write it to a file.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--port", type=int, default=7777, help="TCP port to listen on")
@@ -132,7 +132,7 @@ def main() -> int:
     parser.add_argument("--allow", action="append", default=[], metavar="ADDRESS",
                         help="take connections only from this address (the phone's; repeat for more); default: anyone")
     parser.add_argument("--max-line", type=int, default=4096, help="characters kept of one line")
-    parser.add_argument("--out", default="henge-stream.log", help="file to append the log to")
+    parser.add_argument("--out", default="solstice-stream.log", help="file to append the log to")
     parser.add_argument("--quiet", action="store_true", help="write the file only, print nothing")
     parser.add_argument("--no-stamp", dest="stamp_console", action="store_false",
                         help="print lines without a local time in front (a time is shown by default)")
@@ -151,10 +151,10 @@ def main() -> int:
     lock = threading.Lock()
 
     if not args.quiet:
-        print(f"{BOLD}Henge log stream{RESET} on port {args.port}, appending to {args.out}")
+        print(f"{BOLD}Solstice log stream{RESET} on port {args.port}, appending to {args.out}")
         addresses = local_addresses()
         if addresses:
-            print("Type one of these into Henge, Settings > Log stream:")
+            print("Type one of these into Solstice, Settings > Log stream:")
             for address in addresses:
                 print(f"  {BOLD}{address}{RESET}   port {args.port}")
         else:

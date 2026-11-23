@@ -11,7 +11,7 @@ import os
 /// before anything else runs, stdout and stderr are redirected into a pipe that a
 /// reader thread drains, writing every line to three places at once:
 ///
-///   * `Documents/henge.log`, retrievable over the Files app or the share sheet
+///   * `Documents/solstice.log`, retrievable over the Files app or the share sheet
 ///   * `os_log`, so Console.app shows it live with the device attached
 ///   * an in-memory ring buffer the app can display without leaving the device
 ///
@@ -50,7 +50,7 @@ enum HengeLog {
     private static var ring = [String](repeating: "", count: ringLimit) // circular: the next line goes at ringNext
     private static var ringNext = 0, ringCount = 0
     private static let ringLock = NSLock()
-    /// Follows henge-native.log as it grows (a file system event, not a timer).
+    /// Follows solstice-native.log as it grows (a file system event, not a timer).
     private static var tail: DispatchSourceFileSystemObject?
 
     static var logFileURL: URL {
@@ -79,7 +79,7 @@ enum HengeLog {
         // Fresh file each launch, so the
         // run that matters is always the most recent one; keeping the previous
         // run's noise would make the log harder to read, not easier.
-        // ...but the previous run is kept as henge-prev.log, because when a game took Henge down with it, that run's log is
+        // ...but the previous run is kept as solstice-prev.log, because when a game took Henge down with it, that run's log is
         // the crash report (CrashReport.swift).
         let url = logFileURL
         let prev = url.deletingLastPathComponent().appendingPathComponent(Brand.logPrevFile)
@@ -95,10 +95,10 @@ enum HengeLog {
 
     /// Put the last run's native output into this run's log.
     ///
-    /// When QEMU aborts, its reason lands in henge-native.log and the process is
+    /// When QEMU aborts, its reason lands in solstice-native.log and the process is
     /// gone before anything mirrors it -- and that file was not in the share
     /// sheet either, so the one artefact explaining a crash was the one nobody
-    /// could retrieve. Replaying it here puts it in henge.log, which is the file
+    /// could retrieve. Replaying it here puts it in solstice.log, which is the file
     /// people already know how to send.
     private static func replayPreviousNativeLog() {
         // Only the end is wanted: the previous log can be many MB, read from its last 8 KB.
@@ -151,7 +151,7 @@ enum HengeLog {
     ///
     /// The previous run's copy is kept rather than overwritten, because the run
     /// that crashed is exactly the one worth reading, and it is replayed into
-    /// the next run's henge.log by replayPreviousNativeLog().
+    /// the next run's solstice.log by replayPreviousNativeLog().
     private static func redirectStdio() {
         let dir = FileManager.default.urls(for: .documentDirectory,
                                            in: .userDomainMask)[0]

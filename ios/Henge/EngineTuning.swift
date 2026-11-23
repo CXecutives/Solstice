@@ -1,7 +1,7 @@
 import Foundation
 
 /// Engine settings, without a rebuild. Defaults below, then the Performance settings,
-/// then Documents/henge-env.txt (HV_ variables only, EnvOverrides) overrides them all.
+/// then Documents/solstice-env.txt (HV_ variables only, EnvOverrides) overrides them all.
 /// Applied at launch and again before each Mac starts, so changes need no relaunch.
 enum EngineTuning {
     static let refreshKey = "henge.perf.hz"
@@ -48,7 +48,7 @@ enum EngineTuning {
                 HengeLog.log("engine", "\(Brand.envFile): ignored \(parsed.refused.joined(separator: ", ")) (only HV_ variables are taken)")
             }
         }
-        // HV_SAFE=1 or 0 in henge-env.txt decides it by hand.
+        // HV_SAFE=1 or 0 in solstice-env.txt decides it by hand.
         let safe = overrides["HV_SAFE"].map { $0 != "0" } ?? SafeMode.active
         var env = safe ? upstream : defaults
         let d = UserDefaults.standard

@@ -7,7 +7,7 @@ import UIKit
 /// Sends the log to a computer on the same network, line by line, so a session can be watched
 /// live instead of copied off the device afterwards.
 ///
-/// The app is the client: `tools/henge-log-listen.py` listens on the computer, prints what
+/// The app is the client: `tools/solstice-log-listen.py` listens on the computer, prints what
 /// arrives and appends it to a file. Lines are queued while the computer is away, and the queue
 /// is bounded, so a session that runs for hours without a listener cannot grow without limit.
 /// Plain TCP: each line goes out with the app's container path and host names taken out (LogPrivacy), and a computer
@@ -15,9 +15,9 @@ import UIKit
 final class LogStream: ObservableObject {
     static let shared = LogStream()
 
-    static let enabledKey = "henge.logstream.enabled"
-    static let hostKey = "henge.logstream.host"
-    static let portKey = "henge.logstream.port"
+    static let enabledKey = "solstice.logstream.enabled"
+    static let hostKey = "solstice.logstream.host"
+    static let portKey = "solstice.logstream.port"
     static let defaultPort = 7777
 
     enum State: Equatable {
@@ -44,7 +44,7 @@ final class LogStream: ObservableObject {
     /// Lines per send. Enough to keep up with a boot's flood, small enough not to stall.
     private static let batchLimit = 256
 
-    private let queue = DispatchQueue(label: "com.henge.logstream")
+    private let queue = DispatchQueue(label: "com.solstice.logstream")
     private let lock = NSLock()
 
     // Guarded by `lock`: what the settings say and what is waiting to go out.

@@ -9,7 +9,7 @@ struct HengeApp: App {
 
     init() {
         // Order matters: HengeLog takes over stderr, so the engine's and the JIT
-        // allocator's first lines land in Documents/henge.log too.
+        // allocator's first lines land in Documents/solstice.log too.
         HengeLog.start()
         HengeLog.log("boot", "address space: \(henge_largest_reservation_gb()) GB can be reserved in one piece")
         SafeMode.noteLaunch() // before the engine's settings: two launches in a row that ended with a Mac up start it safe
