@@ -458,11 +458,11 @@ static void keep_test(void) {
     sw_expect("dropped in B, not back in A from A's stash", &c0, SW_S(2), 0);
 
     /* A twig remapped in B while A runs (break, TLBI by B's ASID, make): what A has there does not go into B. */
-    sw_fill(&c0, SW_S(4));
     *lb = 0;
-    sw_tlbi(&c1, TLBI_ASIDE1IS, 21ull << 48);
+    sw_tlbi(&c1, TLBI_ASIDE1IS, 21ull << 48); /* drops all of this CPU's live user entries too */
     hv_cpu_process_requests(&c0);
     *lb = other | 3;
+    sw_fill(&c0, SW_S(4));
     sw_switch(&c0, B);
     sw_expect("twig remapped: not kept", &c0, SW_S(4), 0);
     sw_fill(&c0, SW_S(4));
