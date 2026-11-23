@@ -138,12 +138,14 @@ static void print_stats(HvCpu *cpu) {
         const HvCodeCache *cc = &m->cc;
         fprintf(stderr, "  code cache: %u segments of %llu KB; %llu evictions (%llu tenured), %.0f ms of work, %llu blocks dropped, "
                         "%llu exits unchained; %llu waits for room (%.0f ms); %llu tenured translations, %llu redone; "
-                        "branch caches caught up: %llu scanned (%.0f ms, %llu entries dropped), %llu reset\n",
+                        "branch caches caught up: %llu scanned (%llu more than one epoch behind; %.0f ms, %llu entries dropped), "
+                        "%llu reset; %llu second chances\n",
                 cc->nseg, (unsigned long long)(4ull << cc->seg_shift) >> 10, (unsigned long long)cc->evictions,
                 (unsigned long long)cc->evict_tenured, (double)cc->evict_ticks / 24e3, (unsigned long long)cc->evict_blocks,
                 (unsigned long long)cc->evict_unchained, (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3,
-                (unsigned long long)s->cc_tenured, (unsigned long long)cc->stale, (unsigned long long)cc->ijc_scans,
-                (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped, (unsigned long long)cc->ijc_resets);
+                (unsigned long long)s->cc_tenured, (unsigned long long)cc->stale, (unsigned long long)cc->ijc_scans, (unsigned long long)cc->ijc_behind,
+                (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped, (unsigned long long)cc->ijc_resets,
+                (unsigned long long)cc->second_chances);
     }
     {
         double tot = 0;
