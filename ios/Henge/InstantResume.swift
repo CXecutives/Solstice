@@ -36,6 +36,12 @@ enum InstantResume {
         }
     }
 
+    /// Running, or being started (on the queue: what is queued after the start sees it running).
+    private static var upOrComingUp: Bool {
+        let s = henge_vm_state()
+        return s == HENGE_VM_RUNNING || s == HENGE_VM_STARTING_OR_STOPPING
+    }
+
     static func file(for mac: VirtualMac) -> URL { mac.directory.appendingPathComponent("resume.hsnap") }
 
     /// What a saved Mac is for: this build of Solstice (a restored machine must meet the code that saved it), the Mac,
@@ -71,8 +77,9 @@ enum InstantResume {
     /// without rest()'s balloon first (the guest needs seconds for it, and Solstice may be in the background, its GPU
     /// gone, by then); suspend() saves it later, and a saved Mac loses nothing if iOS closes Solstice.
     static func pause() {
-        guard enabled, henge_vm_state() == HENGE_VM_RUNNING else { return }
+        guard enabled, upOrComingUp else { return }
         run("pause") {
+            guard henge_vm_state() == HENGE_VM_RUNNING else { return } // a start ahead on the queue has finished by now
             var buffer = [CChar](repeating: 0, count: 256)
             if henge_vm_pause(&buffer, buffer.count) != 0 { HengeLog.log("resume", "not paused: \(String(cString: buffer))") }
         }
@@ -87,10 +94,10 @@ enum InstantResume {
     /// suspend() do this and save it too. First the Mac is asked for about 1 GB of its memory (MemoryRelief), for up to
     /// 3 s: its idle pages and file cache then do not sit in Solstice's memory while iOS weighs what to close.
     @MainActor static func rest(_ mac: VirtualMac) {
-        guard !enabled, KeepAlive.enabled, henge_vm_state() == HENGE_VM_RUNNING else { return }
+        guard !enabled, KeepAlive.enabled, upOrComingUp else { return }
         let idleKey = balloonIdleKey(mac)
         let neverMoved = UserDefaults.standard.bool(forKey: idleKey) && henge_vm_balloon(-1) <= 0
-        let asked = neverMoved ? nil : MemoryRelief.beforeBackgroundPause()
+        let asked = neverMoved || henge_vm_state() != HENGE_VM_RUNNING ? nil : MemoryRelief.beforeBackgroundPause()
         if neverMoved { HengeLog.log("memory", "before the background pause: this Mac's balloon never moved, not waiting for it") }
         run("rest") {
             if let asked {
@@ -126,7 +133,7 @@ enum InstantResume {
     /// Solstice is in the background: write the paused Mac out after saveAfter, in case iOS closes Solstice. At once
     /// when nothing keeps Solstice awake (iOS suspends it within seconds). It stays paused.
     @MainActor static func suspend(_ mac: VirtualMac, ramMB: UInt64, cpus: Int) {
-        guard enabled, henge_vm_state() == HENGE_VM_RUNNING || henge_vm_state() == HENGE_VM_PAUSED else { return }
+        guard enabled, upOrComingUp || henge_vm_state() == HENGE_VM_PAUSED else { return }
         pending?.cancel()
         let delay = KeepAlive.awake ? saveAfter : 0
         let item = DispatchWorkItem { MainActor.assumeIsolated { save(mac, ramMB: ramMB, cpus: cpus) } }
