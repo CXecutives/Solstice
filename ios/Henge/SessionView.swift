@@ -11,10 +11,9 @@ struct SessionView: View {
     @StateObject private var display = DisplayRouter()
     @State private var bootAttempt = 0
     @ObservedObject private var power = PowerPolicy.shared // heat: the Mac may be paused for it
-    @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
+    private var cpus: Int { mac.cpus }
     @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
     @AppStorage("henge.cursor.scale") private var cursorScale = Device.isPad ? 1 : 3
-    @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3
 
     @State private var typing = false
     @State private var zoomed = false
@@ -393,7 +392,7 @@ struct SessionView: View {
     private func storageCard(_ layout: Layout) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Storage is almost full").font(.system(size: 17, weight: .semibold))
-            Text("\(ByteText.string(UInt64(max(storageFree, 0)))) free. The Mac is paused so its disk cannot fill this \(Device.name); it needs \(ByteText.string(UInt64(StorageGuard.minimumFree))) free. Make room in Settings, General, Storage, then resume it.")
+            Text("\(ByteText.string(UInt64(max(storageFree, 0)))) free. The Mac is paused so its disk cannot fill this \(Device.name); it needs \(ByteText.string(UInt64(StorageGuard.minimumFree))) free. Make room in Settings > General > \(Device.name) Storage, then resume it.")
                 .font(.system(size: 14)).foregroundStyle(Desk.dim)
             Button(storageRoom ? "Resume the Mac" : "Waiting for free storage…") { session.resumeAfterStorage() }
             .disabled(!storageRoom)
@@ -437,9 +436,8 @@ struct SessionView: View {
                         Text("3×").tag(3)
                     }
                     .pickerStyle(.segmented)
-                    LabeledContent("Scroll speed", value: String(format: "%.1f×", scrollSpeed))
-                    Slider(value: $scrollSpeed, in: 0.1...1.5)
-                    Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad. Scroll speed applies at once, to two fingers on the screen as well as to a trackpad or mouse.")
+                    ScrollSpeedRow()
+                    Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sharing") {

@@ -13,10 +13,13 @@ final class HardwareMouse {
     static let reverseKey = "henge.mouse.reverse"
     static let scrollSpeedKey = "henge.mouse.scrollSpeed"
     static let defaultScrollSpeed = 0.3
+    /// What Settings offers (ScrollSpeedRow), and all the engine takes.
+    static let scrollSpeeds = 0.1...1.5
+    static let speeds = 0.5...3.0
 
     /// The Scroll speed setting as a factor, 1 at the default: how much faster than the Mac's own scrolling.
     static func scrollFactor(_ speed: Double) -> CGFloat {
-        CGFloat((speed.isFinite ? min(max(speed, 0.1), 1.5) : defaultScrollSpeed) / defaultScrollSpeed)
+        CGFloat((speed.isFinite ? min(max(speed, scrollSpeeds.lowerBound), scrollSpeeds.upperBound) : defaultScrollSpeed) / defaultScrollSpeed)
     }
 
     private let queue = DispatchQueue(label: "henge.mouse", qos: .userInteractive)
