@@ -222,6 +222,39 @@ static void test_many_viewports(HvReplay *r) {
     puts("viewports: at most 16 handed to Metal");
 }
 
+/* The saved pipelines, in a folder of this test's own (the replay itself was made with them off, HV_PVG_ARCHIVE=0, so
+   the test never touches the real one): another build's file goes, a compiled pipeline is saved to a new file, and the
+   next start loads it. */
+static void test_archive_files(HvReplay *r) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *dir = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID UUID].UUIDString] isDirectory:YES];
+    [fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSURL *stray = [dir URLByAppendingPathComponent:@"pipelines-another-build-1.bin"];
+    [@"x" writeToURL:stray atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    [r openArchiveIn:dir reset:NO];
+    check("another build's file removed", ![fm fileExistsAtPath:stray.path]);
+    if (!r->archive) {
+        puts("saved pipelines: no binary archives on this GPU, files not checked");
+        [fm removeItemAtURL:dir error:nil];
+        return;
+    }
+    MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new];
+    d.computeFunction = [r computeStandIn];
+    d.label = @"archive test";
+    HvObject *o = [HvObject new];
+    o->pending = [r compile:0xb descriptor:d name:nil failure:@"archive test pipeline"];
+    [r resolve:o];
+    [r flushPipelines];
+    NSUInteger saved = r->archives.count;
+    check("compiled, then saved to a file of its own", saved == 1 && [fm contentsOfDirectoryAtPath:dir.path error:nil].count == 1);
+    r->archive = nil, r->archives = nil, r->archive_next = 0, r->archive_bytes = 0, r->archive_full = NO;
+    [r openArchiveIn:dir reset:NO];
+    check("the next start loads it", r->archives.count == saved);
+    r->archive = nil, r->archives = nil, r->archive_dir = nil; /* nothing more goes to the folder */
+    [fm removeItemAtURL:dir error:nil];
+    puts("saved pipelines: files in their folder made, kept and loaded");
+}
+
 /* A pipeline compiled off the worker: its first use waits for it and gets it; several compile side by side. */
 static void test_pipelines_compiled_later(HvReplay *r) {
     id<MTLFunction> f = [r computeStandIn];
@@ -571,7 +604,9 @@ int main(void) {
     alarm(120);
     @autoreleasepool {
         test_archive_room();
+        setenv("HV_PVG_ARCHIVE", "0", 1); /* not the saved pipelines of whoever runs this: test_archive_files has its own */
         HvPvgMetal *m = hv_pvg_metal_create(NULL);
+        unsetenv("HV_PVG_ARCHIVE");
         if (!m) { puts("no Metal device"); return 1; }
         HvReplay *r = (__bridge HvReplay *)m;
         dispatch_sync(r->worker, ^{ test_short_records(r); });
@@ -579,6 +614,7 @@ int main(void) {
         dispatch_sync(r->worker, ^{ test_wrong_kind_refused(r); });
         dispatch_sync(r->worker, ^{ test_many_viewports(r); });
         dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
+        dispatch_sync(r->worker, ^{ test_archive_files(r); });
         dispatch_sync(r->worker, ^{ test_video_surface(r); });
         dispatch_sync(r->worker, ^{ test_told_buffer_outlives_remap(r); });
         dispatch_sync(r->worker, ^{ test_gpu_recovery(r); });

@@ -160,9 +160,14 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         fprintf(stderr, "hengevm: pvg-metal: saved pipelines off (HV_PVG_ARCHIVE=0)\n");
         return;
     }
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSURL *dir = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
+    NSURL *dir = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
         URLByAppendingPathComponent:@"Henge/Pipelines" isDirectory:YES];
+    [self openArchiveIn:dir reset:opt && !strcmp(opt, "reset")];
+}
+
+/* The saved pipelines in dir: earlier boots' files loaded (others removed), an empty archive to fill. */
+- (void)openArchiveIn:(NSURL *)dir reset:(BOOL)reset {
+    NSFileManager *fm = NSFileManager.defaultManager;
     NSError *err = nil;
     if (!dir || ![fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:&err]) {
         fprintf(stderr, "hengevm: pvg-metal: saved pipelines: no folder: %s\n", err.localizedDescription.UTF8String ?: "?");
@@ -187,7 +192,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         NSString *name = u.lastPathComponent;
         int n = 0;
         BOOL ours = [name hasPrefix:archive_prefix] && [name hasSuffix:@".bin"] &&
-                    sscanf(name.UTF8String + archive_prefix.length, "%d.bin", &n) == 1 && !(opt && !strcmp(opt, "reset"));
+                    sscanf(name.UTF8String + archive_prefix.length, "%d.bin", &n) == 1 && !reset;
         if (!ours) { /* another build, an unfinished save, or a reset */
             [fm removeItemAtURL:u error:nil];
             continue;
