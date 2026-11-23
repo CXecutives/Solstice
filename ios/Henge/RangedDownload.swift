@@ -1,24 +1,63 @@
+import CryptoKit
 import Foundation
 
-/// Downloads `url` into the file `part`, appending: a download that stops for any reason (no network, Henge
+/// SHA-256 of a download as it arrives, kept across attempts: it covers the part file's first `bytes` bytes.
+final class DownloadHash {
+    private(set) var bytes: Int64 = 0
+    private var hasher = SHA256()
+
+    func reset() {
+        hasher = SHA256()
+        bytes = 0
+    }
+
+    func add(_ data: Data) {
+        hasher.update(data: data)
+        bytes += Int64(data.count)
+    }
+
+    /// Hashes what the part file holds past `bytes` (all of it after a reset), in 8 MB reads.
+    func catchUp(with file: URL, to size: Int64) throws {
+        if bytes > size { reset() }
+        guard bytes < size else { return }
+        let h = try FileHandle(forReadingFrom: file)
+        defer { try? h.close() }
+        try h.seek(toOffset: UInt64(bytes))
+        while bytes < size, let chunk = try h.read(upToCount: Int(min(8 << 20, size - bytes))), !chunk.isEmpty {
+            add(chunk)
+        }
+    }
+
+    /// The hex digest (the hasher goes on unchanged).
+    var hex: String { hasher.finalize().map { String(format: "%02x", $0) }.joined() }
+}
+
+/// Downloads `url` into the file `part`, appending: a download that stops for any reason (no network, Solstice
 /// closed or killed) goes on from where the file ends the next time, with an HTTP range request (#58).
-/// Apple's CDN answers ranges; a server that ignores one (200) starts the file again.
+/// Apple's CDN answers ranges; a server that ignores one (200) starts the file again. Written in 8 MB pieces and
+/// hashed as it arrives (`hash`); progress is said at most 4 times a second, not for every network packet.
 final class RangedDownload: NSObject, URLSessionDataDelegate {
     let url: URL
     let part: URL
-    /// Bytes in `part` and the whole file's size once known, on the delegate's queue.
+    let hash: DownloadHash
+    /// Bytes in `part` and the whole file's size once known, on the delegate's queue, at most every progressEvery.
     private let progress: (Int64, Int64) -> Void
+    private static let progressEvery: TimeInterval = 0.25
+    private static let writeChunk = 8 << 20
+    private var lastProgress = Date.distantPast
     private var handle: FileHandle?
-    private var have: Int64 = 0
+    private var buffer = Data()
+    private var have: Int64 = 0 /* received, written or in buffer */
     private var total: Int64 = 0
     private var failure: Error?
     private var continuation: CheckedContinuation<Void, Error>?
     private var task: URLSessionDataTask?
     private var session: URLSession?
 
-    init(url: URL, part: URL, progress: @escaping (Int64, Int64) -> Void) {
+    init(url: URL, part: URL, hash: DownloadHash, progress: @escaping (Int64, Int64) -> Void) {
         self.url = url
         self.part = part
+        self.hash = hash
         self.progress = progress
     }
 
@@ -32,10 +71,11 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
     func run() async throws {
         if !FileManager.default.fileExists(atPath: part.path) {
             guard FileManager.default.createFile(atPath: part.path, contents: nil) else {
-                throw NSError(domain: "Henge", code: 4, userInfo: [NSLocalizedDescriptionKey: "Henge couldn't create the download file."])
+                throw NSError(domain: "Solstice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Solstice couldn't create the download file."])
             }
         }
         have = Self.size(of: part)
+        try hash.catchUp(with: part, to: have) // what an earlier launch (or a cut-short write) left
         var request = URLRequest(url: url)
         if have > 0 { request.setValue("bytes=\(have)-", forHTTPHeaderField: "Range") }
         let cfg = URLSessionConfiguration.default
@@ -45,6 +85,7 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
         cfg.urlCache = nil
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .utility
         let s = URLSession(configuration: cfg, delegate: self, delegateQueue: queue)
         session = s
         defer { s.finishTasksAndInvalidate() }
@@ -65,13 +106,36 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
     /// Stops the attempt in progress (what was written stays).
     func cancel() { task?.cancel() }
 
+    /// The buffer to the file. False (and failure set) if it could not be written.
+    @discardableResult
+    private func flush() -> Bool {
+        guard let h = handle, !buffer.isEmpty else { return true }
+        do {
+            try h.write(contentsOf: buffer)
+            buffer.removeAll(keepingCapacity: true)
+            return true
+        } catch {
+            failure = failure ?? error
+            return false
+        }
+    }
+
     private func finish(_ error: Error?) {
+        let written = flush()
         try? handle?.synchronize()
         try? handle?.close()
         handle = nil
+        progress(have, total)
         guard let c = continuation else { return }
         continuation = nil
-        if let error { c.resume(throwing: error) } else { c.resume() }
+        if let error { c.resume(throwing: error) } else if !written, let failure { c.resume(throwing: failure) } else { c.resume() }
+    }
+
+    private func report(force: Bool = false) {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastProgress) >= Self.progressEvery else { return }
+        lastProgress = now
+        progress(have, total)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
@@ -85,11 +149,12 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
                 let start = Int64(range.split(separator: " ").last?.split(separator: "-").first ?? "") ?? -1
                 total = Int64(range.split(separator: "/").last ?? "") ?? 0
                 guard start == have else {
-                    throw NSError(domain: "Henge", code: 5, userInfo: [NSLocalizedDescriptionKey: "Apple's server sent the wrong part of the file."])
+                    throw NSError(domain: "Solstice", code: 5, userInfo: [NSLocalizedDescriptionKey: "Apple's server sent the wrong part of the file."])
                 }
             case 200: // the whole file: start again
                 total = response.expectedContentLength
                 have = 0
+                hash.reset()
             case 416: // nothing past where the file ends: it is complete (servers don't always say the size here)
                 let range = http?.value(forHTTPHeaderField: "Content-Range") ?? ""
                 total = Int64(range.split(separator: "/").last ?? "") ?? 0
@@ -97,20 +162,22 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
                     try? h.truncate(atOffset: UInt64(total))
                     try? h.close()
                     have = total
+                    hash.reset()
+                    try? hash.catchUp(with: part, to: have)
                 }
                 if total == 0 { total = have }
                 completionHandler(.cancel)
-                progress(have, total)
                 finish(nil)
                 return
             default:
-                throw NSError(domain: "Henge", code: 3, userInfo: [NSLocalizedDescriptionKey: "Apple's server answered \(status)."])
+                throw NSError(domain: "Solstice", code: 3, userInfo: [NSLocalizedDescriptionKey: "Apple's server answered \(status)."])
             }
             let h = try FileHandle(forWritingTo: part)
             try h.truncate(atOffset: UInt64(have))
             try h.seekToEnd()
             handle = h
-            progress(have, total)
+            buffer.reserveCapacity(Self.writeChunk + (1 << 20))
+            report(force: true)
             completionHandler(.allow)
         } catch {
             failure = error
@@ -119,15 +186,15 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let h = handle else { return }
-        do {
-            try h.write(contentsOf: data)
-            have += Int64(data.count)
-            progress(have, total)
-        } catch {
-            failure = error
+        guard handle != nil else { return }
+        buffer.append(data)
+        hash.add(data)
+        have += Int64(data.count)
+        if buffer.count >= Self.writeChunk && !flush() {
             dataTask.cancel()
+            return
         }
+        report()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -135,7 +202,7 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
         if let failure { finish(failure); return }
         if let error { finish(error); return }
         if total > 0 && have != total {
-            finish(NSError(domain: "Henge", code: 7, userInfo: [NSLocalizedDescriptionKey: "The download ended early (\(have) of \(total) bytes)."]))
+            finish(NSError(domain: "Solstice", code: 7, userInfo: [NSLocalizedDescriptionKey: "The download ended early (\(have) of \(total) bytes)."]))
             return
         }
         finish(nil)

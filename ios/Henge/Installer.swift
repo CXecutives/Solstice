@@ -8,6 +8,9 @@ struct MacOSRelease {
     let url: URL
     let bytes: Int64
     let note: String
+    /// The image's SHA-256, checked as it downloads; nil until one is known from a source to trust (each download logs
+    /// the hash it computed, so it can be pinned here).
+    var sha256: String? = nil
     /// Room the new Mac takes once installed and set up, with a margin for its first updates and caches
     /// (installed and set up on the Mac in phone mode: Sonoma 21 GB, Ventura 19 GB).
     var macBytes: Int64 = 24 << 30
@@ -123,7 +126,7 @@ final class Installer: NSObject, ObservableObject {
                 }
                 phase = .installing
                 try await install(mac, ipsw: ipsw, cpus: cpus)
-                if !keepImage { try? FileManager.default.removeItem(at: ipsw) }
+                if !keepImage { Self.deleteAfterInstall(ipsw) }
                 HengeLog.log("install", "\(name): installed \(release.name)")
                 phase = .done("\(release.name) is installed on \(name). Starting it now.")
                 justInstalled = Machines.shared.all.first { $0.id == mac.id } ?? mac
@@ -135,6 +138,17 @@ final class Installer: NSObject, ObservableObject {
                 if let made { try? FileManager.default.removeItem(at: made.directory) }
                 phase = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    /// The restore image once the Mac is installed, and what that gave back (said in the log either way).
+    private static func deleteAfterInstall(_ ipsw: URL) {
+        let size = RangedDownload.size(of: ipsw)
+        do {
+            try FileManager.default.removeItem(at: ipsw)
+            HengeLog.log("install", "deleted the restore image: \(ByteText.string(UInt64(max(size, 0)))) freed")
+        } catch {
+            HengeLog.log("install", "the restore image (\(ByteText.string(UInt64(max(size, 0))))) was not deleted: \(error.localizedDescription)")
         }
     }
 
@@ -165,23 +179,37 @@ final class Installer: NSObject, ObservableObject {
         expected = r.bytes
         if received > 0 { HengeLog.log("install", "going on with \(r.name)'s download from \(ByteText.string(UInt64(received)))") }
         HengeLog.log("install", "downloading \(r.url.absoluteString)")
+        let hash = DownloadHash()
         for attempt in 1...20 {
-            let d = RangedDownload(url: r.url, part: part) { have, total in
+            let d = RangedDownload(url: r.url, part: part, hash: hash) { have, total in
                 Task { @MainActor in
-                    Installer.shared.received = have
-                    if total > 0 { Installer.shared.expected = total }
+                    let installer = Installer.shared
+                    installer.received = have
+                    if total > 0 && installer.expected != total { installer.expected = total }
                 }
             }
             do {
                 try await d.run()
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: part, to: dest)
-                return dest
             } catch {
                 if Task.isCancelled || attempt == 20 { throw error }
                 HengeLog.log("install", "download interrupted (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part)))); going on")
                 try await Task.sleep(nanoseconds: 3_000_000_000)
+                continue
             }
+            let digest = hash.hex
+            if let want = r.sha256 {
+                guard digest == want.lowercased() else {
+                    HengeLog.log("install", "the download's SHA-256 is \(digest), not \(want): deleting it")
+                    try? FileManager.default.removeItem(at: part)
+                    throw message("The download was damaged. Try again to download it afresh.")
+                }
+                HengeLog.log("install", "the download's SHA-256 matches (\(digest))")
+            } else {
+                HengeLog.log("install", "the download's SHA-256 is \(digest) (none pinned for \(r.id) yet)")
+            }
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: part, to: dest)
+            return dest
         }
         throw message("The download kept failing.")
     }
