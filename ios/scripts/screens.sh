@@ -23,22 +23,22 @@ xcodebuild -project Screens.xcodeproj -scheme Screens -configuration Debug -sdk 
 APP="$DD/Build/Products/Debug-iphonesimulator/Solstice.app"
 echo "==> built in ${SECONDS}s"
 
-# The newest iOS runtime, and the device types it offers whose names match.
-RUNTIMES="$(xcrun simctl list runtimes -j)"
-runtime_id() { python3 -I -c 'import json, sys
-r = [x for x in json.load(sys.stdin)["runtimes"] if x.get("platform") == "iOS" and x.get("isAvailable")]
-print(r[-1]["identifier"] if r else "")' <<< "$RUNTIMES"; }
-device_type() { python3 -I -c 'import json, re, sys
-runtime, pattern = sys.argv[1], sys.argv[2]
-r = next(x for x in json.load(sys.stdin)["runtimes"] if x["identifier"] == runtime)
-m = [t for t in r.get("supportedDeviceTypes", []) if re.search(pattern, t["name"])]
-print(m[-1]["identifier"] if m else "")' "$1" "$2" <<< "$RUNTIMES"; }
-RUNTIME="$(runtime_id)"
-[ -n "$RUNTIME" ] || { echo "no iOS simulator runtime" >&2; exit 1; }
-PHONE="$(device_type "$RUNTIME" '^iPhone 16 Pro$')"
-PAD="$(device_type "$RUNTIME" '^iPad Air 11-inch')"
-[ -n "$PHONE" ] || PHONE="$(device_type "$RUNTIME" '^iPhone \d+ Pro$')"
-[ -n "$PHONE" ] && [ -n "$PAD" ] || { echo "no iPhone Pro or 11-inch iPad Air for $RUNTIME" >&2; exit 1; }
+# The newest iOS runtime that offers both devices (an iPhone 16 Pro, else the newest iPhone Pro; the newest 11-inch
+# iPad Air), and their device types. Some runtimes are for one device only: those are passed over.
+read -r RUNTIME PHONE PAD < <(xcrun simctl list runtimes -j | python3 -I -c 'import json, re, sys
+def pick(types, pattern):
+    m = [t["identifier"] for t in types if re.search(pattern, t["name"])]
+    return m[-1] if m else None
+for r in reversed(json.load(sys.stdin)["runtimes"]):
+    if r.get("platform") != "iOS" or not r.get("isAvailable"):
+        continue
+    types = r.get("supportedDeviceTypes", [])
+    phone = pick(types, r"^iPhone 16 Pro$") or pick(types, r"^iPhone \d+ Pro$")
+    pad = pick(types, r"^iPad Air 11-inch")
+    if phone and pad:
+        print(r["identifier"], phone, pad)
+        break') || true
+[ -n "${PAD:-}" ] || { echo "no iOS runtime with an iPhone Pro and an 11-inch iPad Air:" >&2; xcrun simctl list runtimes >&2; exit 1; }
 echo "==> $RUNTIME: $PHONE, $PAD"
 
 # Boots one device and installs the app; prints its UDID.
