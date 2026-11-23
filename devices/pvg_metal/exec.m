@@ -13,11 +13,11 @@ static BOOL gpu_context_lost(NSError *e) {
 - (void)showRemaps {
     if (atomic_exchange(&errors_shown, 1)) return;
     uint32_t next = remap_next;
-    fprintf(stderr, "hengevm: pvg-metal: %llu remaps so far, %llu KB kept for told addresses; the last:\n", (unsigned long long)remaps,
+    fprintf(stderr, "solstice: pvg-metal: %llu remaps so far, %llu KB kept for told addresses; the last:\n", (unsigned long long)remaps,
             (unsigned long long)(atomic_load(&retired_bytes_live) >> 10));
     for (uint32_t i = next > REMAP_RING ? next - REMAP_RING : 0; i < next; i++) {
         HvRemapNote n = remap_ring[i % REMAP_RING];
-        fprintf(stderr, "hengevm: pvg-metal:   remap task %u page %u, %llu KB, told %s, gpu 0x%llx -> 0x%llx\n", n.task, n.vpage,
+        fprintf(stderr, "solstice: pvg-metal:   remap task %u page %u, %llu KB, told %s, gpu 0x%llx -> 0x%llx\n", n.task, n.vpage,
                 (unsigned long long)(n.length >> 10), n.told ? "yes" : "no", (unsigned long long)n.old_address, (unsigned long long)n.new_address);
     }
 }
@@ -33,7 +33,7 @@ static BOOL gpu_context_lost(NSError *e) {
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         if (done.error) {
             self->failed++;
-            fprintf(stderr, "hengevm: pvg-metal: command buffer: %s\n", done.error.localizedDescription.UTF8String);
+            fprintf(stderr, "solstice: pvg-metal: command buffer: %s\n", done.error.localizedDescription.UTF8String);
             [self showRemaps];
             if (gpu_context_lost(done.error) && generation == atomic_load(&self->queue_generation)) atomic_store(&self->gpu_poisoned, 1);
         }
@@ -77,12 +77,12 @@ static BOOL recovery_allowed(double *times, double now) {
     if (!atomic_exchange(&gpu_poisoned, 0) || gpu_down) return;
     if (!recovery_allowed(recoveries, now)) {
         gpu_down = YES;
-        fprintf(stderr, "hengevm: pvg-metal: GPU failed again after %d recoveries within a minute: drawing stays off\n", GPU_RECOVERIES);
+        fprintf(stderr, "solstice: pvg-metal: GPU failed again after %d recoveries within a minute: drawing stays off\n", GPU_RECOVERIES);
         return;
     }
     id<MTLCommandQueue> fresh = [device newCommandQueueWithMaxCommandBufferCount:64];
     if (!fresh) {
-        fprintf(stderr, "hengevm: pvg-metal: GPU failed and no new command queue could be made\n");
+        fprintf(stderr, "solstice: pvg-metal: GPU failed and no new command queue could be made\n");
         return;
     }
     os_unfair_lock_lock(&screen_lock);
@@ -113,7 +113,7 @@ static BOOL recovery_allowed(double *times, double now) {
     last_cb = nil;
     int recent = 0;
     for (int i = 0; i < GPU_RECOVERIES; i++) recent += recoveries[i] && now - recoveries[i] < 60;
-    fprintf(stderr, "hengevm: pvg-metal: GPU context lost: drawing on a new command queue, %u objects to be made again (%u kept: the guest has their addresses), recovery %d of %d this minute\n",
+    fprintf(stderr, "solstice: pvg-metal: GPU context lost: drawing on a new command queue, %u objects to be made again (%u kept: the guest has their addresses), recovery %d of %d this minute\n",
             dropped, kept, recent, GPU_RECOVERIES);
     if (on_screen) [self present:on_screen];
 }
@@ -314,7 +314,7 @@ static BOOL recovery_allowed(double *times, double now) {
     if (++execs % 2000 == 0) {
         static double t0;
         if (!t0) t0 = now_seconds();
-        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps (%llu KB kept for told addresses), %llu surface copies, %.0f s; encoding %.2f s (%.2f s of it waiting for pipelines), waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, (unsigned long long)(atomic_load(&retired_bytes_live) >> 10), (unsigned long long)surfaces_copied, now_seconds() - t0, encode_time, pipe_wait, gpu_wait_time);
+        fprintf(stderr, "solstice: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps (%llu KB kept for told addresses), %llu surface copies, %.0f s; encoding %.2f s (%.2f s of it waiting for pipelines), waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, (unsigned long long)(atomic_load(&retired_bytes_live) >> 10), (unsigned long long)surfaces_copied, now_seconds() - t0, encode_time, pipe_wait, gpu_wait_time);
         encode_time = gpu_wait_time = pipe_wait = 0;
     }
     return YES;

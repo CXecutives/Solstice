@@ -1313,7 +1313,7 @@ int hv_tlb_check_all(HvCpu *cpu) {
             if (why) {
                 bad++;
                 if (told++ < 16)
-                    fprintf(stderr, "hengevm: switch-flush check: %s entry (table %d, va %llx, ttbr0 %llx) is out of date: %s (fsc %x)\n",
+                    fprintf(stderr, "solstice: switch-flush check: %s entry (table %d, va %llx, ttbr0 %llx) is out of date: %s (fsc %x)\n",
                             s ? "stashed" : "live", table, (unsigned long long)va, (unsigned long long)cpu->ttbr0_el1, why, w.fsc);
             }
         }

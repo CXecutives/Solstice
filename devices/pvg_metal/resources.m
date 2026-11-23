@@ -26,7 +26,7 @@ static MTLTextureSwizzleChannels safe_swizzle(const uint8_t *sw, const uint8_t *
         if (sw[i] > MTLTextureSwizzleAlpha) {
             static int told;
             if (told++ < 3) {
-                fprintf(stderr, "hengevm: pvg-metal: %s swizzle %u %u %u %u is not a Metal swizzle; using RGBA. desc:", what, sw[0], sw[1], sw[2], sw[3]);
+                fprintf(stderr, "solstice: pvg-metal: %s swizzle %u %u %u %u is not a Metal swizzle; using RGBA. desc:", what, sw[0], sw[1], sw[2], sw[3]);
                 for (size_t j = 0; j < desc_len; j++) fprintf(stderr, " %02x", desc[j]);
                 fputc('\n', stderr);
             }
@@ -94,7 +94,7 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
     o->vpage = h.vpage;
     o->guest_backed = YES;
     heap_bytes += h.length;
-    if (hv_knob.pvg_heap_log) fprintf(stderr, "hengevm: pvg-metal: heap %llu KB at page %u, flags %x, now %llu MB of heaps\n", h.length >> 10, h.vpage, h.flags, heap_bytes >> 20);
+    if (hv_knob.pvg_heap_log) fprintf(stderr, "solstice: pvg-metal: heap %llu KB at page %u, flags %x, now %llu MB of heaps\n", h.length >> 10, h.vpage, h.flags, heap_bytes >> 20);
 }
 
 /* A buffer in a heap: {heap, offset, length}. */

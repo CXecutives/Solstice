@@ -148,7 +148,7 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn) {
     case 0x84000008:                                         /* SYSTEM_OFF */
     case 0x84000009:                                         /* SYSTEM_RESET */
         if (cpu->m->log)
-            fprintf(stderr, "hengevm: guest requested %s on cpu %u\n",
+            fprintf(stderr, "solstice: guest requested %s on cpu %u\n",
                     (uint32_t)fn == 0x84000008 ? "shutdown" : "restart", cpu->index);
         hv_machine_halt(cpu->m, (uint32_t)fn == 0x84000008 ? HV_HALT_SHUTDOWN : HV_HALT_RESET);
         return 0;
@@ -232,14 +232,14 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn) {
     case HV_HVC_VCPU_KICK: { /* x1: the target's phys_id, its device tree reg = MPIDR affinity (cfg.c: cpu_ids[i] = i) */
         HvCpu *t = cpu_by_mpidr(cpu->m, cpu->x[1]);
         static int told;
-        if (!__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED) && cpu->m->log) fprintf(stderr, "hengevm: paravirtual ticket locks in use (first kick: target %#llx)\n", (unsigned long long)cpu->x[1]);
+        if (!__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED) && cpu->m->log) fprintf(stderr, "solstice: paravirtual ticket locks in use (first kick: target %#llx)\n", (unsigned long long)cpu->x[1]);
         if (!t) return (uint64_t)-2; /* INVALID_PARAMETERS */
         if (cpu->m->stats_interval) HV_ST(cpu).pv_kicks++;
         hv_cpu_wake(t); /* sticky: a kick before the target waits ends that wait at once */
         return 0;
     }
     default:
-        if (cpu->m->log) fprintf(stderr, "hengevm: unknown hypervisor call %#llx (x1 %#llx) at el%u\n",
+        if (cpu->m->log) fprintf(stderr, "solstice: unknown hypervisor call %#llx (x1 %#llx) at el%u\n",
                                  (unsigned long long)fn, (unsigned long long)cpu->x[1], cpu->el);
         return (uint64_t)-1;                                 /* NOT_SUPPORTED */
     }

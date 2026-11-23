@@ -80,7 +80,7 @@ static void mismatch(const char *prop, const uint8_t *data, uint32_t len, const 
     uint32_t wl = (uint32_t)strlen(want) + 1;
     if (len >= wl && memcmp(data, want, wl) == 0) return;
     diag = 1;
-    fprintf(stderr, "hengevm: device tree: %s is %u bytes \"%.*s\" (stock \"%s\", wanted \"%s\"); leaving it\n",
+    fprintf(stderr, "solstice: device tree: %s is %u bytes \"%.*s\" (stock \"%s\", wanted \"%s\"); leaving it\n",
             prop, len, (int)(len < 60 ? len : 60), (const char *)data, stock, want);
 }
 
@@ -180,18 +180,18 @@ int hv_dt_fixup_start(uint8_t *r, uint64_t size, uint64_t base, const char *prod
     if (!r) return 0;
     if (product_name && *product_name) {
         if (strlen(product_name) > strlen(STOCK_NAME))
-            fprintf(stderr, "hengevm: device tree: \"%s\" is longer than the name slot; leaving it\n", product_name);
+            fprintf(stderr, "solstice: device tree: \"%s\" is longer than the name slot; leaving it\n", product_name);
         else snprintf(want_name, sizeof want_name, "%s", product_name);
     }
     if (model_id && *model_id) {
         if (strlen(model_id) > strlen(STOCK_MODEL))
-            fprintf(stderr, "hengevm: device tree: \"%s\" is longer than the model slot; leaving it\n", model_id);
+            fprintf(stderr, "solstice: device tree: \"%s\" is longer than the model slot; leaving it\n", model_id);
         else snprintf(want_model, sizeof want_model, "%s", model_id);
     }
     active = want_name[0] || want_model[0];
     if (active) {
         started = now();
-        fprintf(stderr, "hengevm: device tree: watching for the guest's tree (name \"%s\", model \"%s\")\n",
+        fprintf(stderr, "solstice: device tree: watching for the guest's tree (name \"%s\", model \"%s\")\n",
                 want_name[0] ? want_name : "-", want_model[0] ? want_model : "-");
     }
     return active;
@@ -224,10 +224,10 @@ int hv_dt_fixup_tree(uint64_t offset, uint64_t len) {
     final_off = offset;
     final_len = len;
     final_adt = adt;
-    fprintf(stderr, "hengevm: device tree: holding the final tree at RAM +%llx (%llu bytes, %s)\n",
+    fprintf(stderr, "solstice: device tree: holding the final tree at RAM +%llx (%llu bytes, %s)\n",
             (unsigned long long)offset, (unsigned long long)len, adt ? "Apple ADT" : "FDT");
     if (n) {
-        fprintf(stderr, "hengevm: device tree (final) at RAM +%llx: rewrote %d string%s\n",
+        fprintf(stderr, "solstice: device tree (final) at RAM +%llx: rewrote %d string%s\n",
                 (unsigned long long)offset, n, n == 1 ? "" : "s");
         total_changed += n;
     }
@@ -243,7 +243,7 @@ static void consider(uint64_t off, uint64_t avail) {
     if (!known && ntracked < 8) tracked[ntracked++] = off;
     int n = hv_dt_fixup_blob(ram + off, avail);
     if (n) {
-        fprintf(stderr, "hengevm: device tree at RAM +%llx: rewrote %d identity string%s\n",
+        fprintf(stderr, "solstice: device tree at RAM +%llx: rewrote %d identity string%s\n",
                 (unsigned long long)off, n, n == 1 ? "" : "s");
         total_changed += n;
     }
@@ -279,12 +279,12 @@ static void find_boot_args_tree(void) {
         if (ba_logged < 3) {
             ba_logged++;
             uint64_t pa = dt_phys(q[12], q[1], q[2]);
-            fprintf(stderr, "hengevm: device tree: boot_args at RAM +%llx: virt_base=%llx phys_base=%llx devtree=%llx -> phys %llx, len %u\n",
+            fprintf(stderr, "solstice: device tree: boot_args at RAM +%llx: virt_base=%llx phys_base=%llx devtree=%llx -> phys %llx, len %u\n",
                     (unsigned long long)off, (unsigned long long)q[1], (unsigned long long)q[2],
                     (unsigned long long)q[12], (unsigned long long)pa, (uint32_t)q[13]);
             if (pa >= ram_base && pa - ram_base + 16 <= ram_size) {
                 const uint8_t *d = ram + (pa - ram_base);
-                fprintf(stderr, "hengevm: device tree:   bytes at the tree: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                fprintf(stderr, "solstice: device tree:   bytes at the tree: %02x %02x %02x %02x %02x %02x %02x %02x\n",
                         d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
             }
         }
@@ -312,7 +312,7 @@ static void patch_name_in_place(uint64_t off) {
     memcpy(ram + off, want_name, n);
     memset(ram + off + n, 0, sl - n);
     total_changed++;
-    fprintf(stderr, "hengevm: device tree: patched product-name in place at RAM +%llx\n", (unsigned long long)off);
+    fprintf(stderr, "solstice: device tree: patched product-name in place at RAM +%llx\n", (unsigned long long)off);
 }
 
 static void find_by_string(void) {
@@ -326,7 +326,7 @@ static void find_by_string(void) {
         uint64_t hoff = (uint64_t)(hit - ram);
         string_hits++;
         if (hits < 3)
-            fprintf(stderr, "hengevm: device tree: product-name string at RAM +%llx\n", (unsigned long long)hoff);
+            fprintf(stderr, "solstice: device tree: product-name string at RAM +%llx\n", (unsigned long long)hoff);
         hits++;
         /* The tree's magic precedes the string; walk back to the nearest valid
            header whose span reaches the string. */
@@ -336,7 +336,7 @@ static void find_by_string(void) {
             const uint8_t *c = ram + b;
             if (c[0] != 0xd0 || c[1] != 0x0d || c[2] != 0xfe || c[3] != 0xed) continue;
             if (!is_dtb(c, ram_size - b) || b + be32(c + 4) <= hoff) continue;
-            fprintf(stderr, "hengevm: device tree: the string sits in a tree at RAM +%llx (%u bytes)\n",
+            fprintf(stderr, "solstice: device tree: the string sits in a tree at RAM +%llx (%u bytes)\n",
                     (unsigned long long)b, be32(c + 4));
             hv_dt_fixup_tree(b, be32(c + 4));
             found = 1;
@@ -344,7 +344,7 @@ static void find_by_string(void) {
         }
         if (found) return;
         if (hits <= 3)
-            fprintf(stderr, "hengevm: device tree: no tree magic before the string at +%llx; patching the string\n",
+            fprintf(stderr, "solstice: device tree: no tree magic before the string at +%llx; patching the string\n",
                     (unsigned long long)hoff);
         patch_name_in_place(hoff);
         pos = hoff + nlen;
@@ -359,7 +359,7 @@ static void scan_pass(void) {
         if (tracked[i] + 40 > ram_size || !is_dtb(ram + tracked[i], ram_size - tracked[i])) continue;
         int n = hv_dt_fixup_blob(ram + tracked[i], ram_size - tracked[i]);
         if (n) {
-            fprintf(stderr, "hengevm: device tree at RAM +%llx: rewrote %d string%s again\n",
+            fprintf(stderr, "solstice: device tree at RAM +%llx: rewrote %d string%s again\n",
                     (unsigned long long)tracked[i], n, n == 1 ? "" : "s");
             total_changed += n;
         }
@@ -372,7 +372,7 @@ static void scan_pass(void) {
         if (!is_dtb(b, ram_size - off)) {
             if (magic_logged < 5) {
                 magic_logged++;
-                fprintf(stderr, "hengevm: device tree: magic at RAM +%llx, header rejected (ver %u, total %u, struct@%u, strings@%u)\n",
+                fprintf(stderr, "solstice: device tree: magic at RAM +%llx, header rejected (ver %u, total %u, struct@%u, strings@%u)\n",
                         (unsigned long long)off, be32(b + 20), be32(b + 4), be32(b + 8), be32(b + 12));
             }
             continue;
@@ -394,7 +394,7 @@ void hv_dt_fixup_poll(void) {
     if (!active) return;
     double t = now();
     if (t - started > GIVE_UP) {
-        fprintf(stderr, "hengevm: device tree: giving up after %.0f s (%d rewritten)\n", GIVE_UP, total_changed);
+        fprintf(stderr, "solstice: device tree: giving up after %.0f s (%d rewritten)\n", GIVE_UP, total_changed);
         active = 0;
         return;
     }
@@ -402,7 +402,7 @@ void hv_dt_fixup_poll(void) {
     if (have_final) {
         int n = patch_final();
         if (n) {
-            fprintf(stderr, "hengevm: device tree (final) at RAM +%llx: rewrote %d string%s\n",
+            fprintf(stderr, "solstice: device tree (final) at RAM +%llx: rewrote %d string%s\n",
                     (unsigned long long)final_off, n, n == 1 ? "" : "s");
             total_changed += n;
         }
@@ -429,7 +429,7 @@ void hv_dt_fixup_run(void) {
 
 void hv_dt_fixup_stop(void) {
     if (!active) return;
-    fprintf(stderr, "hengevm: device tree: the GPU drew after %llu passes (%llu tree magic seen, %llu valid, %llu name strings); %d string%s rewritten%s\n",
+    fprintf(stderr, "solstice: device tree: the GPU drew after %llu passes (%llu tree magic seen, %llu valid, %llu name strings); %d string%s rewritten%s\n",
             (unsigned long long)passes, (unsigned long long)magic_seen, (unsigned long long)magic_valid,
             (unsigned long long)string_hits, total_changed, total_changed == 1 ? "" : "s",
             total_changed ? "" : ", the guest keeps its own name");

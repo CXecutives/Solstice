@@ -33,7 +33,7 @@ static void pvpanic_write(void *opaque, uint64_t off, uint64_t v, unsigned size)
     (void)off, (void)size;
     HvVmapple *b = opaque;
     b->panic_events = v;
-    fprintf(stderr, "hengevm: guest reported a panic (pvpanic event %llx)\n", (unsigned long long)v);
+    fprintf(stderr, "solstice: guest reported a panic (pvpanic event %llx)\n", (unsigned long long)v);
     /* The panic text, wherever the kernel formatted it (pram is not always
        where the log ends up, e.g. in the restore OS). */
     const char key[] = "panic(cpu ";
@@ -52,7 +52,7 @@ static void pvpanic_write(void *opaque, uint64_t off, uint64_t v, unsigned size)
                 else if (c == 0 && k && out[k - 1] != '\n') out[k++] = '\n';
             }
             out[k] = 0;
-            fprintf(stderr, "hengevm: panic text at PA %llx:\n%s\n", (unsigned long long)(VMAPPLE_MEM + (uint64_t)(p - b->ram)), out);
+            fprintf(stderr, "solstice: panic text at PA %llx:\n%s\n", (unsigned long long)(VMAPPLE_MEM + (uint64_t)(p - b->ram)), out);
             break;
         }
         p += sizeof key - 1;
@@ -79,7 +79,7 @@ static uint64_t rtc_select_read(void *opaque, uint64_t off, unsigned size) {
         uint64_t us = (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000;
         return off ? us >> 32 : size == 4 ? (uint32_t)us : us;
     }
-    if (b->m->log) fprintf(stderr, "hengevm: read of unknown register 0x%llx+%llx (size %u)\n",
+    if (b->m->log) fprintf(stderr, "solstice: read of unknown register 0x%llx+%llx (size %u)\n",
                            (unsigned long long)VMAPPLE_RTC_SELECT, (unsigned long long)off, size);
     return 0;
 }
@@ -90,7 +90,7 @@ static void rtc_select_write(void *opaque, uint64_t off, uint64_t v, unsigned si
         b->avp_rtc[off / 8] = v;
         return;
     }
-    if (b->m->log) fprintf(stderr, "hengevm: write of unknown register 0x%llx+%llx = %llx (size %u)\n",
+    if (b->m->log) fprintf(stderr, "solstice: write of unknown register 0x%llx+%llx = %llx (size %u)\n",
                            (unsigned long long)VMAPPLE_RTC_SELECT, (unsigned long long)off, (unsigned long long)v, size);
 }
 
@@ -111,7 +111,7 @@ static uint64_t avp_regs_read(void *opaque, uint64_t off, unsigned size) {
     AvpRegs *r = opaque;
     uint64_t v = 0;
     if (off + size <= sizeof r->regs) memcpy(&v, r->regs + off, size);
-    if (r->log) fprintf(stderr, "hengevm: %s read +%llx (size %u) = %llx\n", r->name, (unsigned long long)off, size,
+    if (r->log) fprintf(stderr, "solstice: %s read +%llx (size %u) = %llx\n", r->name, (unsigned long long)off, size,
                         (unsigned long long)v);
     return v;
 }
@@ -119,7 +119,7 @@ static uint64_t avp_regs_read(void *opaque, uint64_t off, unsigned size) {
 static void avp_regs_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     AvpRegs *r = opaque;
     if (off + size <= sizeof r->regs) memcpy(r->regs + off, &v, size);
-    if (r->log) fprintf(stderr, "hengevm: %s write +%llx (size %u) = %llx\n", r->name, (unsigned long long)off, size,
+    if (r->log) fprintf(stderr, "solstice: %s write +%llx (size %u) = %llx\n", r->name, (unsigned long long)off, size,
                         (unsigned long long)v);
 }
 
@@ -152,7 +152,7 @@ static void avp_regs_create(HvVmapple *b, uint64_t ram_size) {
 static uint64_t gic_msi_read(void *opaque, uint64_t off, unsigned size) {
     HvVmapple *b = opaque;
     if (off == 0x8) return 1u << 31 | (uint32_t)VMAPPLE_MSI_BASE << 16 | VMAPPLE_MSI_COUNT;
-    if (b->m->log) fprintf(stderr, "hengevm: gic msi frame read +%llx (size %u)\n", (unsigned long long)off, size);
+    if (b->m->log) fprintf(stderr, "solstice: gic msi frame read +%llx (size %u)\n", (unsigned long long)off, size);
     return 0;
 }
 
@@ -160,10 +160,10 @@ static void gic_msi_write(void *opaque, uint64_t off, uint64_t v, unsigned size)
     HvVmapple *b = opaque;
     if (off == 0x40) {
         if (v >= VMAPPLE_MSI_BASE && v < VMAPPLE_MSI_BASE + VMAPPLE_MSI_COUNT) hv_gicv3_pend(b->gic, (int)v);
-        else if (b->m->log) fprintf(stderr, "hengevm: msi doorbell for INTID %llu outside the frame\n", (unsigned long long)v);
+        else if (b->m->log) fprintf(stderr, "solstice: msi doorbell for INTID %llu outside the frame\n", (unsigned long long)v);
         return;
     }
-    if (b->m->log) fprintf(stderr, "hengevm: gic msi frame write +%llx = %llx (size %u)\n", (unsigned long long)off,
+    if (b->m->log) fprintf(stderr, "solstice: gic msi frame write +%llx = %llx (size %u)\n", (unsigned long long)off,
                            (unsigned long long)v, size);
 }
 
@@ -189,12 +189,12 @@ static uint8_t *alloc_no_footprint(uint64_t size) {
         }
         if (entry != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), entry);
         if (kr != KERN_SUCCESS) {
-            fprintf(stderr, "hengevm: guest RAM outside the footprint refused: %s\n", mach_error_string(kr));
+            fprintf(stderr, "solstice: guest RAM outside the footprint refused: %s\n", mach_error_string(kr));
             vm_deallocate(mach_task_self(), base, size);
             return NULL;
         }
     }
-    fprintf(stderr, "hengevm: guest RAM (%llu MB) is outside the footprint\n", (unsigned long long)(size >> 20));
+    fprintf(stderr, "solstice: guest RAM (%llu MB) is outside the footprint\n", (unsigned long long)(size >> 20));
     return (uint8_t *)base;
 }
 
@@ -225,7 +225,7 @@ static void *prefault_thread(void *arg) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
     hv_vmapple_prefault(a.ram, a.size);
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    fprintf(stderr, "hengevm: guest RAM file ready in %.1f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
+    fprintf(stderr, "solstice: guest RAM file ready in %.1f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
     return NULL;
 }
 
@@ -304,9 +304,9 @@ int hv_vmapple_reserve_ram(HvVmapple *b, uint64_t ram_size) {
             if (b->ram != MAP_FAILED) b->ram_fd = fd; /* the balloon punches holes in it */
             else close(fd);
         }
-        if (b->ram == MAP_FAILED) fprintf(stderr, "hengevm: guest RAM file %s failed: %s; using anonymous memory\n", ram_file, strerror(errno));
+        if (b->ram == MAP_FAILED) fprintf(stderr, "solstice: guest RAM file %s failed: %s; using anonymous memory\n", ram_file, strerror(errno));
         else {
-            fprintf(stderr, "hengevm: guest RAM (%llu MB) is backed by a file\n", (unsigned long long)(ram_size >> 20));
+            fprintf(stderr, "solstice: guest RAM (%llu MB) is backed by a file\n", (unsigned long long)(ram_size >> 20));
             if (!hv_knob.ram_no_prefault) {
                 struct PrefaultArgs *a = malloc(sizeof *a);
                 a->ram = b->ram, a->size = ram_size;

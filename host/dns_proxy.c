@@ -251,7 +251,7 @@ static void *lookup(void *arg) {
                 atomic_fetch_add(&timed_out, 1);
                 if (atomic_fetch_add(&unanswered_in_a_row, 1) + 1 == GIVE_UP && hv_knob.dns_proxy) {
                     hv_knob.dns_proxy = 0; /* not hv_knob_set: no translation depends on it */
-                    fprintf(stderr, "hengevm: dns: %d lookups in a row unanswered by the system resolver: libslirp answers from now on\n", GIVE_UP);
+                    fprintf(stderr, "solstice: dns: %d lookups in a row unanswered by the system resolver: libslirp answers from now on\n", GIVE_UP);
                 }
             } else {
                 atomic_store(&unanswered_in_a_row, 0);

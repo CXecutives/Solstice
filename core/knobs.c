@@ -38,7 +38,7 @@ static int say;      /* this environment was not seen at the last load: say what
 
 static void complain(const char *name, const char *value, const char *want) {
     problems++;
-    if (say) fprintf(stderr, "hengevm: %s=%s is not %s: the default is used\n", name, value, want);
+    if (say) fprintf(stderr, "solstice: %s=%s is not %s: the default is used\n", name, value, want);
 }
 
 static int parse_FLAG(const char *name, const char *v, int def, long long lo, long long hi) {
@@ -116,7 +116,7 @@ int hv_knobs_load(void) {
     for (char **e = environ; e && *e; e++)
         if (!strncmp(*e, "HV_", 3) && !known(*e)) {
             problems++;
-            if (say) fprintf(stderr, "hengevm: %.*s is not a setting (core/knobs.def)\n", (int)strcspn(*e, "="), *e);
+            if (say) fprintf(stderr, "solstice: %.*s is not a setting (core/knobs.def)\n", (int)strcspn(*e, "="), *e);
         }
     hv_knob = k;
     return problems;

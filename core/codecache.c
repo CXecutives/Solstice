@@ -444,7 +444,7 @@ static void hash_unlink(HvMachine *m, HvBlock *b) {
 }
 
 static void check_bad(HvMachine *m, const char *what, unsigned long long v) {
-    if (m->cc.check_bad++ < 20) fprintf(stderr, "hengevm: code cache check: %s (%llx)\n", what, v);
+    if (m->cc.check_bad++ < 20) fprintf(stderr, "solstice: code cache check: %s (%llx)\n", what, v);
 }
 
 /* HV_JIT_POISON: nothing leads into segment s any more. With every CPU caught up (or parked: those catch up first). */

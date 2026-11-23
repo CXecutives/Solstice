@@ -592,7 +592,7 @@ void hv_storm_report(HvCpu *cpu) {
     s->report = 0;
     if (what & HV_STORM_BEGAN) {
         double secs = (double)s->seen.ticks / 24e6;
-        fprintf(stderr, "hengevm: interrupt storm on cpu %u: %.0f interrupts/s, %.0f WFI/s, el%u pc %llx; cntv ctl %llx cval %+lld us, "
+        fprintf(stderr, "solstice: interrupt storm on cpu %u: %.0f interrupts/s, %.0f WFI/s, el%u pc %llx; cntv ctl %llx cval %+lld us, "
                         "cntp ctl %llx cval %+lld us\n  interrupts:", cpu->index, s->seen.acks / secs, (double)s->seen.wfis / secs,
                 s->seen.el, (unsigned long long)s->seen.pc, (unsigned long long)s->seen.cntv_ctl, (long long)(s->seen.cntv_left / 24),
                 (unsigned long long)s->seen.cntp_ctl, (long long)(s->seen.cntp_left / 24));
@@ -608,7 +608,7 @@ void hv_storm_report(HvCpu *cpu) {
         fprintf(stderr, "\n");
     }
     if (what & HV_STORM_OVER)
-        fprintf(stderr, "hengevm: interrupt storm on cpu %u over after %.1f s\n", cpu->index, (double)s->lasted / 24e6);
+        fprintf(stderr, "solstice: interrupt storm on cpu %u over after %.1f s\n", cpu->index, (double)s->lasted / 24e6);
 }
 
 void hv_machine_kicker_poke(HvMachine *m) {
@@ -908,7 +908,7 @@ void hv_code_check_all(HvMachine *m) {
             const uint32_t *w = (const uint32_t *)page;
             uint32_t ff = 0;
             for (uint32_t k = 0; k < (1u << HV_TLB_PAGE_BITS) / 4; k++) ff += w[k] >> 24 == 0xff;
-            fprintf(stderr, "hengevm: code check: page pa %llx changed with its translations kept (flush %llu): %u of 4096 words "
+            fprintf(stderr, "solstice: code check: page pa %llx changed with its translations kept (flush %llu): %u of 4096 words "
                             "start with ff; at +0:", (unsigned long long)(r->pa + (pg << HV_TLB_PAGE_BITS)),
                     (unsigned long long)m->stats.block_flushes, ff);
             for (int k = 0; k < 8; k++) fprintf(stderr, " %08x", w[k]);
@@ -918,7 +918,7 @@ void hv_code_check_all(HvMachine *m) {
     static uint64_t last_report;
     if (m->stats.block_flushes - last_report >= 20) {
         last_report = m->stats.block_flushes;
-        fprintf(stderr, "hengevm: code check: %llu code pages checked at flush %llu\n", (unsigned long long)checked,
+        fprintf(stderr, "solstice: code check: %llu code pages checked at flush %llu\n", (unsigned long long)checked,
                 (unsigned long long)m->stats.block_flushes);
     }
 }
@@ -967,7 +967,7 @@ int hv_phys_write(HvMachine *m, uint64_t pa, const void *buf, unsigned len) {
         if (m->watch_pa && m->watch_pa - pa < len) {
             uint64_t v = 0;
             memcpy(&v, (const uint8_t *)buf + (m->watch_pa - pa), len - (m->watch_pa - pa) < 8 ? len - (m->watch_pa - pa) : 8);
-            fprintf(stderr, "hengevm: watch: write to pa %llx = %llx (%u bytes at pa %llx) by pc %llx\n",
+            fprintf(stderr, "solstice: watch: write to pa %llx = %llx (%u bytes at pa %llx) by pc %llx\n",
                     (unsigned long long)m->watch_pa, (unsigned long long)v, len, (unsigned long long)pa,
                     (unsigned long long)hv_access_pc(m));
         }
@@ -1003,7 +1003,7 @@ void hv_cpu_reset_index(HvCpu *cpu, HvMachine *m, uint32_t index) {
     /* Its tables before other CPUs can see it (they read them for TLBIs); made at the board's start
        (hv_machine_add_cpus) unless a test resets the CPU first. */
     if (percpu_tables(p) != 0) {
-        fprintf(stderr, "hengevm: no memory for cpu %u's tables\n", index);
+        fprintf(stderr, "solstice: no memory for cpu %u's tables\n", index);
         abort();
     }
     cpu->m = m;

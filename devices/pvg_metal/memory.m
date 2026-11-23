@@ -117,7 +117,7 @@ static BOOL map_pages(HvReplay *r, uint32_t task, HvObject *o) {
         vm_prot_t cur, max;
         kern_return_t kr = vm_remap(mach_task_self(), &to, 0x4000, 0, VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)src, FALSE, &cur, &max, VM_INHERIT_NONE);
         if (kr != KERN_SUCCESS) {
-            fprintf(stderr, "hengevm: pvg-metal: vm_remap failed: %d\n", kr);
+            fprintf(stderr, "solstice: pvg-metal: vm_remap failed: %d\n", kr);
             vm_deallocate(mach_task_self(), base, n << 14);
             free(pages);
             return NO;
@@ -159,7 +159,7 @@ static void retire(HvObject *o, id old) {
     atomic_fetch_add(&retired_bytes_live, bytes);
     if (o->retired.count == RETIRED_LOGGED) {
         static int told;
-        if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: an object made again %d times since the guest was told its address; all kept\n", RETIRED_LOGGED);
+        if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: an object made again %d times since the guest was told its address; all kept\n", RETIRED_LOGGED);
     }
 }
 

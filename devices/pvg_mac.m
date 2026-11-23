@@ -496,7 +496,7 @@ int hv_pvg_attach(HvVmapple *b, const char *screenshot) {
         };
         dd.modeChangeHandler = ^(PGDisplayCoord_t size, OSType format) {
             (void)format;
-            if (board->m->log) fprintf(stderr, "hengevm: pvg: display mode %ux%u\n", size.x, size.y);
+            if (board->m->log) fprintf(stderr, "solstice: pvg: display mode %ux%u\n", size.x, size.y);
             if (size.x < 320 || size.y < 240) return; /* a pointer glyph passed off as a mode: not the screen */
             width = size.x;
             height = size.y;

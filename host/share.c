@@ -1158,14 +1158,14 @@ int hv_share_start(const char *folder, const char *socket_path, const char *agen
     if (agent) snprintf(agent_path, sizeof agent_path, "%s", agent);
     struct sockaddr_un addr = {.sun_family = AF_UNIX};
     if (strlen(socket_path) >= sizeof addr.sun_path) {
-        fprintf(stderr, "hengevm: share: socket path too long: %s\n", socket_path);
+        fprintf(stderr, "solstice: share: socket path too long: %s\n", socket_path);
         return -1;
     }
     strcpy(addr.sun_path, socket_path);
     unlink(socket_path);
     int server = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server < 0 || bind(server, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(server, 16) != 0) {
-        fprintf(stderr, "hengevm: share: %s: %s\n", socket_path, strerror(errno));
+        fprintf(stderr, "solstice: share: %s: %s\n", socket_path, strerror(errno));
         if (server >= 0) close(server);
         return -1;
     }

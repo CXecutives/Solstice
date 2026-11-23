@@ -5,7 +5,7 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev) return NULL;
         if (![dev respondsToSelector:@selector(newRenderPipelineDescriptorWithSerializedData:deserializationContext:)]) {
-            fprintf(stderr, "hengevm: pvg-metal: this Metal cannot read serialized pipelines; no drawing\n");
+            fprintf(stderr, "solstice: pvg-metal: this Metal cannot read serialized pipelines; no drawing\n");
             return NULL;
         }
         Protocol *proto = objc_getProtocol("MTLDeserializationContext");
@@ -50,7 +50,7 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
             r->shot_timer = timer;
         }
 #endif
-        fprintf(stderr, "hengevm: pvg-metal: drawing on %s\n", dev.name.UTF8String);
+        fprintf(stderr, "solstice: pvg-metal: drawing on %s\n", dev.name.UTF8String);
         return (HvPvgMetal *)CFBridgingRetain(r);
     }
 }
@@ -344,7 +344,7 @@ void hv_pvg_metal_quiesce(HvPvgMetal *m) {
                 [cb commit];
                 [cb waitUntilCompleted];
             }
-            fprintf(stderr, "hengevm: pvg-metal: quiesced, %u GPU-only objects copied to guest memory\n", copied);
+            fprintf(stderr, "solstice: pvg-metal: quiesced, %u GPU-only objects copied to guest memory\n", copied);
         });
         dispatch_group_wait(r->completions, DISPATCH_TIME_FOREVER);
     }
@@ -409,5 +409,5 @@ void hv_pvg_metal_set_display_state(HvPvgMetal *m, const void *in, size_t len) {
             [r drawCursor];
         }
     });
-    fprintf(stderr, "hengevm: pvg-metal: screen %llu and a %ux%u pointer restored\n", (unsigned long long)d.on_screen, d.cursor_w, d.cursor_h);
+    fprintf(stderr, "solstice: pvg-metal: screen %llu and a %ux%u pointer restored\n", (unsigned long long)d.on_screen, d.cursor_w, d.cursor_h);
 }

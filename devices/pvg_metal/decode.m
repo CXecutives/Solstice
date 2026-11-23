@@ -146,7 +146,7 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
     }
     if (named && made < named) {
         static int told;
-        if (told++ < 20) fprintf(stderr, "hengevm: pvg-metal: pass skipped: %d of its %d attachments were never made\n", named - made, named);
+        if (told++ < 20) fprintf(stderr, "solstice: pvg-metal: pass skipped: %d of its %d attachments were never made\n", named - made, named);
         return nil;
     }
     if (!named && !d.defaultRasterSampleCount) d.defaultRasterSampleCount = 1;

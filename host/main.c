@@ -59,21 +59,21 @@ static void save_now(const char *path, int then_exit) {
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     if (hv_vm_pause() != 0) {
-        fprintf(stderr, "hengevm: save: the machine stopped instead of pausing\n");
+        fprintf(stderr, "solstice: save: the machine stopped instead of pausing\n");
         return;
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    fprintf(stderr, "hengevm: save: paused in %.3f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
+    fprintf(stderr, "solstice: save: paused in %.3f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
     char err[256];
     int r = hv_snapshot_save(path, snapshot_ident(), err, sizeof err);
-    if (r) fprintf(stderr, "hengevm: save failed: %s\n", err);
+    if (r) fprintf(stderr, "solstice: save failed: %s\n", err);
     if (then_exit && !r) {
-        fprintf(stderr, "hengevm: saved; exiting as if killed\n");
+        fprintf(stderr, "solstice: saved; exiting as if killed\n");
         _exit(0);
     }
-    if (hv_vm_continue() != 0) fprintf(stderr, "hengevm: save: cannot run on\n");
+    if (hv_vm_continue() != 0) fprintf(stderr, "solstice: save: cannot run on\n");
     dispatch_semaphore_signal(resume_go);
-    fprintf(stderr, "hengevm: save: running on\n");
+    fprintf(stderr, "solstice: save: running on\n");
 }
 static uint64_t translate_va;
 
@@ -325,7 +325,7 @@ static void *click_thread(void *unused) {
         if (*p == ';') p++;
         while (time(NULL) - start < when) sleep(1);
         pointer_to(x, y);
-        fprintf(stderr, "hengevm: click (%d,%d) at %ld s\n", x, y, (long)(time(NULL) - start));
+        fprintf(stderr, "solstice: click (%d,%d) at %ld s\n", x, y, (long)(time(NULL) - start));
         click_here();
     }
     return NULL;
@@ -375,8 +375,8 @@ static void memcmp_hook(HvCpu *c) {
     if (w1.fsc || w2.fsc || hv_phys_read(hm, w1.pa, x, 32) || hv_phys_read(hm, w2.pa, y, 32)) return;
     static const uint8_t want[8] = {0x52, 0x24, 0x67, 0x35, 0x8c, 0x28, 0x38, 0x7a};
     if (memcmp(x, want, 8) && memcmp(y, want, 8)) return;
-    fprintf(stderr, "hengevm: at %ld s ", (long)time(NULL));
-    fprintf(stderr, "hengevm: memcmp 32 bytes, lr %llx:\n  a %llx:", (unsigned long long)c->x[30], (unsigned long long)c->x[0]);
+    fprintf(stderr, "solstice: at %ld s ", (long)time(NULL));
+    fprintf(stderr, "solstice: memcmp 32 bytes, lr %llx:\n  a %llx:", (unsigned long long)c->x[30], (unsigned long long)c->x[0]);
     for (int i = 0; i < 32; i++) fprintf(stderr, "%02x", x[i]);
     fprintf(stderr, "\n  b %llx:", (unsigned long long)c->x[1]);
     for (int i = 0; i < 32; i++) fprintf(stderr, "%02x", y[i]);
@@ -398,7 +398,7 @@ static void sha_hook(HvCpu *c) {
         hv_mmu_walk(c, watch_state, HV_ACC_READ, 1, &wn);
         if (!wn.fsc && !hv_phys_read(hv_vm_machine(), wn.pa, st, 32)) {
             int ok = !memcmp(st, watch_want, 32);
-            fprintf(stderr, "hengevm: sha hook: next call (x0 %s, %llu blocks): state after the page %s: %08x %08x %08x, should be %08x %08x %08x\n", c->x[0] == watch_state ? "same" : "other", (unsigned long long)c->x[1], ok ? "RIGHT" : "WRONG", st[0], st[1], st[2], watch_want[0], watch_want[1], watch_want[2]);
+            fprintf(stderr, "solstice: sha hook: next call (x0 %s, %llu blocks): state after the page %s: %08x %08x %08x, should be %08x %08x %08x\n", c->x[0] == watch_state ? "same" : "other", (unsigned long long)c->x[1], ok ? "RIGHT" : "WRONG", st[0], st[1], st[2], watch_want[0], watch_want[1], watch_want[2]);
         }
         watch_state = 0;
     }
@@ -427,7 +427,7 @@ static void sha_hook(HvCpu *c) {
         if (any) {
             int zeros[4] = {0};
             for (int k = 0; k < 0x4000; k++) zeros[k >> 12] += now[k] == 0;
-            fprintf(stderr, "hengevm: sha hook: part of the page: %s, zero bytes per 4K %d %d %d %d, va %llx lr %llx\n", eq, zeros[0], zeros[1], zeros[2], zeros[3], (unsigned long long)va, (unsigned long long)c->x[30]);
+            fprintf(stderr, "solstice: sha hook: part of the page: %s, zero bytes per 4K %d %d %d %d, va %llx lr %llx\n", eq, zeros[0], zeros[1], zeros[2], zeros[3], (unsigned long long)va, (unsigned long long)c->x[30]);
             {
                 uint32_t st0[8] = {0};
                 HvWalk ws0;
@@ -479,7 +479,7 @@ static void sha_hook(HvCpu *c) {
     HvWalk ws;
     hv_mmu_walk(c, c->x[0], HV_ACC_READ, 1, &ws);
     if (!ws.fsc) hv_phys_read(hm, ws.pa, st, 32);
-    fprintf(stderr, "hengevm: sha hook: cpu %d, %llu blocks at %llx (pa %llx, in page +%llx), %llu pages so far: %d differ (+%x..+%x); sha256 %02x%02x%02x%02x%02x%02x%02x%02x; state %08x %08x; lr %llx\n",
+    fprintf(stderr, "solstice: sha hook: cpu %d, %llu blocks at %llx (pa %llx, in page +%llx), %llu pages so far: %d differ (+%x..+%x); sha256 %02x%02x%02x%02x%02x%02x%02x%02x; state %08x %08x; lr %llx\n",
             c->index, (unsigned long long)blocks, (unsigned long long)va, (unsigned long long)w.pa, (unsigned long long)in, (unsigned long long)pages, diff, first, last, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], st[0], st[1], (unsigned long long)c->x[30]);
     if (diff) {
         fprintf(stderr, "  there:");
@@ -517,7 +517,7 @@ static void both_hook(HvCpu *c) {
     static const uint8_t want[8] = {0x52, 0x24, 0x67, 0x35, 0x8c, 0x28, 0x38, 0x7a};
     if (memcmp(x, want, 8)) return;
     int same = !memcmp(x, y, 32);
-    fprintf(stderr, "hengevm: compare %s; hash read pa %llx va %llx (have %d); now it holds:\n", same ? "equal" : "DIFFERENT", (unsigned long long)both_pa, (unsigned long long)both_va, both_have);
+    fprintf(stderr, "solstice: compare %s; hash read pa %llx va %llx (have %d); now it holds:\n", same ? "equal" : "DIFFERENT", (unsigned long long)both_pa, (unsigned long long)both_va, both_have);
     if (!same && both_have) {
         static uint8_t now[0x4000];
         int same_now = hv_phys_read(hm, both_pa, now, 0x4000) == 0 && !memcmp(now, both_data, 0x4000);
@@ -562,13 +562,13 @@ static void *input_thread(void *unused) {
         else if (!strncmp(line, "pointer", 7)) {
             int px = -1, py = -1;
             int rc = hv_vm_pointer(&px, &py);
-            fprintf(stderr, "hengevm: pointer %d: %d, %d\n", rc, px, py);
+            fprintf(stderr, "solstice: pointer %d: %d, %d\n", rc, px, py);
         }
         else if (!strncmp(line, "snapshot ", 9)) { /* FILE, a 32-bit BMP of what hv_vm_snapshot gives the app */
             enum { W = 640, H = 360 };
             static uint8_t px[W * H * 4];
             int rc = hv_vm_snapshot(px, W, H);
-            fprintf(stderr, "hengevm: snapshot %d\n", rc);
+            fprintf(stderr, "solstice: snapshot %d\n", rc);
             FILE *bf = rc == 0 ? fopen(line + 9, "wb") : NULL;
             if (bf) {
                 uint32_t size = W * H * 4;
@@ -655,11 +655,11 @@ static void *input_thread(void *unused) {
         }
         else if (sscanf(line, "pause %d", &x) == 1) { /* paused for x seconds, then on (as Henge in the background, not killed) */
             if (hv_vm_pause() == 0) {
-                fprintf(stderr, "hengevm: paused for %d s\n", x);
+                fprintf(stderr, "solstice: paused for %d s\n", x);
                 sleep((unsigned)x);
-                if (hv_vm_continue() != 0) fprintf(stderr, "hengevm: pause: cannot run on\n");
+                if (hv_vm_continue() != 0) fprintf(stderr, "solstice: pause: cannot run on\n");
                 dispatch_semaphore_signal(resume_go);
-                fprintf(stderr, "hengevm: running on after the pause\n");
+                fprintf(stderr, "solstice: running on after the pause\n");
             }
         }
         else if (!strncmp(line, "btn ", 4)) { /* "btn CODE 1|0": any evdev button code on the virtio mouse (testing) */
@@ -689,7 +689,7 @@ static void *input_thread(void *unused) {
         else if (!strncmp(line, "clip ", 5)) hv_share_set_clipboard(line + 5);
         else if (!strncmp(line, "getclip", 7)) {
             char *text = hv_share_take_clipboard();
-            fprintf(stderr, "hengevm: guest clipboard: %s (agent seen %ld s ago)\n", text ? text : "(nothing new)", hv_share_agent_seen());
+            fprintf(stderr, "solstice: guest clipboard: %s (agent seen %ld s ago)\n", text ? text : "(nothing new)", hv_share_agent_seen());
             free(text);
         }
         else if (sscanf(line, "hiddown %i", &x) == 1) hv_vm_key_hid((uint8_t)x, 1);
@@ -713,16 +713,16 @@ static void *input_thread(void *unused) {
         else if (!strncmp(line, "prof ", 5)) prof_dump(line + 5);
         else if (!strncmp(line, "balloon ", 8)) { /* MB the guest should hand back (HV_BALLOON set at boot) */
             HvVmapple *bd = hv_vm_board();
-            if (!bd || !bd->balloon) fprintf(stderr, "hengevm: no balloon (set HV_BALLOON)\n");
+            if (!bd || !bd->balloon) fprintf(stderr, "solstice: no balloon (set HV_BALLOON)\n");
             else {
                 hv_virtio_balloon_set_target(bd->balloon, (uint64_t)atoll(line + 8) << 20);
-                fprintf(stderr, "hengevm: balloon: the guest has handed over %llu MB\n", (unsigned long long)(hv_virtio_balloon_actual(bd->balloon) >> 20));
+                fprintf(stderr, "solstice: balloon: the guest has handed over %llu MB\n", (unsigned long long)(hv_virtio_balloon_actual(bd->balloon) >> 20));
             }
         }
         else if (!strncmp(line, "knob ", 5)) {
             char name[32];
             if (sscanf(line, "knob %31s %d", name, &x) == 2 && !hv_knob_set(hv_vm_machine(), name, x))
-                fprintf(stderr, "hengevm: no knob %s\n", name);
+                fprintf(stderr, "solstice: no knob %s\n", name);
         }
         else if (!strncmp(line, "kdump ", 6)) { /* the guest kernel's image, from where its first byte is mapped now */
             static const uint8_t sig[] = {0x5f, 0x24, 0x03, 0xd5, 0x03, 0x00, 0x00, 0x90, 0x41, 0x00, 0x00, 0xb5, 0xc0, 0x03, 0x5f, 0xd6, 0x63, 0x00, 0x36, 0x91, 0xe4, 0x43, 0x04, 0xd1, 0xff, 0x43, 0x04, 0xd1, 0x80, 0x28, 0x9f, 0x4c};
@@ -731,7 +731,7 @@ static void *input_thread(void *unused) {
             FILE *kf = fopen(line + 6, "wb");
             if (at && kf) fwrite(at - (0xfffffe002b76de80ull - 0xfffffe0028604000ull), 1, 0x4800000, kf);
             if (kf) fclose(kf);
-            fprintf(stderr, "hengevm: kernel image written\n");
+            fprintf(stderr, "solstice: kernel image written\n");
         }
         else if (!strncmp(line, "hooksha ", 8)) {
             if (hv_vm_machine()->stop_hook) continue;
@@ -748,7 +748,7 @@ static void *input_thread(void *unused) {
             uint64_t va = c0->vbar_el1 + (pa - wv.pa);
             HvWalk wc;
             hv_mmu_walk(c0, va, HV_ACC_EXEC, 1, &wc);
-            fprintf(stderr, "hengevm: sha at pa %llx, va %llx (walks to pa %llx, fsc %u); page file %zu bytes\n", (unsigned long long)pa, (unsigned long long)va, (unsigned long long)wc.pa, (unsigned)wc.fsc, got);
+            fprintf(stderr, "solstice: sha at pa %llx, va %llx (walks to pa %llx, fsc %u); page file %zu bytes\n", (unsigned long long)pa, (unsigned long long)va, (unsigned long long)wc.pa, (unsigned)wc.fsc, got);
             if (at && !wc.fsc && wc.pa == pa && got == sizeof hook_page && c0->vbar_el1 >> 40 == 0xfffffe) {
                 HvMachine *hm = hv_vm_machine();
                 if (hv_knob.hook_both) {
@@ -780,7 +780,7 @@ static void *input_thread(void *unused) {
                 for (int k = 0; k < 96; k++) fprintf(stderr, "%s%02x", k % 32 == 0 ? " " : "", bd->ram[i + k]);
                 fprintf(stderr, "\n");
             }
-            fprintf(stderr, "hengevm: find: %d places\n", n);
+            fprintf(stderr, "solstice: find: %d places\n", n);
         }
         else if (!strncmp(line, "grep ", 5) || !strncmp(line, "grepall ", 8)) { /* lines of text in guest RAM (the kernel's
                                                                                    log, launchd's); grep stops at 40 */
@@ -799,7 +799,7 @@ static void *input_thread(void *unused) {
                 hits++;
                 i = to;
             }
-            fprintf(stderr, "hengevm: grep: %llu lines\n", (unsigned long long)hits);
+            fprintf(stderr, "solstice: grep: %llu lines\n", (unsigned long long)hits);
         }
         else if (!strncmp(line, "vdump ", 6)) { /* "vdump VA LEN FILE": guest memory at a VA as CPU 0 maps it now (EL1), up to 64 KB */
             unsigned long long va = 0, len = 0;
@@ -818,7 +818,7 @@ static void *input_thread(void *unused) {
                     done += n;
                 }
                 if (vf) fclose(vf);
-                fprintf(stderr, "hengevm: vdump %llx: %llu bytes\n", va, done);
+                fprintf(stderr, "solstice: vdump %llx: %llu bytes\n", va, done);
             }
         }
         else if (!strncmp(line, "page ", 5)) { /* a 16 KB file: is it in guest RAM, and how does the copy there differ? */
@@ -840,7 +840,7 @@ static void *input_thread(void *unused) {
                         last = k;
                     }
                 if (diff > 9700) continue; /* a page of zeros differs by about this */
-                fprintf(stderr, "hengevm: page copy at pa %llx: %d bytes differ, from +%x to +%x\n", (unsigned long long)(0x70000000ull + at), diff, first, last);
+                fprintf(stderr, "solstice: page copy at pa %llx: %d bytes differ, from +%x to +%x\n", (unsigned long long)(0x70000000ull + at), diff, first, last);
                 { int part[4] = {0};
                   for (int k = 0; k < 0x4000; k++) part[k >> 12] += bd->ram[at + k] != want[k];
                   fprintf(stderr, "  differ per 4K: %d %d %d %d\n", part[0], part[1], part[2], part[3]); }
@@ -853,9 +853,9 @@ static void *input_thread(void *unused) {
                 }
                 found++;
             }
-            fprintf(stderr, "hengevm: %d copies of that page in RAM\n", found);
+            fprintf(stderr, "solstice: %d copies of that page in RAM\n", found);
         }
-        fprintf(stderr, "hengevm: input: %s\n", line);
+        fprintf(stderr, "solstice: input: %s\n", line);
     }
     return NULL;
 }
@@ -874,7 +874,7 @@ static void *watch_thread(void *unused) {
     for (;;) {
         sleep((unsigned)(secs > 0 ? secs : 5));
         const uint8_t *page = hv_pvg_lite_display_page(board.pvg);
-        fprintf(stderr, "hengevm: watch %ld s: swaps %u on %u;", (long)(time(NULL) - start), page ? *(const volatile uint32_t *)(page + 0xf98) : 0, page ? *(const volatile uint32_t *)(page + 0xfb0) : 0);
+        fprintf(stderr, "solstice: watch %ld s: swaps %u on %u;", (long)(time(NULL) - start), page ? *(const volatile uint32_t *)(page + 0xf98) : 0, page ? *(const volatile uint32_t *)(page + 0xfb0) : 0);
         for (int i = 0; i < ncpus; i++) fprintf(stderr, " %llx@%u", (unsigned long long)hv_vm_cpu(i)->pc, hv_vm_cpu(i)->el);
         { HvMachine *wm = hv_vm_machine(); fprintf(stderr, " | jit %llu MB, flushes %llu, ic %llu, code writes %llu", (unsigned long long)wm->jit.used * 4 >> 20, (unsigned long long)wm->stats.block_flushes, (unsigned long long)wm->stats.flush_ic, (unsigned long long)wm->stats.flush_smc);
           fprintf(stderr, " (cpu %llu dma %llu), %llu translations, blocks now %u; top:", (unsigned long long)hv_smc_cpu, (unsigned long long)hv_smc_dma, (unsigned long long)hv_stat_translations(wm), (unsigned)wm->nblocks);
@@ -932,7 +932,7 @@ static void *type_thread(void *unused) {
     }
     for (int i = 0; i < 10; i++) {
         sleep(2);
-        fprintf(stderr, "hengevm: typed abc: usb delivered %llu reports, keyboard delivered %llu of 12 events, mouse %llu\n",
+        fprintf(stderr, "solstice: typed abc: usb delivered %llu reports, keyboard delivered %llu of 12 events, mouse %llu\n",
                 (unsigned long long)board.usb->delivered, (unsigned long long)board.keyboard->delivered, board.mouse ? (unsigned long long)board.mouse->delivered : 0ull);
     }
     return NULL;
@@ -962,7 +962,7 @@ static void *cpu_thread(void *unused) {
         m.stop_pc = a->brk;
     }
     if (cpu.pc == a->brk) {
-        fprintf(stderr, "hengevm: breakpoint %llx, x30 %llx:", (unsigned long long)a->brk, (unsigned long long)cpu.x[30]);
+        fprintf(stderr, "solstice: breakpoint %llx, x30 %llx:", (unsigned long long)a->brk, (unsigned long long)cpu.x[30]);
         hv_debug_args(&cpu);
         fprintf(stderr, "  stack:");
         for (int i = 0; i < 8; i++) {
@@ -978,7 +978,7 @@ static void *cpu_thread(void *unused) {
                     (unsigned long long)pa, fsc);
         }
     }
-    fprintf(stderr, "\nhengevm: stopped (%s) after %llu blocks, %d translated\n", interrupted ? "interrupted" : reason_name(r),
+    fprintf(stderr, "\nsolstice: stopped (%s) after %llu blocks, %d translated\n", interrupted ? "interrupted" : reason_name(r),
             (unsigned long long)cpu.icount, m.nblocks);
     fprintf(stderr, "  pc %016llx el%u sp %016llx insn %08x\n", (unsigned long long)cpu.pc, cpu.el,
             (unsigned long long)cpu.sp, cpu.exit_insn);
@@ -994,7 +994,7 @@ static void *cpu_thread(void *unused) {
         void *p = hv_phys_ptr(&m, a->dump_pa, a->dump_len);
         if (f && p) fwrite(p, 1, a->dump_len, f);
         if (f) fclose(f);
-        fprintf(stderr, "hengevm: %s %llu bytes at %llx to %s\n", p ? "wrote" : "cannot dump", (unsigned long long)a->dump_len,
+        fprintf(stderr, "solstice: %s %llu bytes at %llx to %s\n", p ? "wrote" : "cannot dump", (unsigned long long)a->dump_len,
                 (unsigned long long)a->dump_pa, a->dump_path);
     }
     if (hv_knob.ram_grep) { /* debugging: text lines in guest RAM with any of these words (the kernel's log buffer) */
@@ -1021,16 +1021,16 @@ static void *cpu_thread(void *unused) {
             i = j + 1;
         }
         if (out) fclose(out);
-        fprintf(stderr, "hengevm: RAM grep: %llu lines\n", (unsigned long long)hits);
+        fprintf(stderr, "solstice: RAM grep: %llu lines\n", (unsigned long long)hits);
     }
     if (hv_knob.boot_display_dump) { /* debugging: the boot framebuffer, raw BGRA, for the iOS view */
         HvBootDisplay bd;
         if (hv_vm_boot_display(&bd) == 0) {
             FILE *f = fopen(hv_knob.boot_display_dump, "wb");
             if (f) fwrite(bd.pixels, 1, (size_t)bd.stride * bd.height, f), fclose(f);
-            fprintf(stderr, "hengevm: boot display %ux%u stride %u written\n", bd.width, bd.height, bd.stride);
+            fprintf(stderr, "solstice: boot display %ux%u stride %u written\n", bd.width, bd.height, bd.stride);
         } else {
-            fprintf(stderr, "hengevm: no boot display found\n");
+            fprintf(stderr, "solstice: no boot display found\n");
         }
     }
     hv_vm_flush_disks();
@@ -1049,13 +1049,13 @@ static void install_progress(int step, double p, void *user) {
     int pct = (int)(p * 100);
     if (step == last_step && pct / 5 == last_pct / 5) return;
     last_step = step, last_pct = pct;
-    if (step == HV_INSTALL_DONE) fprintf(stderr, "hengevm: install: done\n");
-    else if (step == HV_INSTALL_FAILED) fprintf(stderr, "hengevm: install: failed\n");
+    if (step == HV_INSTALL_DONE) fprintf(stderr, "solstice: install: done\n");
+    else if (step == HV_INSTALL_FAILED) fprintf(stderr, "solstice: install: failed\n");
     if ((step == HV_INSTALL_DONE || step == HV_INSTALL_FAILED) && hv_knob.install_stop_at_end) {
         sleep(3); /* debugging: stop the machine once the restore has a result (the exit dumps then run) */
         hv_vm_stop();
     }
-    else fprintf(stderr, "hengevm: install: step %d %d%%\n", step, pct);
+    else fprintf(stderr, "solstice: install: step %d %d%%\n", step, pct);
 }
 
 int main(int argc, char **argv) {
@@ -1148,13 +1148,13 @@ int main(int argc, char **argv) {
         if (hv_share_start(share_folder, sock, hv_knob.agent) == 0) hv_net_set_share_socket(sock);
     }
     if (hv_vm_create(&vc, err, sizeof err) != 0) {
-        fprintf(stderr, "hengevm: %s\n", err);
+        fprintf(stderr, "solstice: %s\n", err);
         return 1;
     }
     resume_go = dispatch_semaphore_create(0);
     if (resume_path) {
         if (hv_snapshot_restore(resume_path, snapshot_ident(), err, sizeof err) != 0) {
-            fprintf(stderr, "hengevm: resume: %s\n", err);
+            fprintf(stderr, "solstice: resume: %s\n", err);
             return 1;
         }
     }
@@ -1172,7 +1172,7 @@ int main(int argc, char **argv) {
         snprintf(work, sizeof work, "%s.restore", disk_path);
         mkdir(work, 0755);
         if (hv_install_start(board.vusb, install_ipsw, work, ecid, install_progress, NULL) != 0) {
-            fprintf(stderr, "hengevm: cannot start the installer\n");
+            fprintf(stderr, "solstice: cannot start the installer\n");
             return 1;
         }
         /* usbmuxd installs its own handlers; take SIGINT and SIGTERM back so
@@ -1183,7 +1183,7 @@ int main(int argc, char **argv) {
     }
     int pvg_on = 0;
     if (use_pvg) {
-        if (hv_pvg_attach(&board, screenshot) != 0) fprintf(stderr, "hengevm: ParavirtualizedGraphics device unavailable; graphics stays inert\n");
+        if (hv_pvg_attach(&board, screenshot) != 0) fprintf(stderr, "solstice: ParavirtualizedGraphics device unavailable; graphics stays inert\n");
         else pvg_on = 1;
     }
     if (pvg_on) hv_vm_set_poll(hv_pvg_poll);

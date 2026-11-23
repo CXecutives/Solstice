@@ -632,7 +632,7 @@ int hv_snapshot_save(const char *path, const char *ident, char *err, size_t errl
         CpuState s;
         cpu_get(hv_vm_cpu(i), &s);
         w_section(&w, TAG('C', 'P', 'U', ' '), &s, sizeof s);
-        if (s.cntp_ctl & 1) fprintf(stderr, "hengevm: snapshot: cpu %d has its physical timer on (host counter based)\n", i);
+        if (s.cntp_ctl & 1) fprintf(stderr, "solstice: snapshot: cpu %d has its physical timer on (host counter based)\n", i);
     }
     save_devices(&w, b);
     uint64_t stored = 0;
@@ -652,7 +652,7 @@ int hv_snapshot_save(const char *path, const char *ident, char *err, size_t errl
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
-    fprintf(stderr, "hengevm: snapshot: saved %d CPUs and %llu MB of RAM (%llu pages with data) in %llu MB, %.2f s "
+    fprintf(stderr, "solstice: snapshot: saved %d CPUs and %llu MB of RAM (%llu pages with data) in %llu MB, %.2f s "
                     "(compressing %.2f s alongside writing %.2f s; %.2f s waiting for compression)\n", ncpus, (unsigned long long)(b->ram_size >> 20),
             (unsigned long long)stored, (unsigned long long)(t.total >> 20), secs, pack_secs, write_secs, wait_secs);
     return 0;
@@ -711,7 +711,7 @@ int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t e
     }
     if (strcmp(disk_now, h.disk)) {
         close(fd);
-        fprintf(stderr, "hengevm: snapshot: the disk changed since the save (%s, now %s)\n", h.disk, disk_now);
+        fprintf(stderr, "solstice: snapshot: the disk changed since the save (%s, now %s)\n", h.disk, disk_now);
         return refuse(err, errlen, "The Mac's disk has changed since it was saved.");
     }
     if (h.ncpus != (uint32_t)ncpus || h.nram != (uint32_t)m->nram || h.ram_size != b->ram_size) {
@@ -751,7 +751,7 @@ int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t e
     hv_gicv3_update(b->gic);
     if (b->snd) hv_virtio_snd_resume(b->snd);
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    fprintf(stderr, "hengevm: snapshot: restored a Mac saved %lld s ago, in %.2f s (reading RAM %.2f s, decompressing %.2f s alongside)\n",
+    fprintf(stderr, "solstice: snapshot: restored a Mac saved %lld s ago, in %.2f s (reading RAM %.2f s, decompressing %.2f s alongside)\n",
             (long long)(time(NULL) - h.saved_at), (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9,
             read_secs, unpack_secs);
     return 0;

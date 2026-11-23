@@ -393,7 +393,7 @@ static BOOL linear_texture_fits(id<MTLDevice> device, MTLTextureDescriptor *t, u
     BOOL ok = row >= t.width * bpp && (!align || (row % align == 0 && offset % align == 0)) && t.height && offset + row * (t.height - 1) + t.width * bpp <= length;
     if (!ok) {
         static int told;
-        if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: a %lux%lu format %lu texture can't sit on rows of %llu bytes at %llu in %lu: left empty\n",
+        if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: a %lux%lu format %lu texture can't sit on rows of %llu bytes at %llu in %lu: left empty\n",
                                 (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, row, offset, (unsigned long)length);
     }
     return ok;
@@ -459,7 +459,7 @@ static float hv_half_shown(float v, int mode) { /* what the screen shows for a h
         if ([complaints containsObject:what]) return;
         [complaints addObject:what];
     }
-    fprintf(stderr, "hengevm: pvg-metal: %s\n", what.UTF8String);
+    fprintf(stderr, "solstice: pvg-metal: %s\n", what.UTF8String);
 }
 
 #include "pvg_metal/pipelines.m" /* functions, pipelines and the saved-pipeline archives, other serialized objects */

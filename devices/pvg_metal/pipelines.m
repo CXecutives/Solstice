@@ -146,14 +146,14 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
 - (id<MTLBinaryArchive>)emptyArchive {
     NSError *err = nil;
     id<MTLBinaryArchive> a = [device newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
-    if (!a) fprintf(stderr, "hengevm: pvg-metal: saved pipelines unavailable: %s\n", err.localizedDescription.UTF8String ?: "?");
+    if (!a) fprintf(stderr, "solstice: pvg-metal: saved pipelines unavailable: %s\n", err.localizedDescription.UTF8String ?: "?");
     return a;
 }
 
 - (void)openArchive {
     const char *opt = hv_knob.pvg_archive;
     if (opt && !strcmp(opt, "0")) {
-        fprintf(stderr, "hengevm: pvg-metal: saved pipelines off (HV_PVG_ARCHIVE=0)\n");
+        fprintf(stderr, "solstice: pvg-metal: saved pipelines off (HV_PVG_ARCHIVE=0)\n");
         return;
     }
     NSURL *dir = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
@@ -166,7 +166,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     NSFileManager *fm = NSFileManager.defaultManager;
     NSError *err = nil;
     if (!dir || ![fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:&err]) {
-        fprintf(stderr, "hengevm: pvg-metal: saved pipelines: no folder: %s\n", err.localizedDescription.UTF8String ?: "?");
+        fprintf(stderr, "solstice: pvg-metal: saved pipelines: no folder: %s\n", err.localizedDescription.UTF8String ?: "?");
         return;
     }
     [dir setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil]; /* rebuilt by any boot: not worth a backup */
@@ -211,7 +211,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         err = nil;
         id<MTLBinaryArchive> a = [device newBinaryArchiveWithDescriptor:d error:&err];
         if (!a) {
-            fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %s unreadable, removed: %s\n", name.UTF8String, err.localizedDescription.UTF8String ?: "?");
+            fprintf(stderr, "solstice: pvg-metal: saved pipelines: %s unreadable, removed: %s\n", name.UTF8String, err.localizedDescription.UTF8String ?: "?");
             [fm removeItemAtURL:u error:nil];
             unreadable++;
             continue;
@@ -224,7 +224,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     archives = loaded;
     archive_bytes = bytes;
     archive_full = archive_full_at(loaded.count, bytes, archive_cap());
-    fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %lu files, %.1f MB%s%s%s\n", (unsigned long)loaded.count, bytes / 1048576.0,
+    fprintf(stderr, "solstice: pvg-metal: saved pipelines: %lu files, %.1f MB%s%s%s\n", (unsigned long)loaded.count, bytes / 1048576.0,
             unreadable ? " (some unreadable, removed)" : "", evicted ? " (the oldest removed for room)" : "",
             archive_full ? " (full: nothing more is added)" : "");
 }
@@ -262,7 +262,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         double each = (compile_ms += (now_seconds() - t0) * 1e3) / compiled, hit_each = hit ? hit_ms / hit : 0.0;
         os_unfair_lock_unlock(&pipe_lock);
         if (compiled == 1 || compiled % 100 == 0)
-            fprintf(stderr, "hengevm: pvg-metal: pipelines: %llu compiled (%.0f ms each), %llu from the saved archives (%.1f ms each)\n",
+            fprintf(stderr, "solstice: pvg-metal: pipelines: %llu compiled (%.0f ms each), %llu from the saved archives (%.1f ms each)\n",
                     compiled, each, hit, hit_each);
         if (saving) dispatch_async(archiver, ^{ [self savePipeline:tag descriptor:descriptor]; });
     }
@@ -346,7 +346,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     os_unfair_lock_unlock(&pipe_lock);
     archive_dirty = NO;
     if (archive_full_at(archives.count, archive_bytes, archive_cap())) archive_full = YES;
-    fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %llu added in file %d (%.1f MB, %.1f MB in %lu files) in %.0f ms%s; this session %llu from the "
+    fprintf(stderr, "solstice: pvg-metal: saved pipelines: %llu added in file %d (%.1f MB, %.1f MB in %lu files) in %.0f ms%s; this session %llu from the "
                     "archives (%.1f ms each), %llu compiled (%.0f ms each), %llu not saveable\n",
             pipes_unsaved, archive_next - 1, bytes / 1048576.0, archive_bytes / 1048576.0, (unsigned long)archives.count,
             (now_seconds() - t0) * 1e3, archive_full ? " (now full)" : "", hit, hit_each, compiled, each, pipes_unsaveable);

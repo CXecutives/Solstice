@@ -168,7 +168,7 @@ static void on_ill(int sig, siginfo_t *info, void *ctx) {
     int in_rx = pc >= rx && pc < rx + size;
     int fetch = (uint64_t)(uintptr_t)info->si_addr == pc;
     if (sig == SIGILL || in_rx || fetch) {
-        fprintf(stderr, "hengevm: signal %d in translated code: pc %llx (rx %llx size %llx used %llx, pc is rx%+lld), full flushes %llu, lr %llx, addr %p\n",
+        fprintf(stderr, "solstice: signal %d in translated code: pc %llx (rx %llx size %llx used %llx, pc is rx%+lld), full flushes %llu, lr %llx, addr %p\n",
                 sig, (unsigned long long)pc, (unsigned long long)rx, (unsigned long long)size, (unsigned long long)used, (long long)(pc - rx),
                 (unsigned long long)m.stats.block_flushes, (unsigned long long)uc->uc_mcontext->__ss.__lr, info->si_addr);
         for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%llx%c", i, (unsigned long long)uc->uc_mcontext->__ss.__x[i], i % 6 == 5 ? '\n' : ' ');
@@ -306,7 +306,7 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     dt_fixup_on = !c->installer && hv_dt_fixup_start(board.ram, board.ram_size, VMAPPLE_MEM, c->product_name, c->model_id);
     if (dt_fixup_on) hv_dt_fixup_run();
     if (board.net && !c->no_net) {
-        if (hv_net_attach(&m, board.net) != 0) fprintf(stderr, "hengevm: user-mode network unavailable\n");
+        if (hv_net_attach(&m, board.net) != 0) fprintf(stderr, "solstice: user-mode network unavailable\n");
         else net_on = 1;
     }
     sound_on = board.snd && !c->no_sound;
@@ -418,7 +418,7 @@ static void *secondary_thread(void *arg) {
     hv_vm_cpu_qos();
     int r = hv_run(c);
     if (!c->halted)
-        fprintf(stderr, "hengevm: cpu %u stopped (%s) at pc %llx el%u\n", c->index, hv_vm_reason_name(r),
+        fprintf(stderr, "solstice: cpu %u stopped (%s) at pc %llx el%u\n", c->index, hv_vm_reason_name(r),
                 (unsigned long long)c->pc, c->el);
     return NULL;
 }
@@ -432,13 +432,13 @@ void hv_vm_link_flap(void) {
         hv_dev_lock(&m);
         hv_virtio_net_set_link(board.net, 0);
         hv_dev_unlock(&m);
-        fprintf(stderr, "hengevm: network link down (after a resume)\n");
+        fprintf(stderr, "solstice: network link down (after a resume)\n");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             if (!machine_created || !board.net) return;
             hv_dev_lock(&m);
             hv_virtio_net_set_link(board.net, 1);
             hv_dev_unlock(&m);
-            fprintf(stderr, "hengevm: network link up\n");
+            fprintf(stderr, "solstice: network link up\n");
         });
     });
 }
@@ -463,7 +463,7 @@ int hv_vm_power_button(void) {
     hv_pl061_set_input(board.gpio, 3, 0);
     hv_pl061_set_input(board.gpio, 3, 1);
     hv_dev_unlock(&m);
-    fprintf(stderr, "hengevm: power button pressed\n");
+    fprintf(stderr, "solstice: power button pressed\n");
     return 0;
 }
 
@@ -510,7 +510,7 @@ int hv_vm_finish_pause(void) {
     hv_dev_lock(&m);
     int idle = hv_virtio_blk_idle(board.root_blk) && hv_virtio_blk_idle(board.aux_blk);
     hv_dev_unlock(&m);
-    if (!idle) fprintf(stderr, "hengevm: pause: disk requests still in flight; it cannot be saved like this\n");
+    if (!idle) fprintf(stderr, "solstice: pause: disk requests still in flight; it cannot be saved like this\n");
     pause_clean = idle;
     hv_vm_flush_disks();
     set_pause_state(2);

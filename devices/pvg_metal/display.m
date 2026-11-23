@@ -111,7 +111,7 @@ static const uint8_t *half_to_byte(void) {
         target.maximumDrawableCount = 3;
         [CATransaction commit];
         prepared_layer = target;
-        fprintf(stderr, "hengevm: pvg-metal: half-float display surfaces are shown %s (HV_PVG_HALF=%s)\n",
+        fprintf(stderr, "solstice: pvg-metal: half-float display surfaces are shown %s (HV_PVG_HALF=%s)\n",
                 hv_half_mode_get() == 1 ? "as LINEAR light with an sRGB encode" : "as display-encoded values, passed through", hv_half_mode_get() == 1 ? "linear" : "encoded/default");
     }
     return YES;
@@ -155,7 +155,7 @@ static const uint8_t *half_to_byte(void) {
     if (!surface) { [self complain:[NSString stringWithFormat:@"swap to unknown surface %llu", mapping]]; return; }
     on_screen = mapping;
     BOOL half = surface->fourcc == 'RGhA';
-    if (!screen_tex) fprintf(stderr, "hengevm: display scanout format %s (%ux%u)\n",
+    if (!screen_tex) fprintf(stderr, "solstice: display scanout format %s (%ux%u)\n",
                              half ? "RGBA16Float" : "BGRA8Unorm", surface->surface_w, surface->surface_h);
     if (!surface->scanout) {
         MTLTextureDescriptor *t = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:half ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm

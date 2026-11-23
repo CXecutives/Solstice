@@ -45,7 +45,7 @@ static int cmd_key(HvAes *a) {
     uint32_t cmd = a->fifo[0];
     uint32_t sel = (cmd >> 24) & 7, ctx = (cmd >> 27) & 1, mode = (cmd >> 16) & 3;
     if (mode > 1) { /* only ECB (0) and CBC (1); drop the command */
-        if (a->m->log) fprintf(stderr, "hengevm: aes: key command %08x asks for mode %u (not modelled)\n", cmd, mode);
+        if (a->m->log) fprintf(stderr, "solstice: aes: key command %08x asks for mode %u (not modelled)\n", cmd, mode);
         return 1;
     }
     a->cbc = mode == 1;
@@ -54,7 +54,7 @@ static int cmd_key(HvAes *a) {
         static unsigned seen;
         if (!(seen & (1u << sel)) && a->m->log) {
             seen |= 1u << sel;
-            fprintf(stderr, "hengevm: aes: key select %u (cmd %08x)%s\n", sel, cmd, sel <= 3 ? "" : " not modelled");
+            fprintf(stderr, "solstice: aes: key select %u (cmd %08x)%s\n", sel, cmd, sel <= 3 ? "" : " not modelled");
         }
         if (sel <= 3) a->key[ctx] = builtin(sel);
         return 1;
@@ -82,12 +82,12 @@ static int cmd_data(HvAes *a) {
     uint64_t dst = a->fifo[3] | (((uint64_t)a->fifo[1] << 32) & 0xffff00000000ull);
     HvAesKey *k = &a->key[key_ctx];
     if (k->len != 16 && k->len != 24 && k->len != 32) {
-        if (a->m->log) fprintf(stderr, "hengevm: aes: data command %08x with a %u-byte key (not modelled)\n", cmd, k->len);
+        if (a->m->log) fprintf(stderr, "solstice: aes: data command %08x with a %u-byte key (not modelled)\n", cmd, k->len);
         return 1;
     }
     uint8_t *in = hv_phys_ptr(a->m, src, len), *out = hv_phys_ptr(a->m, dst, len);
     if (!in || !out) {
-        if (a->m->log) fprintf(stderr, "hengevm: aes: DMA outside RAM (%llx -> %llx, %u bytes)\n",
+        if (a->m->log) fprintf(stderr, "solstice: aes: DMA outside RAM (%llx -> %llx, %u bytes)\n",
                                (unsigned long long)src, (unsigned long long)dst, len);
         return 1;
     }
@@ -97,7 +97,7 @@ static int cmd_data(HvAes *a) {
                                  k->key, k->len, a->cbc ? (const void *)a->iv[iv_ctx] : NULL, in, len, tmp, len,
                                  &moved);
     if (st == kCCSuccess) memcpy(out, tmp, len), hv_dma_written(a->m, dst, len);
-    else if (a->m->log) fprintf(stderr, "hengevm: aes: cipher failed (%d), length %u\n", (int)st, len);
+    else if (a->m->log) fprintf(stderr, "solstice: aes: cipher failed (%d), length %u\n", (int)st, len);
     free(tmp);
     return 1;
 }
@@ -114,7 +114,7 @@ static int cmd_store_iv(HvAes *a) {
 static void fifo_process(HvAes *a) {
     if (!a->fifo_idx) return;
     if (a->m->log >= 1 && getenv("HENGEVM_AES_LOG"))
-        fprintf(stderr, "hengevm: aes cmd %x (word %u of command %08x)\n", a->fifo[0] >> CMD_SHIFT, a->fifo_idx, a->fifo[0]);
+        fprintf(stderr, "solstice: aes cmd %x (word %u of command %08x)\n", a->fifo[0] >> CMD_SHIFT, a->fifo_idx, a->fifo[0]);
     int done;
     switch (a->fifo[0] >> CMD_SHIFT) {
     case CMD_KEY: done = cmd_key(a); break;
@@ -128,7 +128,7 @@ static void fifo_process(HvAes *a) {
         done = 1;
         break;
     default:
-        if (a->m->log) fprintf(stderr, "hengevm: aes: unknown command %08x\n", a->fifo[0]);
+        if (a->m->log) fprintf(stderr, "solstice: aes: unknown command %08x\n", a->fifo[0]);
         a->irq_status |= IRQ_INVALID_CMD;
         done = 1;
         break;
@@ -147,7 +147,7 @@ static uint64_t aes1_read(void *opaque, uint64_t off, unsigned size) {
     case REG_Q_STATUS: return a->q_status;
     case REG_FLAG_INFO: return a->flag_info;
     default:
-        if (a->m->log >= 2) fprintf(stderr, "hengevm: aes: read of unknown offset %llx\n", (unsigned long long)off);
+        if (a->m->log >= 2) fprintf(stderr, "solstice: aes: read of unknown offset %llx\n", (unsigned long long)off);
         return 0;
     }
 }
@@ -163,7 +163,7 @@ static void aes1_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
         fifo_process(a);
         break;
     default:
-        if (a->m->log >= 2) fprintf(stderr, "hengevm: aes: write of unknown offset %llx\n", (unsigned long long)off);
+        if (a->m->log >= 2) fprintf(stderr, "solstice: aes: write of unknown offset %llx\n", (unsigned long long)off);
         return;
     }
     update_irq(a);
@@ -177,7 +177,7 @@ static uint64_t aes2_read(void *opaque, uint64_t off, unsigned size) {
 static void aes2_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     HvAes *a = opaque;
     (void)size;
-    if (a->m->log) fprintf(stderr, "hengevm: aes2: write +%llx = %llx (not modelled)\n", (unsigned long long)off, (unsigned long long)v);
+    if (a->m->log) fprintf(stderr, "solstice: aes2: write +%llx = %llx (not modelled)\n", (unsigned long long)off, (unsigned long long)v);
 }
 
 HvAes *hv_aes_create(HvMachine *m, HvGic *gic, uint64_t pa1, uint64_t pa2, int intid) {

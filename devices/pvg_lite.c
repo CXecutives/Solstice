@@ -125,11 +125,11 @@ static void do_root(HvPvgLite *p) {
             hdr[i] = w ? *w : 0;
         }
         if (hdr[1] < 12 || hdr[1] > ring) {
-            fprintf(stderr, "hengevm: pvg-lite: bad root command %x length %x\n", hdr[0], hdr[1]);
+            fprintf(stderr, "solstice: pvg-lite: bad root command %x length %x\n", hdr[0], hdr[1]);
             p->root_rp = wp;
             break;
         }
-        if (p->log) fprintf(stderr, "hengevm: pvg-lite: root op %x len %x stamp %x\n", hdr[0], hdr[1], hdr[2]);
+        if (p->log) fprintf(stderr, "solstice: pvg-lite: root op %x len %x stamp %x\n", hdr[0], hdr[1], hdr[2]);
         if ((hdr[0] & 0xffff) == 0x38 && hdr[1] >= 28) {
             uint32_t *id = guest32(p, buf + off + (at + 12) % ring), *page = guest32(p, buf + off + (at + 24) % ring);
             if (id && page && *id >> 1 < 512) p->task_root[*id >> 1] = *page;
@@ -140,7 +140,7 @@ static void do_root(HvPvgLite *p) {
             if (dst && count) {
                 uint32_t n = sizeof device_info / sizeof device_info[0];
                 memcpy(dst, device_info, sizeof device_info);
-                if (p->log) fprintf(stderr, "hengevm: pvg-lite: device info: %u keys (asked %u)\n", n, *count);
+                if (p->log) fprintf(stderr, "solstice: pvg-lite: device info: %u keys (asked %u)\n", n, *count);
             }
         }
         p->root_rp += hdr[1];
@@ -282,7 +282,7 @@ static void display_swap(HvPvgLite *p, uint64_t mapping, const uint32_t *args) {
     *(uint32_t *)(d + 0xf98) = (uint32_t)p->swaps;
     *(uint32_t *)(d + 0xfb0) = (uint32_t)mapping;
     __atomic_fetch_or((uint32_t *)(d + 0x100), 2, __ATOMIC_RELEASE);
-    if (p->log) fprintf(stderr, "hengevm: pvg-lite: swap %llu: mapping %llu\n", (unsigned long long)p->swaps, (unsigned long long)mapping);
+    if (p->log) fprintf(stderr, "solstice: pvg-lite: swap %llu: mapping %llu\n", (unsigned long long)p->swaps, (unsigned long long)mapping);
 }
 
 /* Task memory: the root page holds {table page, depth}; each level has 4096
@@ -378,7 +378,7 @@ uint64_t hv_pvg_lite_task_objects(HvPvgLite *p, uint32_t task) {
     if (!p->task_objects[task] && p->task_root[task]) {
         if (!p->old_driver) {
             p->old_driver = 1;
-            fprintf(stderr, "hengevm: pvg-lite: an older guest GPU driver (no object list command): its own layouts\n");
+            fprintf(stderr, "solstice: pvg-lite: an older guest GPU driver (no object list command): its own layouts\n");
         }
         return OLD_DRIVER_OBJECTS;
     }
@@ -630,11 +630,11 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
             hdr[i] = w ? *w : 0;
         }
         if (hdr[1] < 12 || hdr[1] > size) {
-            fprintf(stderr, "hengevm: pvg-lite: channel %u: bad command %x length %x at %x\n", ch, hdr[0], hdr[1], rd);
+            fprintf(stderr, "solstice: pvg-lite: channel %u: bad command %x length %x at %x\n", ch, hdr[0], hdr[1], rd);
             rd = wr;
             break;
         }
-        if (p->log) fprintf(stderr, "hengevm: pvg-lite: ch %u op %x len %x stamp %x\n", ch, hdr[0], hdr[1], hdr[2]);
+        if (p->log) fprintf(stderr, "solstice: pvg-lite: ch %u op %x len %x stamp %x\n", ch, hdr[0], hdr[1], hdr[2]);
         {   /* HV_PVG_TRACE_FILE exists: the order commands reach the device in, with what a swap says */
             if (hv_pvg_trace_on()) {
                 uint32_t w[12] = {0};
@@ -665,7 +665,7 @@ static void do_channel(HvPvgLite *p, uint32_t ch) {
                         break;
                     }
                     p->barrier_timeouts++;
-                    fprintf(stderr, "hengevm: pvg-lite: channel %u gave up waiting for channel %u stamp %x (at %x)\n", ch, b[0], b[1], p->submitted[b[0]]);
+                    fprintf(stderr, "solstice: pvg-lite: channel %u gave up waiting for channel %u stamp %x (at %x)\n", ch, b[0], b[1], p->submitted[b[0]]);
                 }
                 p->barrier_waits[ch] = 0;
             }
@@ -841,7 +841,7 @@ static void gfx_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
         note_chans(p);
         if (__atomic_load_n(&p->status, __ATOMIC_ACQUIRE)) hv_gicv3_pend(p->gic, p->gfx_irq);
     } else if (p->log && off != 0x1020) {
-        fprintf(stderr, "hengevm: pvg-lite: write +%llx = %llx\n", (unsigned long long)off, (unsigned long long)v);
+        fprintf(stderr, "solstice: pvg-lite: write +%llx = %llx\n", (unsigned long long)off, (unsigned long long)v);
     }
     if (off == 0x1220 && p->metal) hv_pvg_metal_cursor_moved(p->metal); /* the display's doorbell: the pointer moved */
 }

@@ -197,7 +197,7 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
         goto flush;
     }
     if (m->gen_checks && jit_gen != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST))
-        fprintf(stderr, "hengevm: cpu %u translated across a flush: gen %u to %u, placed at rx+%llx, used %llx, active %d\n", cpu->index, jit_gen, m->jit_gen, (unsigned long long)nb.code_off * 4, (unsigned long long)m->jit.used * 4, cpu->pc_state->active);
+        fprintf(stderr, "solstice: cpu %u translated across a flush: gen %u to %u, placed at rx+%llx, used %llx, active %d\n", cpu->index, jit_gen, m->jit_gen, (unsigned long long)nb.code_off * 4, (unsigned long long)m->jit.used * 4, cpu->pc_state->active);
     block_dump(m, &nb, code);
     /* ...then take the lock only to publish it. */
     if (pthread_mutex_trylock(&m->tr_mu) != 0) {
@@ -371,7 +371,7 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what) {
             uint32_t *host = (uint32_t *)(uintptr_t)cpu->helper_ret; /* the block's blr into hv_helper_entry */
             HvBlock *b = hv_block_at(m, host);
             int lo = b ? (int)(b - m->blocks) : 0;
-            fprintf(stderr, "hengevm: el0 runs kernel code: block %llx flags %u (index %d of %d), flushes %llu, last stub %llx, "
+            fprintf(stderr, "solstice: el0 runs kernel code: block %llx flags %u (index %d of %d), flushes %llu, last stub %llx, "
                             "miss site %llx\n  recent:", b ? (unsigned long long)b->va : 0ull, b ? b->flags : 0, lo, m->nblocks,
                     (unsigned long long)m->stats.block_flushes, (unsigned long long)cpu->last_stub,
                     (unsigned long long)cpu->miss_site);
@@ -457,7 +457,7 @@ static void chain(HvCpu *cpu, uint64_t *slot, HvBlock *b) {
     uint32_t idx = HV_SLOT_INDEX(m, slot);
     uint32_t *code = hv_block_code(m, b);
     if (m->gen_checks && (hv_block_jit_gen(m, b) != m->jit_gen || (m->slot_site[idx] && (uint64_t)(m->slot_site[idx] - 1) >= m->jit.used)))
-        fprintf(stderr, "hengevm: chain slot %u site rx+%llx to rx+%llx va %llx: block gen %u now %u\n", idx, (unsigned long long)(m->slot_site[idx] ? m->slot_site[idx] - 1 : 0) * 4 /* stored as word offset + 1 */, (unsigned long long)b->code_off * 4, (unsigned long long)b->va, hv_block_jit_gen(m, b), m->jit_gen);
+        fprintf(stderr, "solstice: chain slot %u site rx+%llx to rx+%llx va %llx: block gen %u now %u\n", idx, (unsigned long long)(m->slot_site[idx] ? m->slot_site[idx] - 1 : 0) * 4 /* stored as word offset + 1 */, (unsigned long long)b->code_off * 4, (unsigned long long)b->va, hv_block_jit_gen(m, b), m->jit_gen);
     uint64_t xa = m->slot_xa[idx];
     HvRam *ram = hv_block_ram(m, b);
     uint64_t page_pa = b->pa & ~((1ull << HV_TLB_PAGE_BITS) - 1);
@@ -554,7 +554,7 @@ static void stop_the_world(HvCpu *cpu) {
             hv_cpu_process_requests(cpu); /* one of them may be waiting on a TLBI of ours */
             if (spins > 100) sched_yield();
         }
-        if (m->gen_checks) for (int i = 0; i < m->ncpus; i++) if (m->cpus[i] && m->cpus[i] != cpu && m->cpus[i]->pc_state->active) fprintf(stderr, "hengevm: flush while cpu %d is active\n", i);
+        if (m->gen_checks) for (int i = 0; i < m->ncpus; i++) if (m->cpus[i] && m->cpus[i] != cpu && m->cpus[i]->pc_state->active) fprintf(stderr, "solstice: flush while cpu %d is active\n", i);
         pthread_mutex_lock(&m->tr_mu);
         hv_flush_blocks(m);
         pthread_mutex_unlock(&m->tr_mu);
@@ -675,7 +675,7 @@ static int run_loop(HvCpu *cpu, int one) {
         if ((m->log || m->gen_checks) && cpu->el && (cpu->sctlr_el1 & 1) && !((cpu->pc >> 55) & 1) && cpu->pc >= 0x100000000ull) { /* EL1 at a user address: how did we get here? */
             static int reported;
             if (reported++ < 4) {
-                fprintf(stderr, "hengevm: el1 at user pc %llx: previous block %llx flags %x (%u insns), exit reason %u, why %d, "
+                fprintf(stderr, "solstice: el1 at user pc %llx: previous block %llx flags %x (%u insns), exit reason %u, why %d, "
                                 "miss site %llx, elr %llx spsr %llx x30 %llx, fast resumes %llu\n  recent:",
                         (unsigned long long)cpu->pc, (unsigned long long)prev_pc, prev_b ? prev_b->flags : 0, prev_b ? prev_b->ninsns : 0,
                         last_reason, why, (unsigned long long)cpu->miss_site, (unsigned long long)cpu->elr_el1,
@@ -688,7 +688,7 @@ static int run_loop(HvCpu *cpu, int one) {
         if (m->log && !cpu->el && ((cpu->pc >> 55) & 1)) { /* EL0 can never run kernel code: say how we got here */
             static int reported;
             if (reported++ < 4)
-                fprintf(stderr, "hengevm: el0 at kernel pc %llx: previous block %llx, exit reason %u, why %d, miss site %llx, "
+                fprintf(stderr, "solstice: el0 at kernel pc %llx: previous block %llx, exit reason %u, why %d, miss site %llx, "
                                 "elr %llx spsr %llx x30 %llx\n",
                         (unsigned long long)cpu->pc, (unsigned long long)prev_pc, last_reason, why,
                         (unsigned long long)cpu->miss_site, (unsigned long long)cpu->elr_el1,
@@ -721,7 +721,7 @@ static int run_loop(HvCpu *cpu, int one) {
             if (m->flush_pending || __atomic_load_n(&m->stw_active, __ATOMIC_SEQ_CST) || m->stats.block_flushes != flushes ||
                 (cpu->pc_state->cc_work & HV_CC_NEED))
                 continue;
-            fprintf(stderr, "hengevm: cannot translate block at %llx\n", (unsigned long long)cpu->pc);
+            fprintf(stderr, "solstice: cannot translate block at %llx\n", (unsigned long long)cpu->pc);
             park(cpu);
             return HV_EXIT_UNSUPPORTED;
         }
@@ -829,7 +829,7 @@ static int run_loop(HvCpu *cpu, int one) {
         st->blocks++;
         if (m->stats_interval && (st->blocks & 0xfff) == 0) hv_stats_tick(cpu);
         if (m->gen_checks && ((uint64_t)b->code_off >= m->jit.used || hv_block_jit_gen(m, b) != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)))
-            fprintf(stderr, "hengevm: cpu %u entering %p (rx+%llx, used %llx) for va %llx: block gen %u, now %u, maker %u\n", cpu->index, (void *)hv_block_code(m, b), (unsigned long long)b->code_off * 4, (unsigned long long)m->jit.used * 4, (unsigned long long)b->va, hv_block_jit_gen(m, b), m->jit_gen, b->maker);
+            fprintf(stderr, "solstice: cpu %u entering %p (rx+%llx, used %llx) for va %llx: block gen %u, now %u, maker %u\n", cpu->index, (void *)hv_block_code(m, b), (unsigned long long)b->code_off * 4, (unsigned long long)m->jit.used * 4, (unsigned long long)b->va, hv_block_jit_gen(m, b), m->jit_gen, b->maker);
         hv_enter(cpu, hv_block_code(m, b));
 
         if (cpu->exit_reason == HV_EXIT_BRANCH && cpu->last_stub && m->chain) {

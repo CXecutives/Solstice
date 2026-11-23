@@ -82,7 +82,7 @@ static IOSurfaceRef make_iosurface(HvObject *to, const uint8_t *desc, uint64_t a
         static int logged;
         if (planes >= 2 && logged++ < 4)
             for (uint32_t i = 0; i < planes && i < IOSurfaceGetPlaneCount(made) && i < 4; i++)
-                fprintf(stderr, "hengevm: video plane %u guest off %llu row %llu h %llu; host row %zu h %zu\n",
+                fprintf(stderr, "solstice: video plane %u guest off %llu row %llu h %llu; host row %zu h %zu\n",
                         i, (unsigned long long)to->plane_from[i], (unsigned long long)to->plane_row[i],
                         (unsigned long long)to->plane_h[i], IOSurfaceGetBytesPerRowOfPlane(made, i),
                         IOSurfaceGetHeightOfPlane(made, i));
@@ -269,7 +269,7 @@ static void dump_host_surface(HvObject *s) {
         surface->planar_key = pk;
         planar_uses[pk] = @(planar_uses[pk].unsignedIntValue + 1);
         static int told;
-        if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: surface %llu shares the host surface of the same guest memory (%s)\n", mapping, pk.UTF8String);
+        if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: surface %llu shares the host surface of the same guest memory (%s)\n", mapping, pk.UTF8String);
         return;
     }
     surface->iosurface = made;
@@ -437,7 +437,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
     MTLTextureSwizzleChannels sw = t.swizzle;
     if (sw.red != MTLTextureSwizzleRed || sw.green != MTLTextureSwizzleGreen || sw.blue != MTLTextureSwizzleBlue || sw.alpha != MTLTextureSwizzleAlpha) {
         static int told;
-        if (told++ < 3) fprintf(stderr, "hengevm: pvg-metal: surface %llu asked for swizzle %u %u %u %u; drawing it unswizzled\n", h.mapping, sw.red, sw.green, sw.blue, sw.alpha);
+        if (told++ < 3) fprintf(stderr, "solstice: pvg-metal: surface %llu asked for swizzle %u %u %u %u; drawing it unswizzled\n", h.mapping, sw.red, sw.green, sw.blue, sw.alpha);
         t.swizzle = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleGreen, MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha);
     }
     o->surface = surface;
@@ -459,7 +459,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
             o->object = [pages newTextureWithDescriptor:t offset:at_plane bytesPerRow:surface->plane_row[plane]];
         if (o->object) {
             static int told;
-            if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: surface %llu: %lux%lu format %lu on plane %u, on its pages at %llu, rows of %llu\n",
+            if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: surface %llu: %lux%lu format %lu on plane %u, on its pages at %llu, rows of %llu\n",
                                     h.mapping, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, plane,
                                     (unsigned long long)at_plane, (unsigned long long)surface->plane_row[plane]);
             if (!plane) mapped_textures[@(h.mapping)] = o->object;
@@ -476,7 +476,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
     }
     if (plane) {
         static int told;
-        if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: surface %llu: texture %lux%lu format %lu on plane %u\n", h.mapping,
+        if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: surface %llu: texture %lux%lu format %lu on plane %u\n", h.mapping,
                                 (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, plane);
     }
     if (surface->iosurface) {

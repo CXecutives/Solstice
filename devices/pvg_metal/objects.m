@@ -29,7 +29,7 @@
             uint64_t at = (uint64_t)e[2] << 32 | e[1];
             [self makeMappedTexture:again at:at task:task];
             static int told;
-            if (again->object && told++ < 30) fprintf(stderr, "hengevm: pvg-metal: task %u ref %u: texture made on try %u%s\n", task, ref, tries, replaced ? " (surface replaced)" : "");
+            if (again->object && told++ < 30) fprintf(stderr, "solstice: pvg-metal: task %u ref %u: texture made on try %u%s\n", task, ref, tries, replaced ? " (surface replaced)" : "");
             return again;
         }
         if (!o->follows) return o;
