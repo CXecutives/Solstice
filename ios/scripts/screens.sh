@@ -52,6 +52,8 @@ prepare() { # label udid
     limit 600 xcrun simctl status_bar "$2" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
         --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 > /dev/null
     echo "==> $1 status bar set at $((SECONDS - t0))s"
+    # The keyboard's first-use introduction (slide to type) would cover the key row.
+    limit 60 xcrun simctl spawn "$2" defaults write com.apple.keyboard.preferences DidShowContinuousPathIntroduction -bool true || true
     limit 600 xcrun simctl install "$2" "$APP"
     echo "==> $1 has the app at $((SECONDS - t0))s"
 }
@@ -80,8 +82,9 @@ shoot_all() { # label udid
             case " $flags " in *" dark-only "*) [ "$appearance" = dark ] || continue ;; esac
             ready="$(launch "$udid" "$container" "$name")"
             [ "$ready" = skip ] && continue
-            if [ "$ready" != "$name" ]; then
-                echo "::warning::$label $appearance $name: not ready ($ready); photographed anyway"
+            [ "$ready" = "$name" ] || echo "::warning::$label $appearance $name: not ready ($ready); photographed anyway"
+            # The app's log, for a screen that was not ready and for each session (it says what the session was doing).
+            if [ "$ready" != "$name" ] || [ "${name#session}" != "$name" ]; then
                 mkdir -p "$OUT/logs" && cp "$container/Documents/solstice.log" "$OUT/logs/$label-$appearance-$name.log" 2>/dev/null || true
             fi
             sleep 0.3
@@ -108,12 +111,18 @@ diagnose() {
 }
 trap diagnose EXIT
 # Whatever is left after this many seconds is not photographed, so that what was taken is still uploaded.
-DEADLINE=$((SECONDS + ${SCREENS_MINUTES:-30} * 60))
+DEADLINE=$((SECONDS + ${SCREENS_MINUTES:-40} * 60))
 
 # One device after the other: two at once on the runner made each step several times slower (2026-11-23).
+# A device the runner image already has is used if there is one (it may have booted before, which saves minutes).
 device() { # label type
-    local udid container listed
-    udid="$(xcrun simctl create "Screens $1" "$2" "$RUNTIME")"
+    local udid container listed made=""
+    udid="$(xcrun simctl list devices -j | python3 -I -c 'import json, sys
+runtime, kind = sys.argv[1], sys.argv[2]
+d = [x for x in json.load(sys.stdin)["devices"].get(runtime, []) if x.get("deviceTypeIdentifier") == kind and x.get("isAvailable")]
+print(d[0]["udid"] if d else "")' "$RUNTIME" "$2")"
+    if [ -z "$udid" ]; then udid="$(xcrun simctl create "Screens $1" "$2" "$RUNTIME")"; made=1; fi
+    echo "==> $1: ${made:+new }device $udid"
     prepare "$1" "$udid"
     container="$(xcrun simctl get_app_container "$udid" "$BUNDLE" data)"
     if [ ! -s "$OUT/screens.txt" ]; then
@@ -131,7 +140,7 @@ device() { # label type
     fi
     shoot_all "$(echo "$1" | tr '[:upper:]' '[:lower:]')" "$udid"
     limit 120 xcrun simctl shutdown "$udid" || true
-    limit 120 xcrun simctl delete "$udid" || true
+    [ -z "$made" ] || limit 120 xcrun simctl delete "$udid" || true
 }
 device iPhone "$PHONE"
 device iPad "$PAD"

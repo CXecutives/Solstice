@@ -80,6 +80,7 @@ struct Screen {
         Screen(name: "session-shut-down", root: .session(confirmStop: true)),
         Screen(name: "session-stuck", root: .session(), whenUp: { session in
             session.screens(shutdownAskedAgo: LifecycleWatchdog.shutdownLimit + 5)
+            for _ in 0..<30 where session.stuck == nil { try? await Task.sleep(nanoseconds: 100_000_000) } // the run loop's next turn
         }),
         Screen(name: "session-storage", root: .session(), whenUp: { session in
             // Storage's own reading runs every 2 s while paused: the sample's figure is put back until the picture is taken.
@@ -158,6 +159,10 @@ enum Screens {
         }
         await screen.whenUp(session)
         try? await Task.sleep(nanoseconds: 1_000_000_000) // animations, sheets and the first engine poll
+        if case .session = screen.root {
+            HengeLog.log("screens", "\(screen.name): state \(session.state.rawValue), error \(session.error ?? "none"), "
+                         + "stuck \(session.stuck.map { "\($0)" } ?? "no"), storage paused \(session.storagePaused)")
+        }
         if screen.page > 0 {
             guard scroll(to: screen.page) else { return mark("skip") }
             try? await Task.sleep(nanoseconds: 400_000_000)
