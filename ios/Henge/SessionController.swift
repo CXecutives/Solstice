@@ -354,3 +354,16 @@ final class SessionController: ObservableObject {
             + "in its settings and tap Restart Now."
     }
 }
+
+#if SOLSTICE_SCREENS
+extension SessionController {
+    /// The simulator app for screenshots (ios/Screens): macOS was asked to shut down this long ago (the watchdog's card).
+    func screens(shutdownAskedAgo: TimeInterval) { shutdownAsked = Date().addingTimeInterval(-shutdownAskedAgo) }
+    /// The same: paused for want of storage, with this much free.
+    func screens(storageFree free: Int64) {
+        storagePaused = true
+        storageRoom = false
+        storageFree = free
+    }
+}
+#endif

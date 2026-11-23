@@ -23,6 +23,7 @@ eingecheckt): `HANDOFF.local.md`.
 - `tools/check.sh test_jit test_mem` – nur die genannten Engine-Tests (berührte Teile).
 - `tools/check-all.sh` – alle Engine-Tests (normal, wie ausgeliefert + ThinLTO, mit UB-Fallen), Registerschutz-Prüfung,
   iOS-Build; die IPA landet in `out/Solstice.ipa`.
+- `tools/screens.sh` – Bildschirmfotos aller App-Bildschirme (Simulator, Beispieldaten) nach `out/screens/`, Übersicht `index.html`.
 - `tools/shipped_env.py` – die ausgelieferten Engine-Einstellungen aus `EngineTuning.swift` (CI testet damit).
 - `tools/regen.sh` – schreibt alles Erzeugte neu (Knopf-Tabelle, Karte); CI prüft, dass es aktuell ist.
 - `tools/windows-sideload.ps1` – richtet einen Windows-PC fürs Sideloading ein (Apple-Gerätedienst, Treiber).

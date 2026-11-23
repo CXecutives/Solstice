@@ -42,7 +42,7 @@ enum HengeBuiltInJIT {
     private static var running: [HelperRequest] = []
 
     static var unavailableReason: String? {
-#if targetEnvironment(simulator)
+#if targetEnvironment(simulator) && !SOLSTICE_SCREENS // the screenshots show the device's walkthrough
         return "Built-in JIT is available only on a physical device."
 #else
         return nil

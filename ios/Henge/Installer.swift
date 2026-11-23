@@ -315,3 +315,18 @@ final class Installer: NSObject, ObservableObject {
     }
 }
 
+#if SOLSTICE_SCREENS
+extension Installer {
+    /// The simulator app for screenshots (ios/Screens): an install at this point.
+    func screens(_ phase: Phase, received: Int64 = 0, expected: Int64 = 0, step: Int = 0, stepProgress: Double = 0,
+                 machineName: String) {
+        self.phase = phase
+        self.received = received
+        self.expected = expected
+        self.step = step
+        self.stepProgress = stepProgress
+        self.machineName = machineName
+    }
+}
+#endif
+

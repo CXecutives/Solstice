@@ -519,3 +519,17 @@ struct SessionView: View {
         if state == HENGE_VM_RUNNING { confirmStop = true } else { close() }
     }
 }
+
+#if SOLSTICE_SCREENS
+extension SessionView {
+    /// The simulator app for screenshots (ios/Screens): the session with its controller, and typing, the details or the
+    /// shut-down question already open.
+    init(screens mac: VirtualMac, session: SessionController, typing: Bool, details: Bool, confirmStop: Bool) {
+        self.init(mac: mac, close: {})
+        _session = StateObject(wrappedValue: session)
+        _typing = State(initialValue: typing)
+        _showDetails = State(initialValue: details)
+        _confirmStop = State(initialValue: confirmStop)
+    }
+}
+#endif

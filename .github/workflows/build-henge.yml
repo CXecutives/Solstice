@@ -1,6 +1,7 @@
 # .github/workflows/build-henge.yml
 #
-# Solstice's only build: engine tests, Swift tests and/or the IPA, on GitHub-hosted macOS runners (no Mac needed).
+# Solstice's only build: engine tests, Swift tests, the IPA and/or screenshots of the app, on GitHub-hosted macOS
+# runners (no Mac needed).
 # Every macOS job runs on the Xcode 27 image: the ordinary image (macos-26) passes the tests too, but its pool gave this
 # repository one runner at a time and dropped a second job after 15 minutes unstarted.
 # It runs only on demand and does just what the inputs ask; tools/check.sh and tools/check-all.sh start it.
@@ -23,6 +24,10 @@ on:
         default: true
       san:
         description: Run the engine tests a second time with undefined-behaviour traps
+        type: boolean
+        default: false
+      screens:
+        description: Screenshots of every app screen in the simulator, with sample data (tools/screens.sh)
         type: boolean
         default: false
 
@@ -113,6 +118,36 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Swift tests (pure logic, built for the Mac)
         run: make swift-test
+
+  # The app in the simulator with the engine stubbed (ios/screens.yml): every screen, iPhone and iPad, light and dark.
+  screens:
+    name: Screens
+    if: inputs.screens
+    runs-on: xcode-27
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Photograph every screen
+        env:
+          SCREENS_OUT: ${{ github.workspace }}/screens
+        run: bash ios/scripts/screens.sh
+      - name: Upload the screenshots
+        if: always() # what was taken, also when a screen failed
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Solstice-screens
+          path: ${{ github.workspace }}/screens
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: screens-buildlog
+          path: ios/build/ScreensData.buildlog
+          if-no-files-found: ignore
 
   ios:
     name: iOS build

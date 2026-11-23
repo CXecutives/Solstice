@@ -8,6 +8,9 @@ struct HengeApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        #if SOLSTICE_SCREENS
+        Screens.prepare() // the simulator app for screenshots (ios/screens.yml): its sample world, before anything reads it
+        #endif
         // Order matters: HengeLog takes over stderr, so the engine's and the JIT
         // allocator's first lines land in Documents/solstice.log too.
         HengeLog.start()
@@ -30,8 +33,12 @@ struct HengeApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if SOLSTICE_SCREENS
+            ScreensRoot()
+            #else
             RootView()
                 .onOpenURL { url in HengeLog.log("app", "opened with \(url.absoluteString)") } // solstice:// back from LocalDevVPN
+            #endif
         }
     }
 }
@@ -142,3 +149,13 @@ extension RootView {
         running = mac
     }
 }
+
+#if SOLSTICE_SCREENS
+extension RootView {
+    /// The simulator app for screenshots (ios/Screens): opens on this tab.
+    init(screensTab: Tab) {
+        self.init()
+        _tab = State(initialValue: screensTab)
+    }
+}
+#endif
