@@ -6,22 +6,17 @@ enum PointerMode: String, CaseIterable, Identifiable {
     case trackpad // the screen is the Mac's trackpad: the pointer moves with the finger, from where it was
     case direct   // the finger is the pointer: it goes where you touch, and a tap clicks there
 
-    static let key = "henge.touch.mode"
     var id: String { rawValue }
     var title: String { self == .trackpad ? "Trackpad" : "Direct touch" }
 }
 
 /// The touch surface's timing, as the person set it.
 enum TouchTiming {
-    static let holdKey = "henge.touch.hold"
-    static let tapDragKey = "henge.touch.tapDrag"
-    static let defaultHold = 0.4
-    static let defaultTapDrag = 0.25
 
     static func timing(hold: Double, tapDrag: Double) -> TouchGestures.Timing {
         var t = TouchGestures.Timing()
-        t.hold = hold.isFinite ? min(max(hold, 0.2), 1) : defaultHold
-        t.tapDrag = tapDrag.isFinite ? min(max(tapDrag, 0), 0.5) : defaultTapDrag
+        t.hold = hold.isFinite ? min(max(hold, 0.2), 1) : SettingDefault.touchHold
+        t.tapDrag = tapDrag.isFinite ? min(max(tapDrag, 0), 0.5) : SettingDefault.touchTapDrag
         return t
     }
 }
@@ -29,7 +24,7 @@ enum TouchTiming {
 extension KeyLayout {
     /// The layout set in Settings; until one is, the one the on-screen keyboard's language suggests.
     static var current: KeyLayout {
-        if let raw = UserDefaults.standard.string(forKey: key), let layout = KeyLayout(rawValue: raw) { return layout }
+        if let raw = UserDefaults.standard.string(forKey: SettingKey.keyLayout.rawValue), let layout = KeyLayout(rawValue: raw) { return layout }
         return suggested
     }
 
@@ -43,12 +38,12 @@ extension KeyLayout {
 
 /// Settings › Pointer & Trackpad: how touches, and on an iPad a trackpad or mouse, drive the Mac.
 struct PointerSettings: View {
-    @AppStorage(PointerMode.key) private var mode = PointerMode.trackpad
-    @AppStorage(TouchTiming.holdKey) private var hold = TouchTiming.defaultHold
-    @AppStorage(TouchTiming.tapDragKey) private var tapDrag = TouchTiming.defaultTapDrag
-    @AppStorage(HardwareMouse.speedKey) private var mouseSpeed = 1.0
-    @AppStorage(HardwareMouse.reverseKey) private var reverseScrolling = false
-    @AppStorage(PhysicalMouseButtons.swapKey) private var swapButtons = false
+    @AppStorage(SettingKey.touchMode.rawValue) private var mode = PointerMode.trackpad
+    @AppStorage(SettingKey.touchHold.rawValue) private var hold = SettingDefault.touchHold
+    @AppStorage(SettingKey.touchTapDrag.rawValue) private var tapDrag = SettingDefault.touchTapDrag
+    @AppStorage(SettingKey.mouseSpeed.rawValue) private var mouseSpeed = SettingDefault.mouseSpeed
+    @AppStorage(SettingKey.reverseScrolling.rawValue) private var reverseScrolling = false
+    @AppStorage(SettingKey.swapMouseButtons.rawValue) private var swapButtons = false
 
     var body: some View {
         Section {
@@ -87,11 +82,11 @@ struct PointerSettings: View {
 /// Scroll speed, for Settings and the running Mac's panel: it applies at once, to two fingers on the screen as well as
 /// to a trackpad or mouse.
 struct ScrollSpeedRow: View {
-    @AppStorage(HardwareMouse.scrollSpeedKey) private var speed = HardwareMouse.defaultScrollSpeed
+    @AppStorage(SettingKey.scrollSpeed.rawValue) private var speed = SettingDefault.scrollSpeed
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            LabeledContent("Scroll Speed", value: String(format: "%.1f×", speed / HardwareMouse.defaultScrollSpeed))
+            LabeledContent("Scroll Speed", value: String(format: "%.1f×", speed / SettingDefault.scrollSpeed))
             Slider(value: $speed, in: HardwareMouse.scrollSpeeds)
         }
     }
@@ -99,8 +94,8 @@ struct ScrollSpeedRow: View {
 
 /// Settings › Mac's Keyboard: its layout, and copied text going to the Mac.
 struct KeyboardSettings: View {
-    @AppStorage(KeyLayout.key) private var layout = KeyLayout.suggested
-    @AppStorage(Sharing.syncClipboardKey) private var sync = false
+    @AppStorage(SettingKey.keyLayout.rawValue) private var layout = KeyLayout.suggested
+    @AppStorage(SettingKey.syncClipboard.rawValue) private var sync = false
 
     var body: some View {
         Section {

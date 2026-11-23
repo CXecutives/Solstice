@@ -15,9 +15,8 @@ import UIKit
 /// stays cool and the GPU, which is not Henge's there, is left alone. An install cannot be paused and goes on.
 @MainActor
 enum KeepAlive {
-    static let key = "henge.keepAlive"
     /// On unless turned off in Settings.
-    nonisolated static var enabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+    nonisolated static var enabled: Bool { UserDefaults.standard.object(forKey: SettingKey.keepAwake.rawValue) as? Bool ?? SettingDefault.keepAwake }
 
     private static var engine: AVAudioEngine?
     private static var player: AVAudioPlayerNode?

@@ -341,7 +341,7 @@ final class Machines: ObservableObject {
 
     /// Before per-Mac CPUs one count was kept for the whole app: the Macs made then keep it, once, and the key goes.
     private func migrateCPUs() {
-        let d = UserDefaults.standard, key = "henge.cpus"
+        let d = UserDefaults.standard, key = SettingKey.legacyCPUs.rawValue
         guard let appWide = d.object(forKey: key) as? Int else { return }
         for i in all.indices where all[i].cpuCount == nil { all[i].cpuCount = appWide }
         save()

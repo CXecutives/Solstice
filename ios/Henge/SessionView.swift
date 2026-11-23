@@ -12,8 +12,8 @@ struct SessionView: View {
     @State private var bootAttempt = 0
     @ObservedObject private var power = PowerPolicy.shared // heat: the Mac may be paused for it
     private var cpus: Int { mac.cpus }
-    @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
-    @AppStorage("henge.cursor.scale") private var cursorScale = Device.isPad ? 1 : 3
+    @AppStorage(SettingKey.screenBrightness.rawValue) private var screenBrightness = SettingDefault.screenBrightness
+    @AppStorage(SettingKey.cursorScale.rawValue) private var cursorScale = Device.isPad ? 1 : 3
 
     @State private var typing = false
     @State private var zoomed = false
@@ -21,10 +21,10 @@ struct SessionView: View {
     @State private var controlsHidden = false
     @State private var showRevealHint = false
     @State private var pointerRefused = false
-    @AppStorage("henge.controls.hintsShown") private var revealHintsShown = 0
+    @AppStorage(SettingKey.controlsHintsShown.rawValue) private var revealHintsShown = 0
     /// Once per install: macOS's moving wallpapers and aerial screen saver are video, decoded by the emulated
     /// CPUs (a phone ran about 30% faster with a still one).
-    @AppStorage("henge.tips.stillWallpaperShown") private var stillWallpaperTipShown = false
+    @AppStorage(SettingKey.stillWallpaperTipShown.rawValue) private var stillWallpaperTipShown = false
     @State private var showWallpaperTip = false
     @State private var confirmStop = false
     @State var zoomCentre = CGPoint(x: 0.5, y: 0.5) // where the zoomed view is, 0...1 of the Mac's screen

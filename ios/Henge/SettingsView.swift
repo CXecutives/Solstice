@@ -3,8 +3,8 @@ import SwiftUI
 /// The app's settings, one section per subject; the sections that have their own file are placed here.
 struct SettingsView: View {
     @ObservedObject private var jit = JITCoordinator.shared
-    @AppStorage(JITCoordinator.autoEnableKey) private var jitAtLaunch = true
-    @AppStorage(DeskAppearance.key) private var appearance = DeskAppearance.system
+    @AppStorage(SettingKey.jitAtLaunch.rawValue) private var jitAtLaunch = SettingDefault.jitAtLaunch
+    @AppStorage(SettingKey.appearance.rawValue) private var appearance = DeskAppearance.system
 
     var body: some View {
         NavigationStack {
@@ -42,9 +42,9 @@ struct SettingsView: View {
 
 /// Settings › Advanced: what the engine starts a Mac with. Each choice has an Automatic that follows this device.
 private struct AdvancedSettings: View {
-    @AppStorage(EngineTuning.refreshKey) private var refreshRate: Int?
-    @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB: Int?
-    @AppStorage(EngineTuning.fastFlushKey) private var fastFlush = true
+    @AppStorage(SettingKey.refreshRate.rawValue) private var refreshRate: Int?
+    @AppStorage(SettingKey.codeCacheMB.rawValue) private var codeCacheMB: Int?
+    @AppStorage(SettingKey.fastFlush.rawValue) private var fastFlush = SettingDefault.fastFlush
     @State private var safeMode = SafeMode.active
 
     /// Only the sizes the signing allows (DeviceProfile.jitMB takes a larger one as 1 GB).
@@ -85,9 +85,9 @@ private struct AdvancedSettings: View {
 /// Settings › Diagnostics: the memory iOS gives Solstice, the log, and the log sent live to a computer.
 private struct DiagnosticsSettings: View {
     @ObservedObject private var stream = LogStream.shared
-    @AppStorage(LogStream.enabledKey) private var streamOn = false
-    @AppStorage(LogStream.hostKey) private var streamHost = ""
-    @AppStorage(LogStream.portKey) private var streamPort = LogStream.defaultPort
+    @AppStorage(SettingKey.logStreamOn.rawValue) private var streamOn = false
+    @AppStorage(SettingKey.logStreamHost.rawValue) private var streamHost = ""
+    @AppStorage(SettingKey.logStreamPort.rawValue) private var streamPort = SettingDefault.logStreamPort
     /// Typing an address should not reconnect on every key: the change is applied once it settles.
     @State private var applyStream: Task<Void, Never>?
 

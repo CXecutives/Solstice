@@ -3,9 +3,9 @@ import SwiftUI
 /// Settings › When You Leave: staying awake in the background, picking up where the Mac was, and starting the last Mac
 /// at launch.
 struct LifecycleSettings: View {
-    @AppStorage(KeepAlive.key) private var keepAlive = true
-    @AppStorage(InstantResume.key) private var instantResume = true
-    @AppStorage(AutoStart.key) private var autoStart = true
+    @AppStorage(SettingKey.keepAwake.rawValue) private var keepAlive = SettingDefault.keepAwake
+    @AppStorage(SettingKey.instantResume.rawValue) private var instantResume = SettingDefault.instantResume
+    @AppStorage(SettingKey.autoStartMac.rawValue) private var autoStart = SettingDefault.autoStartMac
 
     var body: some View {
         Section {

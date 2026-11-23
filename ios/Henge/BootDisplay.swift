@@ -17,7 +17,7 @@ struct BootDisplay: View {
     @State private var image: CGImage?
     @State private var gpuLive = false
     @State private var stopped = false
-    @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
+    @AppStorage(SettingKey.screenBrightness.rawValue) private var screenBrightness = SettingDefault.screenBrightness
 
     var body: some View {
         ZStack {

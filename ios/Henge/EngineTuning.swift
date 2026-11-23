@@ -4,8 +4,6 @@ import Foundation
 /// then Documents/henge-env.txt (HV_ variables only, EnvOverrides) overrides them all.
 /// Applied at launch and again before each Mac starts, so changes need no relaunch.
 enum EngineTuning {
-    static let refreshKey = "henge.perf.hz"
-    static let fastFlushKey = "henge.perf.fastFlush"
 
     /// What upstream Henge starts its engine with. Safe mode (SafeMode, HV_SAFE) runs with exactly these.
     static let upstream: [String: String] = [
@@ -51,9 +49,9 @@ enum EngineTuning {
         var env = safe ? upstream : defaults
         let d = UserDefaults.standard
         // A rate the panel cannot show (120 chosen before, or on another device) stays at the default.
-        let hz = d.integer(forKey: refreshKey)
+        let hz = d.integer(forKey: SettingKey.refreshRate.rawValue)
         if hz != Device.defaultRefresh, Device.refreshChoices.contains(hz) { env["HV_HZ"] = String(hz) }
-        if d.object(forKey: fastFlushKey) as? Bool == false { env["HV_FLUSH"] = "0" }
+        if d.object(forKey: SettingKey.fastFlush.rawValue) as? Bool == false { env["HV_FLUSH"] = "0" }
         // GPU command trace: on while Documents/trace-on exists (it is checked every frame, so it can be toggled live).
         env["HV_PVG_TRACE_FILE"] = docs.appendingPathComponent("trace-on").path
         env["HV_SAFE"] = safe ? "1" : nil
@@ -73,10 +71,6 @@ enum EngineTuning {
 /// iOS's watchdog ended, a memory kill), the engine starts with upstream Henge's defaults (EngineTuning.upstream)
 /// until a new build is installed or it is turned off in Settings. Said once, when it comes on.
 enum SafeMode {
-    private static let liveKey = "solstice.macLive"           // a Mac is running with Henge in the foreground
-    private static let streakKey = "solstice.uncleanEnds"     // launches in a row that ended that way
-    private static let onKey = "solstice.safeMode"
-    private static let buildKey = "solstice.safeModeBuild"    // the build the two counts are for
     private(set) static var active = false
     /// It came on at this launch: the app says so once.
     private(set) static var justCameOn = false
@@ -89,32 +83,32 @@ enum SafeMode {
     /// Once, at launch, before EngineTuning.apply.
     static func noteLaunch() {
         let d = UserDefaults.standard
-        if d.string(forKey: buildKey) != build { // a new build starts afresh: it may be the fix
-            d.set(build, forKey: buildKey)
-            d.set(0, forKey: streakKey)
-            d.set(false, forKey: onKey)
-            d.set(false, forKey: liveKey)
+        if d.string(forKey: SettingKey.safeModeBuild.rawValue) != build { // a new build starts afresh: it may be the fix
+            d.set(build, forKey: SettingKey.safeModeBuild.rawValue)
+            d.set(0, forKey: SettingKey.uncleanEnds.rawValue)
+            d.set(false, forKey: SettingKey.safeMode.rawValue)
+            d.set(false, forKey: SettingKey.macLive.rawValue)
         }
-        let streak = d.bool(forKey: liveKey) ? d.integer(forKey: streakKey) + 1 : 0
-        d.set(streak, forKey: streakKey)
-        d.set(false, forKey: liveKey)
-        if streak >= 2 && !d.bool(forKey: onKey) {
-            d.set(true, forKey: onKey)
+        let streak = d.bool(forKey: SettingKey.macLive.rawValue) ? d.integer(forKey: SettingKey.uncleanEnds.rawValue) + 1 : 0
+        d.set(streak, forKey: SettingKey.uncleanEnds.rawValue)
+        d.set(false, forKey: SettingKey.macLive.rawValue)
+        if streak >= 2 && !d.bool(forKey: SettingKey.safeMode.rawValue) {
+            d.set(true, forKey: SettingKey.safeMode.rawValue)
             justCameOn = true
         }
-        active = d.bool(forKey: onKey)
+        active = d.bool(forKey: SettingKey.safeMode.rawValue)
         if streak > 0 { HengeLog.log("app", "the last \(streak) launch(es) ended while a Mac was running") }
         if active { HengeLog.log("app", "safe mode is on: the engine runs with upstream Henge's defaults") }
     }
 
     /// A Mac runs and Henge is in front: ending now would count.
     static func macLive(_ live: Bool) {
-        UserDefaults.standard.set(live, forKey: liveKey)
+        UserDefaults.standard.set(live, forKey: SettingKey.macLive.rawValue)
     }
 
     static func turnOff() {
-        UserDefaults.standard.set(false, forKey: onKey)
-        UserDefaults.standard.set(0, forKey: streakKey)
+        UserDefaults.standard.set(false, forKey: SettingKey.safeMode.rawValue)
+        UserDefaults.standard.set(0, forKey: SettingKey.uncleanEnds.rawValue)
         active = false
         HengeLog.log("app", "safe mode turned off: Solstice's engine defaults from the next Mac start")
     }
