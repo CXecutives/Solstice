@@ -48,10 +48,12 @@ limit() { local s="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@" < /de
 prepare() { # label udid
     local t0=$SECONDS
     limit 900 xcrun simctl bootstatus "$2" -b > /dev/null
-    limit 60 xcrun simctl status_bar "$2" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
-        --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 > /dev/null
-    limit 120 xcrun simctl install "$2" "$APP"
     echo "==> $1 booted in $((SECONDS - t0))s"
+    limit 600 xcrun simctl status_bar "$2" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+        --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 > /dev/null
+    echo "==> $1 status bar set at $((SECONDS - t0))s"
+    limit 600 xcrun simctl install "$2" "$APP"
+    echo "==> $1 has the app at $((SECONDS - t0))s"
 }
 
 # Launches the app with an argument and waits for its marker (wait: tenths of a second); prints what the marker says.
