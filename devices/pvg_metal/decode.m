@@ -9,6 +9,10 @@ typedef struct {
 #define U64(off) ({ uint64_t _v; memcpy(&_v, r.p + (off), 8); _v; })
 
 - (id<MTLRenderCommandEncoder>)beginPass:(Rec)r task:(uint32_t)task commandBuffer:(id<MTLCommandBuffer>)cb {
+    if (r.size < 0x48) { /* the depth and stencil attachments, which every pass record has */
+        [self complain:[NSString stringWithFormat:@"render pass of %u bytes, too short: skipped", r.size]];
+        return nil;
+    }
     MTLRenderPassDescriptor *d = [MTLRenderPassDescriptor renderPassDescriptor];
 #define ATTACH(a, o)                                                 \
     do {                                                             \
@@ -115,7 +119,8 @@ typedef struct {
     if (tracing) {
         id<MTLTexture> c0 = d.colorAttachments[0].texture;
         MTLClearColor cc = d.colorAttachments[0].clearColor;
-        HvObject *co = [self object:U32(0x4c) task:task];
+        uint32_t c0ref = r.size >= 0x50 ? U32(0x4c) : 0;
+        HvObject *co = [self object:c0ref task:task];
         fprintf(stderr, "trace: pass c0 ref %u %lux%lu fmt %lu load %lu store %lu clear %.2f %.2f %.2f %.2f surface %s heap %d\n", U32(0x4c), (unsigned long)c0.width, (unsigned long)c0.height, (unsigned long)c0.pixelFormat, (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction, cc.red, cc.green, cc.blue, cc.alpha, co && co->surface ? "yes" : "no", c0.heap != nil);
     }
     id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:d];
@@ -123,7 +128,7 @@ typedef struct {
         NSMutableString *m = [NSMutableString stringWithString:@"no render encoder:"];
         for (int i = 0; i < 8; i++) {
             MTLRenderPassColorAttachmentDescriptor *c = d.colorAttachments[i];
-            uint32_t ref = U32(0x4c + (uint32_t)i * 0x3c);
+            uint32_t at = 0x4c + (uint32_t)i * 0x3c, ref = at + 4 <= r.size ? U32(at) : 0;
             if (ref) [m appendFormat:@" c%d ref %u %s %lux%lu fmt %lu load %lu store %lu usage %lu", i, ref, c.texture ? "ok" : "MISSING", (unsigned long)c.texture.width, (unsigned long)c.texture.height, (unsigned long)c.texture.pixelFormat, (unsigned long)c.loadAction, (unsigned long)c.storeAction, (unsigned long)c.texture.usage];
         }
         [m appendFormat:@" depth ref %u stencil ref %u", U32(0), U32(0x28)];
@@ -149,7 +154,43 @@ typedef struct {
     else [(id<MTLComputeCommandEncoder>)e useHeaps:list count:have];
 }
 
+/* The bytes a call's record needs for what its handler reads at fixed places, by tag; a list after a count is checked
+   where it is read. Records point into memory the guest shares, so a count is read once. Tags not listed read nothing
+   at fixed places (or are not handled). */
+static const uint8_t render_min[] = {
+    [0] = 20, [1] = 8, [2] = 26, [3] = 8, [4] = 34, [5] = 10, [6] = 24, [7] = 12, [8] = 32, [9] = 14, [10] = 48, [11] = 18,
+    [12] = 46, [13] = 16, [14] = 58, [15] = 22, [16] = 16, [17] = 28, [18] = 26, [19] = 38, [24] = 8, [25] = 8, [27] = 8,
+    [28] = 48, [29] = 18, [101] = 16, [104] = 4, [107] = 4, [108] = 12, [109] = 4, [110] = 8, [111] = 12, [112] = 8,
+    [113] = 8, [114] = 8, [115] = 4, [116] = 4, [117] = sizeof(MTLScissorRect), [119] = 8, [122] = 20, [123] = 4, [124] = 4,
+    [125] = 8, [126] = 12, [127] = 8, [128] = 8, [129] = 8, [130] = sizeof(MTLViewport), [134] = 4, [135] = 8, [137] = 8,
+    [154] = 4, [155] = sizeof(MTLSize), [157] = 8, [161] = 8, [162] = sizeof(MTLSize) + sizeof(MTLRegion), [164] = 12,
+    [165] = 8, [166] = 20,
+};
+static const uint8_t compute_min[] = { /* tag - 200 */
+    [0] = 2 * sizeof(MTLSize), [2] = 2 * sizeof(MTLSize), [3] = 8, [4] = 8, [6] = 8, [7] = 12, [8] = 4, [9] = sizeof(MTLRegion),
+    [11] = 12, [12] = 4, [13] = 4, [16] = 8,
+};
+static const uint8_t blit_min[] = { /* tag - 300 */
+    [0] = 0x58, [1] = 0x20, [2] = 0x56, [3] = 0x58, [6] = 21, [7] = 4, [16] = 4, [17] = 4,
+};
+static BOOL record_fits(const uint8_t *table, size_t n, uint32_t tag, uint32_t size) { return tag >= n || size >= table[tag]; }
+#define FITS(table, tag, size) record_fits(table, sizeof table, tag, size)
+
+/* Metal's argument tables, a stage: 31 buffers, 128 textures (A13 and later), 16 samplers. */
+enum { BUFFER_SLOTS = 31, TEXTURE_SLOTS = 128, SAMPLER_SLOTS = 16 };
+
+/* Where count bindings from index go in a table of limit slots: what does not fit is left out. NO when none fit. */
+static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *out) {
+    if (index >= limit || !count) return NO;
+    *out = NSMakeRange(index, MIN(count, limit - index));
+    return YES;
+}
+
 - (void)render:(id<MTLRenderCommandEncoder>)e tag:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
+    if (!FITS(render_min, tag, r.size)) {
+        [self complain:[NSString stringWithFormat:@"render command %u: %u bytes, too short", tag, r.size]];
+        return;
+    }
     BOOL draw = tag <= 19 || tag == 28 || tag == 29 || tag == 155 || tag == 162;
     if (!pipeline_set && draw) return;
     if (tracing && draw) fprintf(stderr, "trace:  draw tag %u\n", tag);
@@ -164,12 +205,16 @@ typedef struct {
         if (f) [e waitForFence:f beforeStages:(MTLRenderStages)(U32(4) & 0xffff)];
         break;
     }
-    case 27: /* {count, stages}, the heaps */
-        if (r.size >= 8 + U32(0) * 4ull) [self useHeaps:(const uint32_t *)(r.p + 8) count:U32(0) task:task encoder:e stages:U32(4) & 0xffff];
+    case 27: { /* {count, stages}, the heaps */
+        uint32_t n = U32(0);
+        if (r.size >= 8 + n * 4ull) [self useHeaps:(const uint32_t *)(r.p + 8) count:n task:task encoder:e stages:U32(4) & 0xffff];
         break;
-    case 134: /* {count}, the heaps */
-        if (r.size >= 4 + U32(0) * 4ull) [self useHeaps:(const uint32_t *)(r.p + 4) count:U32(0) task:task encoder:e stages:-1];
+    }
+    case 134: { /* {count}, the heaps */
+        uint32_t n = U32(0);
+        if (r.size >= 4 + n * 4ull) [self useHeaps:(const uint32_t *)(r.p + 4) count:n task:task encoder:e stages:-1];
         break;
+    }
     case 116: { /* Metal crashes on a missing pipeline, and on drawing without one */
         id state = [self get:U32(0) task:task];
         if (state) [e setRenderPipelineState:state];
@@ -179,16 +224,17 @@ typedef struct {
     }
     case 125: case 110: case 157: { /* vertex, fragment, tile buffers: {index, count}, {ref, offset}... */
         uint32_t index = U32(0), count = U32(4);
-        if (count > 31) break;
-        __unsafe_unretained id<MTLBuffer> buffers[31];
-        id strong[31];
-        NSUInteger offsets[31];
+        NSRange range;
+        if (r.size < 8 + count * 12ull || !bind_range(index, count, BUFFER_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLBuffer> buffers[BUFFER_SLOTS];
+        id strong[BUFFER_SLOTS];
+        NSUInteger offsets[BUFFER_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 12) task:task];
             buffers[i] = strong[i];
             offsets[i] = (NSUInteger)U64(12 + i * 12);
         }
-        NSRange range = NSMakeRange(index, count);
         if (tracing) for (uint32_t i = 0; i < count; i++) { /* m4 fork: what the shaders are given */
             id<MTLBuffer> bb = strong[i];
             fprintf(stderr, "trace:  %s buf %u ref %u off %lu len %lu:", tag == 125 ? "vtx" : tag == 110 ? "frag" : "tile", index + i, U32(8 + i * 12),
@@ -205,13 +251,15 @@ typedef struct {
         else [e setTileBuffers:buffers offsets:offsets withRange:range];
         break;
     }
-    case 126: [e setVertexBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)]; break;
-    case 111: [e setFragmentBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)]; break;
+    case 126: if (U32(0) < BUFFER_SLOTS) [e setVertexBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)]; break;
+    case 111: if (U32(0) < BUFFER_SLOTS) [e setFragmentBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)]; break;
     case 114: case 161: { /* fragment, tile textures */
         uint32_t index = U32(0), count = U32(4);
-        if (count > 128) break;
-        __unsafe_unretained id<MTLTexture> items[128];
-        id strong[128];
+        NSRange range;
+        if (r.size < 8 + count * 4ull || !bind_range(index, count, TEXTURE_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLTexture> items[TEXTURE_SLOTS];
+        id strong[TEXTURE_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 4) task:task];
             items[i] = strong[i];
@@ -221,20 +269,22 @@ typedef struct {
             HvObject *xo = [self object:U32(8 + i * 4) task:task];
             fprintf(stderr, "trace:  tex %u ref %u %lux%lu fmt %lu type %u swz %d%d%d%d surface %s heap %d valid %d\n", index + i, U32(8 + i * 4), (unsigned long)x.width, (unsigned long)x.height, (unsigned long)x.pixelFormat, xo ? xo->entry[0] & 0xff : 0, x.swizzle.red, x.swizzle.green, x.swizzle.blue, x.swizzle.alpha, xo && xo->surface ? "yes" : "no", x.heap != nil, xo ? xo->host_valid : 0);
         }
-        if (tag == 114) [e setFragmentTextures:items withRange:NSMakeRange(index, count)];
-        else [e setTileTextures:items withRange:NSMakeRange(index, count)];
+        if (tag == 114) [e setFragmentTextures:items withRange:range];
+        else [e setTileTextures:items withRange:range];
         break;
     }
     case 112: { /* fragment samplers */
         uint32_t index = U32(0), count = U32(4);
-        if (count > 16) break;
-        __unsafe_unretained id<MTLSamplerState> items[16];
-        id strong[16];
+        NSRange range;
+        if (r.size < 8 + count * 4ull || !bind_range(index, count, SAMPLER_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLSamplerState> items[SAMPLER_SLOTS];
+        id strong[SAMPLER_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 4) task:task];
             items[i] = strong[i];
         }
-        [e setFragmentSamplerStates:items withRange:NSMakeRange(index, count)];
+        [e setFragmentSamplerStates:items withRange:range];
         break;
     }
     case 117: {
@@ -290,42 +340,48 @@ typedef struct {
     }
     case 129: { /* vertex textures: {index, count}, refs */
         uint32_t index = U32(0), count = U32(4);
-        if (count > 128) break;
-        __unsafe_unretained id<MTLTexture> items[128];
-        id strong[128];
+        NSRange range;
+        if (r.size < 8 + count * 4ull || !bind_range(index, count, TEXTURE_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLTexture> items[TEXTURE_SLOTS];
+        id strong[TEXTURE_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 4) task:task];
             items[i] = strong[i];
         }
-        [e setVertexTextures:items withRange:NSMakeRange(index, count)];
+        [e setVertexTextures:items withRange:range];
         break;
     }
     case 127: { /* vertex samplers */
         uint32_t index = U32(0), count = U32(4);
-        if (count > 16) break;
-        __unsafe_unretained id<MTLSamplerState> items[16];
-        id strong[16];
+        NSRange range;
+        if (r.size < 8 + count * 4ull || !bind_range(index, count, SAMPLER_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLSamplerState> items[SAMPLER_SLOTS];
+        id strong[SAMPLER_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 4) task:task];
             items[i] = strong[i];
         }
-        [e setVertexSamplerStates:items withRange:NSMakeRange(index, count)];
+        [e setVertexSamplerStates:items withRange:range];
         break;
     }
     case 113: case 128: { /* samplers with LOD clamps: {index, count}, refs, minimums, maximums */
-        uint32_t index = U32(0), count = U32(4);
-        if (count > 16 || r.size < 8 + count * 12ull) break;
-        __unsafe_unretained id<MTLSamplerState> items[16];
-        id strong[16];
-        float lo[16], hi[16];
+        uint32_t index = U32(0), count = U32(4), all = count;
+        NSRange range;
+        if (r.size < 8 + count * 12ull || !bind_range(index, count, SAMPLER_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLSamplerState> items[SAMPLER_SLOTS];
+        id strong[SAMPLER_SLOTS];
+        float lo[SAMPLER_SLOTS], hi[SAMPLER_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 4) task:task];
             items[i] = strong[i];
-            memcpy(&lo[i], r.p + 8 + count * 4 + i * 4, 4);
-            memcpy(&hi[i], r.p + 8 + count * 8 + i * 4, 4);
+            memcpy(&lo[i], r.p + 8 + all * 4 + i * 4, 4);
+            memcpy(&hi[i], r.p + 8 + all * 8 + i * 4, 4);
         }
-        if (tag == 113) [e setFragmentSamplerStates:items lodMinClamps:lo lodMaxClamps:hi withRange:NSMakeRange(index, count)];
-        else [e setVertexSamplerStates:items lodMinClamps:lo lodMaxClamps:hi withRange:NSMakeRange(index, count)];
+        if (tag == 113) [e setFragmentSamplerStates:items lodMinClamps:lo lodMaxClamps:hi withRange:range];
+        else [e setVertexSamplerStates:items lodMinClamps:lo lodMaxClamps:hi withRange:range];
         break;
     }
     case 135: case 137: { /* {count, usage}, or {count, usage 16, stages 16}, then the resources */
@@ -347,20 +403,22 @@ typedef struct {
     }
     case 165: { /* vertex buffers with stride: {index, count}, {ref, offset, stride}... */
         uint32_t index = U32(0), count = U32(4);
-        if (count > 31 || r.size < 8 + count * 20ull) break;
-        __unsafe_unretained id<MTLBuffer> buffers[31];
-        id strong[31];
-        NSUInteger offsets[31], strides[31];
+        NSRange range;
+        if (r.size < 8 + count * 20ull || !bind_range(index, count, BUFFER_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLBuffer> buffers[BUFFER_SLOTS];
+        id strong[BUFFER_SLOTS];
+        NSUInteger offsets[BUFFER_SLOTS], strides[BUFFER_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 20) task:task];
             buffers[i] = strong[i];
             offsets[i] = (NSUInteger)U64(12 + i * 20);
             strides[i] = (NSUInteger)U64(20 + i * 20);
         }
-        [e setVertexBuffers:buffers offsets:offsets attributeStrides:strides withRange:NSMakeRange(index, count)];
+        [e setVertexBuffers:buffers offsets:offsets attributeStrides:strides withRange:range];
         break;
     }
-    case 166: [e setVertexBufferOffset:(NSUInteger)U64(4) attributeStride:(NSUInteger)U64(12) atIndex:U32(0)]; break;
+    case 166: if (U32(0) < BUFFER_SLOTS) [e setVertexBufferOffset:(NSUInteger)U64(4) attributeStride:(NSUInteger)U64(12) atIndex:U32(0)]; break;
     case 101: {
         float c[4];
         memcpy(c, r.p, sizeof c);
@@ -533,14 +591,16 @@ typedef struct {
 
 /* Compute calls. Tags start at 200. */
 - (void)compute:(id<MTLComputeCommandEncoder>)e tag:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
+    if (tag >= 200 && !FITS(compute_min, tag - 200, r.size)) {
+        [self complain:[NSString stringWithFormat:@"compute command %u: %u bytes, too short", tag, r.size]];
+        return;
+    }
     if (!pipeline_set && (tag == 200 || tag == 202)) return;
     switch (tag) {
     case 209: {
         MTLRegion region;
-        if (r.size >= sizeof region) {
-            memcpy(&region, r.p, sizeof region);
-            [e setStageInRegion:region];
-        }
+        memcpy(&region, r.p, sizeof region);
+        [e setStageInRegion:region];
         break;
     }
     case 214: /* barriers: encoders here are in order, and each exec is waited for */
@@ -566,10 +626,12 @@ typedef struct {
     }
     case 203: {
         uint32_t index = U32(0), count = U32(4);
-        if (count > 31) break;
-        __unsafe_unretained id<MTLBuffer> buffers[31];
-        id strong[31];
-        NSUInteger offsets[31];
+        NSRange range;
+        if (r.size < 8 + count * 12ull || !bind_range(index, count, BUFFER_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLBuffer> buffers[BUFFER_SLOTS];
+        id strong[BUFFER_SLOTS];
+        NSUInteger offsets[BUFFER_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 12) task:task];
             buffers[i] = strong[i];
@@ -583,18 +645,20 @@ typedef struct {
                     fprintf(stderr, " %08x", *(uint32_t *)((uint8_t *)x.contents + offsets[i] + k));
             fprintf(stderr, "\n");
         }
-        [e setBuffers:buffers offsets:offsets withRange:NSMakeRange(index, count)];
+        [e setBuffers:buffers offsets:offsets withRange:range];
         break;
     }
     case 207:
         if (tracing) fprintf(stderr, "trace:  cbuf %u offset now %llu\n", U32(0), (unsigned long long)U64(4));
-        [e setBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)];
+        if (U32(0) < BUFFER_SLOTS) [e setBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)];
         break;
     case 206: {
         uint32_t index = U32(0), count = U32(4);
-        if (count > 128) break;
-        __unsafe_unretained id<MTLTexture> items[128];
-        id strong[128];
+        NSRange range;
+        if (r.size < 8 + count * 4ull || !bind_range(index, count, TEXTURE_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLTexture> items[TEXTURE_SLOTS];
+        id strong[TEXTURE_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 4) task:task];
             items[i] = strong[i];
@@ -605,22 +669,24 @@ typedef struct {
             fprintf(stderr, "trace:  ctex %u ref %u %lux%lu fmt %lu type %u surface %s\n", index + i, U32(8 + i * 4), (unsigned long)x.width,
                     (unsigned long)x.height, (unsigned long)x.pixelFormat, xo ? xo->entry[0] & 0xff : 0, xo && xo->surface ? "yes" : "no");
         }
-        [e setTextures:items withRange:NSMakeRange(index, count)];
+        [e setTextures:items withRange:range];
         break;
     }
     case 204: {
         uint32_t index = U32(0), count = U32(4);
-        if (count > 16) break;
-        __unsafe_unretained id<MTLSamplerState> items[16];
-        id strong[16];
+        NSRange range;
+        if (r.size < 8 + count * 4ull || !bind_range(index, count, SAMPLER_SLOTS, &range)) break;
+        count = (uint32_t)range.length;
+        __unsafe_unretained id<MTLSamplerState> items[SAMPLER_SLOTS];
+        id strong[SAMPLER_SLOTS];
         for (uint32_t i = 0; i < count; i++) {
             strong[i] = [self get:U32(8 + i * 4) task:task];
             items[i] = strong[i];
         }
-        [e setSamplerStates:items withRange:NSMakeRange(index, count)];
+        [e setSamplerStates:items withRange:range];
         break;
     }
-    case 211: [e setThreadgroupMemoryLength:(NSUInteger)U64(0) atIndex:U32(8)]; break;
+    case 211: if (U32(8) < BUFFER_SLOTS) [e setThreadgroupMemoryLength:(NSUInteger)U64(0) atIndex:U32(8)]; break;
     case 200: case 202: {
         MTLSize a, b;
         memcpy(&a, r.p, sizeof a), memcpy(&b, r.p + sizeof a, sizeof b);
@@ -632,7 +698,7 @@ typedef struct {
     }
     case 216: /* {width, height} of the imageblock, 32x32 from macOS 27's glass and blur kernels: without it their
                  imageblock memory is undefined, and toolbars came out black with coloured blocks */
-        if (r.size >= 8 && U32(0) && U32(4) && U32(0) <= 256 && U32(4) <= 256) [e setImageblockWidth:U32(0) height:U32(4)];
+        if (U32(0) && U32(4) && U32(0) <= 256 && U32(4) <= 256) [e setImageblockWidth:U32(0) height:U32(4)];
         break;
     case 219: /* not a command the framework knows either, though the guest sends it */
         break;
@@ -644,6 +710,10 @@ typedef struct {
 
 /* Blit calls. Tags start at 300. */
 - (void)blit:(id<MTLBlitCommandEncoder>)e tag:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
+    if (tag >= 300 && !FITS(blit_min, tag - 300, r.size)) {
+        [self complain:[NSString stringWithFormat:@"blit command %u: %u bytes, too short", tag, r.size]];
+        return;
+    }
     switch (tag) {
     case 316: {
         id f = [self get:U32(0) task:task];
@@ -714,8 +784,6 @@ typedef struct {
    450, {ref, buffer ref, offset}. The guest's Metal puts these real host values
    into its argument buffers. */
 - (void)info:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
-    uint32_t ref = U32(0), bufref = U32(4);
-    uint64_t off = U64(8);
     if (tag == 451 || tag == 469) { /* how big a texture would be in a heap: {description, buffer ref, offset} */
         uint32_t at = tag == 451 ? 0x20 : 0x28;
         if (r.size < at + 12) return;
@@ -729,6 +797,12 @@ typedef struct {
         memcpy(to->mapped + where, v, 16);
         return;
     }
+    if (r.size < (tag == 460 ? 20u : 16u)) {
+        [self complain:[NSString stringWithFormat:@"info command %u: %u bytes, too short", tag, r.size]];
+        return;
+    }
+    uint32_t ref = U32(0), bufref = U32(4);
+    uint64_t off = U64(8);
     if (tag == 460) { /* an object's identifier: {ref, kind, buffer ref, offset} */
         bufref = U32(8);
         off = U64(12);
