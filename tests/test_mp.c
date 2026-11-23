@@ -221,8 +221,7 @@ static void timers(void) {
     atomic_store(&stall_watch, 0);
     pthread_join(watcher, NULL);
     int host_stalled = stall_worst_us > 50000;
-    if (host_stalled) printf("timers: this host stalled a 1 ms wait for %.0f ms itself: 'never lost' is not checked
-", stall_worst_us / 1000);
+    if (host_stalled) printf("timers: this host stalled a 1 ms wait for %.0f ms itself: 'never lost' is not checked\n", stall_worst_us / 1000);
     uint64_t kicks = m.stats.kicker_kicks - kicks0;
     for (int i = 0; i < NCPU; i++) {
         char msg[200];

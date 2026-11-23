@@ -13,7 +13,7 @@ enum HardwareKeys {
     /// the Mac gets is the one pressed.
     static func keyCommands(action: Selector) -> [UIKeyCommand] {
         let keys = "abcdefghijklmnopqrstuvwx,.".map(String.init)
-        let chords: [UIKeyModifierFlags] = [.command, [.command, .shift], [.command, .option], [.command, .control]]
+        let chords: [UIKeyModifierFlags] = [.command, [.command, .shift], [.command, .alternate], [.command, .control]]
         return chords.flatMap { flags in
             keys.map { key in
                 let command = UIKeyCommand(input: key, modifierFlags: flags, action: action)
