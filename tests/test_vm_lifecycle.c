@@ -141,8 +141,9 @@ int main(void) {
         check("translation metadata released", hv_vm_machine()->blocks == NULL && hv_vm_machine()->jit.base == NULL);
         check("borrowed JIT mapping retained", mapping.rx_addr == (uint8_t *)jit.base);
         check("no disk or network descriptor leak", fds() == initial_fds);
-        /* The last CPU thread can still be returning from its callback. */
-        for (int n = 0; n < 1000 && threads() > initial_threads; n++) usleep(1000);
+        /* The last CPU thread can still be returning from its callback, and a busy host takes its time to let it: a
+           leak is a thread that never goes, so the wait is long and ends as soon as the count is back. */
+        for (int n = 0; n < 15000 && threads() > initial_threads; n++) usleep(1000);
         check("no CPU, disk or network worker leak", threads() == initial_threads);
         check("no leaked CPU thread ports", dead_ports() == initial_dead_ports);
     }
