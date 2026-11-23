@@ -12,6 +12,7 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         if (proto) class_addProtocol([HvContext class], proto);
         HvReplay *r = [HvReplay new];
         r->lite = lite;
+        r->task_pages = hv_pvg_lite_task_pages, r->guest_page = hv_pvg_lite_page;
         r->completions = dispatch_group_create();
         r->device = dev;
         r->queue = [dev newCommandQueueWithMaxCommandBufferCount:64];
@@ -106,6 +107,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
     HvReplay *r = (__bridge HvReplay *)m;
     dispatch_async(r->worker, ^{
         @autoreleasepool {
+            if (atomic_load_explicit(&r->gpu_poisoned, memory_order_relaxed)) [r recoverGPU:now_seconds()];
             new_command(r);
             uint32_t op = cmd[0] & 0xffff, skip = (cmd[0] >> 16) * 8; /* the barriers come first */
             const uint32_t *args = (const uint32_t *)((const uint8_t *)cmd + 12 + skip);
@@ -144,7 +146,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                        flag in bit 0 (Apple's host: -[PGFIFO CmdDeleteTask] passes p[0] to deleteTaskID: as it is). Shifted here,
                        an ended process kept its objects and the next one given its id got its functions wherever an object-list
                        entry read the same: a vertex function in a fragment slot, and the GPU driver died (issue 102). */
-                    if (args[0] < HV_TASKS) obj_clear(&r->task_objs[args[0]]);
+                    if (args[0] < HV_TASKS) obj_clear(&r->task_objs[args[0]]), r->told_kept[args[0]] = nil;
                 } else {
                     hv_pvg_lite_command(lite, cmd, len);
                     if (op == 8 && n >= 16) {

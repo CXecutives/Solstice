@@ -156,9 +156,14 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         fprintf(stderr, "hengevm: pvg-metal: saved pipelines off (HV_PVG_ARCHIVE=0)\n");
         return;
     }
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSURL *dir = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
+    NSURL *dir = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
         URLByAppendingPathComponent:@"Henge/Pipelines" isDirectory:YES];
+    [self openArchiveIn:dir reset:opt && !strcmp(opt, "reset")];
+}
+
+/* The saved pipelines in dir: earlier boots' files loaded (others removed), an empty archive to fill. */
+- (void)openArchiveIn:(NSURL *)dir reset:(BOOL)reset {
+    NSFileManager *fm = NSFileManager.defaultManager;
     NSError *err = nil;
     if (!dir || ![fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:&err]) {
         fprintf(stderr, "hengevm: pvg-metal: saved pipelines: no folder: %s\n", err.localizedDescription.UTF8String ?: "?");
@@ -183,7 +188,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         NSString *name = u.lastPathComponent;
         int n = 0;
         BOOL ours = [name hasPrefix:archive_prefix] && [name hasSuffix:@".bin"] &&
-                    sscanf(name.UTF8String + archive_prefix.length, "%d.bin", &n) == 1 && !(opt && !strcmp(opt, "reset"));
+                    sscanf(name.UTF8String + archive_prefix.length, "%d.bin", &n) == 1 && !reset;
         if (!ours) { /* another build, an unfinished save, or a reset */
             [fm removeItemAtURL:u error:nil];
             continue;
@@ -357,8 +362,14 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     dispatch_async(compiler, ^{
         @autoreleasepool {
             NSError *err = nil;
-            id state = [self pipelineState:tag descriptor:descriptor error:&err];
-            if (!state) p->failure = [NSString stringWithFormat:@"%@: %@", what, err.localizedDescription];
+            id state = nil;
+            NSString *raised = nil;
+            @try { /* Metal raises on some descriptors: on the worker the exec's @catch took that; here nothing would */
+                state = [self pipelineState:tag descriptor:descriptor error:&err];
+            } @catch (NSException *x) {
+                raised = x.reason ?: x.name;
+            }
+            if (!state) p->failure = [NSString stringWithFormat:@"%@: %@", what, raised ?: err.localizedDescription];
             else if (name) objc_setAssociatedObject(state, "hvname", name, OBJC_ASSOCIATION_RETAIN);
             p->state = state;
             dispatch_group_leave(p->done);
@@ -381,7 +392,26 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
 - (id)makeSerialized:(uint64_t)at length:(uint32_t)size task:(uint32_t)task {
     NSMutableData *all = [NSMutableData dataWithLength:size];
     if (hv_pvg_lite_task_read(lite, task, at, all.mutableBytes, size)) return nil;
+    return [self serialized:all task:task];
+}
+
+/* The bytes each serialized object's maker reads at fixed places; a depth-stencil record's per-side parts are checked
+   where its flags say they are there. */
+static uint32_t serialized_min(uint32_t tag) {
+    switch (tag) {
+    case 3: return 28; /* {tag, size, ref, bits 64, lod min, lod max} */
+    case 4: return 16; /* {tag, size, ref, flags}, then a side of 12 bytes per stencil side */
+    default: return 4;
+    }
+}
+
+- (id)serialized:(NSData *)all task:(uint32_t)task {
+    uint32_t size = (uint32_t)all.length;
     const uint32_t *w = all.bytes;
+    if (size < 4 || size < serialized_min(w[0])) {
+        [self complain:[NSString stringWithFormat:@"serialized object tag %u: %u bytes, too short", size >= 4 ? w[0] : 0, size]];
+        return nil;
+    }
     uint32_t tag = w[0];
     if ((tag == 0xe || tag == 0x33 || tag == 0xb) && (size < 16 || w[3] > size - 16)) { /* Apple's host checks this too */
         [self complain:[NSString stringWithFormat:@"pipeline %u: %u bytes of data in a %u-byte record", tag, size >= 16 ? w[3] : 0, size]];
@@ -444,6 +474,10 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     if (tag == 4) { /* depth and stencil: {tag, size, ref, flags, front {ops, read, write}, back {...}} */
         MTLDepthStencilDescriptor *d = [MTLDepthStencilDescriptor new];
         uint32_t f = w[3];
+        if (size < ((f >> 5) & 1 ? 40u : (f >> 4) & 1 ? 28u : 16u)) {
+            [self complain:[NSString stringWithFormat:@"depth-stencil flags %x in %u bytes, too short", f, size]];
+            return nil;
+        }
         d.depthCompareFunction = (MTLCompareFunction)(f & 7);
         d.depthWriteEnabled = (f >> 3) & 1;
         for (int side = 0; side < 2; side++) {

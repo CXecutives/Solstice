@@ -411,6 +411,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
         BOOL pointer_in_frame = !cursor_layer_ok, hold = overlay_hold; /* else its layer shows it */
         BOOL same_target = layer_generation == generation && layer == target;
         BOOL same_size = screen_w == W && screen_h == H;
+        id<MTLCommandQueue> q = queue; /* a new one after a GPU fault (recoverGPU) */
         if (same_target && same_size) {
             screen_dirty = NO;
             drawable_retry_deadline = 0;
@@ -422,7 +423,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
             os_unfair_lock_unlock(&screen_lock);
             continue;
         }
-        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLCommandBuffer> cb = [q commandBuffer];
         id<MTLTexture> out = drawable.texture; /* its size, not OW x OH: the layout may have changed since */
         uint32_t TW = (uint32_t)out.width, TH = (uint32_t)out.height;
         HvFit fit = screen_fit(TW, TH, W, H);

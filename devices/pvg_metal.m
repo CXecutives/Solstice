@@ -163,11 +163,22 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     BOOL planar_compact;
     /* The command its pages were last checked against the guest's table in (refresh_pages): once is enough. */
     uint32_t checked;
+    /* The guest was told its GPU address or resource id (info 460...463) and wrote it into its argument buffers. When
+       the object is made again (new pages, a remade view) the old one goes to retired, kept until the guest frees the
+       object or its task ends: a shader reading through a stale address gets stale bytes, not a GPU page fault that
+       stops all drawing (iPad Air 4, Setup Assistant). */
+    BOOL address_told;
+    NSMutableArray *retired;
+    uint64_t retired_bytes;
 }
 @end
 
+/* Bytes kept alive in retired objects, all replays together (for the stats line). */
+static _Atomic uint64_t retired_bytes_live;
+
 @implementation HvObject
 - (void)dealloc {
+    atomic_fetch_sub(&retired_bytes_live, retired_bytes);
     if (mapped && !mapping_in_buffer) vm_deallocate(mach_task_self(), (vm_address_t)mapped, (length + 0x3fff) & ~0x3fffull);
     if (iosurface) CFRelease(iosurface);
     free(pages);
@@ -197,6 +208,17 @@ typedef struct HvWalk {
     uint32_t task, epoch;
 } HvWalk;
 
+/* One remap of an object's guest pages: the evidence for a GPU fault through an address the guest kept. */
+#define REMAP_RING 8
+typedef struct HvRemapNote {
+    uint32_t task, vpage;
+    uint64_t length, old_address, new_address;
+    BOOL told;
+} HvRemapNote;
+
+/* GPU recoveries allowed within a minute; past that drawing stays off rather than failing over and over. */
+#define GPU_RECOVERIES 3
+
 @interface HvReplay : NSObject {
 @public
     HvPvgLite *lite;
@@ -221,6 +243,22 @@ typedef struct HvWalk {
     NSMutableDictionary<NSString *, NSMutableData *> *planar_hashes; /* and what its planes held when last copied */
     NSMutableSet<NSString *> *complaints;
     uint64_t execs, draws, failed, heap_bytes, synced, remaps, surfaces_copied;
+    /* Where a task range's guest pages are and where a guest page is in host memory: pvg_lite's, or a test's. */
+    void (*task_pages)(HvPvgLite *, uint32_t task, uint64_t first, uint64_t n, uint32_t *out);
+    uint8_t *(*guest_page)(HvPvgLite *, uint32_t page);
+    /* The last remaps (refresh_pages), shown once with the first failed command buffer. Worker writes, a completion
+       handler reads: a torn entry in a diagnostic line is acceptable. */
+    HvRemapNote remap_ring[REMAP_RING];
+    uint32_t remap_next;
+    _Atomic int errors_shown;
+    /* A GPU fault marks the command queue's context: from then on every command buffer on it is ignored. The worker
+       then takes a new queue and makes the objects again (recoverGPU). queue_generation tells the old queue's late
+       failures from the new one's; queue itself changes under screen_lock (the presenter reads it there). */
+    _Atomic int gpu_poisoned;
+    _Atomic uint32_t queue_generation;
+    double recoveries[GPU_RECOVERIES]; /* when the last ones were */
+    BOOL gpu_down; /* too many in a minute: no more */
+    NSMutableArray *told_kept[HV_TASKS]; /* objects the guest has addresses of, kept through a recovery until their task ends */
     id<MTLFence> surfaces_in; /* an exec's surface copies (syncSurface), done before its encoders go on */
     /* Work the GPU has not finished. Stamps are given back in the order they came: the
        GPU's completion handlers run in the order of commit. */

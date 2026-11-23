@@ -39,6 +39,15 @@ struct ScreenFacts: Equatable {
     var ppi: Double            // the panel's real density (DeviceProfile.ppi)
     var kind: DeviceProfile.ScreenClass
 
+    /// The facts of a screen of these points at this scale, in its render pixels (points × scale): the pixels the
+    /// layout (PixelFit) and the presenter work in. The panel's own pixels differ where the system scales the render
+    /// (iPhone 12 and 13 mini: scale 3, 2.88 native; Display Zoom), and a whole factor counted in them is not whole there.
+    static func landscape(points: CGSize, scale: Double, sideInset: Double, ppi: Double, kind: DeviceProfile.ScreenClass) -> ScreenFacts {
+        let long = Double(max(points.width, points.height)), short = Double(min(points.width, points.height))
+        return ScreenFacts(panel: PixelSize(width: Int((long * scale).rounded()), height: Int((short * scale).rounded())),
+                           scale: scale, sideInset: sideInset, ppi: ppi, kind: kind)
+    }
+
     /// Where the Mac may show, in device pixels: the panel less the side insets, full height.
     var area: (width: Double, height: Double) {
         (max(Double(panel.width) - 2 * sideInset * scale, 1), Double(panel.height))
@@ -128,7 +137,7 @@ struct MacScreen: Equatable {
         offered(facts).first { $0.preset == preset }?.screen ?? size(.recommended, facts)
     }
 
-    /// The line the picker shows under a preset: "looks like 1664 × 864 · crisp · lighter for the Mac".
+    /// The line the picker shows under a preset: "looks like 1608 × 864 · crisp · lighter for the Mac".
     static func line(_ s: MacScreen, against recommended: MacScreen) -> String {
         var parts = ["looks like \(s.looksLike.width) × \(s.looksLike.height)", s.crisp ? "crisp" : "soft"]
         let mine = s.pixels.width * s.pixels.height, base = recommended.pixels.width * recommended.pixels.height

@@ -237,6 +237,7 @@ static void test_refresh_rate_per_start(void) {
 
 int main(void) {
     alarm(60);
+    setenv("HV_PVG_ARCHIVE", "0", 1); /* not the saved pipelines of whoever runs this */
     test_refresh_rate_per_start();
     for (int cycle = 0; cycle < 6; cycle++) @autoreleasepool {
         HvCfgParams cfg = {.nr_cpus = 2};

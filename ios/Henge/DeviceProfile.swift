@@ -119,7 +119,7 @@ struct DeviceProfile: Equatable {
         let retina: Bool              // Retina offered (a full-panel 2x Mac is heavy: not with a 2 GB Mac)
     }
 
-    /// Phones keep their desktop 864 tall (1x, filling the landscape safe area: 1664 × 864 on an iPhone 16 Pro shown at
+    /// Phones keep their desktop 864 tall (1x, filling the landscape safe area: 1608 × 864 on an iPhone 16 Pro (62-point insets) shown at
     /// about 1.4x), so it is not cramped; iPads with a 2 GB Mac show half the panel at exactly 2x (1176 × 816 on an Air 4,
     /// crisp with nearest scaling); 8 GB iPads draw their own panel at Retina density.
     static func screenRow(_ kind: ScreenClass) -> ScreenRow {
