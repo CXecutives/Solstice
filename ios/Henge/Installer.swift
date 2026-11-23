@@ -104,7 +104,7 @@ final class Installer: NSObject, ObservableObject {
         phase = .checking
         machineName = name
         UIApplication.shared.isIdleTimerDisabled = true // the screen locking would suspend the download and the restore
-        grace = UIApplication.shared.beginBackgroundTask(withName: "Henge install") {
+        grace = UIApplication.shared.beginBackgroundTask(withName: "Solstice install") {
             MainActor.assumeIsolated { Installer.shared.endGrace() }
         }
         Task {
@@ -275,7 +275,7 @@ final class Installer: NSObject, ObservableObject {
             step = Int(henge_install_step())
             stepProgress = henge_install_progress()
             if step == 100 { break }
-            if step == 101 { throw message("The restore failed. The log (Settings, or Documents/henge.log) says why.") }
+            if step == 101 { throw message("The restore failed. The log (Settings, or Documents/solstice.log) says why.") }
             if henge_vm_state() == HENGE_VM_STOPPED && step < 100 {
                 // The restore ends with the machine restarting, and idevicerestore finishes a
                 // little after; a stop with no result after that is a failure.
@@ -307,7 +307,7 @@ final class Installer: NSObject, ObservableObject {
     }
 
     private func message(_ text: String) -> NSError {
-        NSError(domain: "Henge", code: 2, userInfo: [NSLocalizedDescriptionKey: text])
+        NSError(domain: "Solstice", code: 2, userInfo: [NSLocalizedDescriptionKey: text])
     }
 }
 

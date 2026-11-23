@@ -9,6 +9,7 @@
    virtio-net device on the CPU thread (hv_net_poll), which may only take them
    when the guest has posted receive buffers. */
 #include "net_slirp.h"
+#include "brand.h"
 #include "dns_proxy.h"
 #include "net_queue.h"
 #include "share.h"
@@ -304,7 +305,7 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
     inet_pton(AF_INET, "10.0.2.2", &cfg.vhost);
     inet_pton(AF_INET, "10.0.2.15", &cfg.vdhcp_start);
     inet_pton(AF_INET, "10.0.2.3", &cfg.vnameserver);
-    cfg.vhostname = "hengevm";
+    cfg.vhostname = SOLSTICE_HOSTNAME;
     cfg.if_mtu = 1500;
     cfg.if_mru = 1500;
     slirp = slirp_new(&cfg, &callbacks, NULL);

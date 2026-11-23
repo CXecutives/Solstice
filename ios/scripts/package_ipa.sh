@@ -1,12 +1,12 @@
 #!/bin/zsh
-# Builds Henge for iOS and writes ~/Desktop/Henge.ipa.
+# Builds Henge for iOS and writes ~/Desktop/Solstice.ipa.
 # Unsigned build, then signed ad hoc inside out with the entitlements file named by the
 # HENGE_ENTITLEMENTS environment variable (default Henge/Henge.personal.entitlements), as Husk's
 # package_ipa.sh does: the sideloader (SideStore, AltStore, Impactor) re-signs it
 # with the user's own certificate and keeps the entitlements it can.
 set -e
 IOS="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${HENGE_IPA_OUT:-$HOME/Desktop/Henge.ipa}" # HENGE_IPA_OUT: somewhere else (a trial build that must not replace the one on the Desktop)
+OUT="${HENGE_IPA_OUT:-$HOME/Desktop/Solstice.ipa}" # HENGE_IPA_OUT: somewhere else (a trial build that must not replace the one on the Desktop)
 [ -d "$IOS/deps/StikJIT.xcframework" ] || "$IOS/scripts/fetch_deps.sh"
 cd "$IOS"
 xcodegen generate >/dev/null

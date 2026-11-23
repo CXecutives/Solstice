@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "usb_host.h"
+#include "brand.h"
 
 static HvVirtioUsb *g_usb;
 static int g_log;
@@ -626,7 +627,7 @@ int libusb_set_option(libusb_context *ctx, enum libusb_option o, ...) {
 int libusb_has_capability(uint32_t cap) { return cap == LIBUSB_CAP_HAS_CAPABILITY || cap == LIBUSB_CAP_HAS_HOTPLUG; }
 
 const struct libusb_version *libusb_get_version(void) {
-    static const struct libusb_version v = {1, 0, 27, 0, "", "https://libusb.info (HengeVM stand-in)"};
+    static const struct libusb_version v = {1, 0, 27, 0, "", "https://libusb.info (" SOLSTICE_NAME " stand-in)"};
     return &v;
 }
 

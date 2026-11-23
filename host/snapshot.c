@@ -10,6 +10,7 @@
    Chunks are compressed and decompressed several at a time, on every core. */
 
 #include "snapshot.h"
+#include "brand.h"
 
 #include <compression.h>
 #include <dispatch/dispatch.h>
@@ -695,7 +696,7 @@ int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t e
     int hr = read_header(fd, &h, ident, NULL);
     if (hr) {
         close(fd);
-        return fail(err, errlen, hr == -2 ? "The saved Mac is from another build of Henge or another disk." : "The saved Mac is incomplete or damaged.");
+        return fail(err, errlen, hr == -2 ? "The saved Mac is from another build of " SOLSTICE_NAME " or another disk." : "The saved Mac is incomplete or damaged.");
     }
     char disk_now[256];
     h.disk[sizeof h.disk - 1] = 0;

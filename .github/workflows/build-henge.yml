@@ -41,6 +41,15 @@ permissions:
   contents: read
 
 jobs:
+  # No "Henge" in what a person can see (python3 only, so a free Linux runner, no macOS slot).
+  brand:
+    name: Brand gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 tools/brand_gate.py
+
   engine:
     name: Engine tests
     if: inputs.tests != 'none'

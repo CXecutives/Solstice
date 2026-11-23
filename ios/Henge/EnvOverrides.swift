@@ -1,6 +1,6 @@
 import Foundation
 
-/// Documents/henge-env.txt as engine settings (EngineTuning): KEY=VALUE per line, # comments, {Documents} in a value
+/// Documents/solstice-env.txt as engine settings (EngineTuning): KEY=VALUE per line, # comments, {Documents} in a value
 /// for that folder. Only the engine's own variables (HV_...) are taken: the file sits where Files and a computer can
 /// write it, and any other variable (DYLD_..., MallocStackLogging, ...) would change the app itself.
 enum EnvOverrides {

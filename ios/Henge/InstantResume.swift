@@ -51,7 +51,7 @@ enum InstantResume {
         let build = info["CFBundleVersion"] as? String ?? "?"
         let commit = info["HengeBuildCommit"] as? String ?? "unstamped"
         let stamp = info["HengeBuildDate"] as? String ?? "?"
-        return "Henge \(version) (\(build)) \(commit) \(stamp) mac \(mac.id.uuidString) ram \(ramMB) cpus \(cpus) "
+        return "Solstice \(version) (\(build)) \(commit) \(stamp) mac \(mac.id.uuidString) ram \(ramMB) cpus \(cpus) "
             + "screen \(mac.screen.width)x\(mac.screen.height) retina \(mac.isRetina)"
     }
 

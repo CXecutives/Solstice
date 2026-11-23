@@ -61,7 +61,7 @@ struct KeyLayoutTests {
 
         // The set up command types on both.
         for layout in KeyLayout.allCases {
-            precondition("curl -s http://10.0.2.4/.henge/install | sh".allSatisfy { layout.strokes(for: $0) != nil })
+            precondition("curl -s http://10.0.2.4/.solstice/install | sh".allSatisfy { layout.strokes(for: $0) != nil })
         }
 
         // The default follows the keyboard's language.

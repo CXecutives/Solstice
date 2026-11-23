@@ -132,7 +132,7 @@ struct JITSetupFlow: View {
 
     private var pairOnDevice: some View {
         page(symbol: "iphone.radiowaves.left.and.right", title: "Pair on this \(device)",
-             subtitle: "Henge pretends to be a computer on your Wi-Fi, and your \(device) pairs with it "
+             subtitle: "Solstice pretends to be a computer on your Wi-Fi, and your \(device) pairs with it "
                      + "the way it would with a Mac.") {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Turn on Wi-Fi, tap **Start pairing** below and allow Local Network access.",
@@ -211,7 +211,7 @@ struct JITSetupFlow: View {
 
     private var importFile: some View {
         page(symbol: "doc.badge.plus", title: "Use a pairing file",
-             subtitle: "A pairing file made on a computer lets Henge talk to this \(device) the same way.") {
+             subtitle: "A pairing file made on a computer lets Solstice talk to this \(device) the same way.") {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "On a computer, make this \(device)'s pairing file with the "
                        + "[StikDebug pairing-file guide](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md).",
@@ -221,7 +221,7 @@ struct JITSetupFlow: View {
                 point(3, "Tap **Choose pairing file** and pick it.", done: jit.pairingSource == .imported)
             }
             .padding(16).hengeCard()
-            Label("The pairing file stays in Henge's Documents folder and is only sent to Henge's own helper.",
+            Label("The pairing file stays in Solstice's Documents folder and is only sent to Solstice's own helper.",
                   systemImage: "lock.fill")
                 .font(.system(size: 13)).foregroundStyle(Theme.textDim)
             if let error = jit.error { outcome(error, ok: false) }
@@ -241,12 +241,12 @@ struct JITSetupFlow: View {
 
     private var connect: some View {
         page(symbol: "network.badge.shield.half.filled", title: "Connect LocalDevVPN",
-             subtitle: "Henge's helper reaches this \(device)'s debugging service through a local VPN. "
+             subtitle: "Solstice's helper reaches this \(device)'s debugging service through a local VPN. "
                      + "Nothing leaves your \(device).") {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Install [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)) from the App Store.",
                       done: LocalDevVPN.isInstalled)
-                point(2, "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to Henge.")
+                point(2, "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to Solstice.")
                 point(3, "Leave it connected whenever you turn JIT on.")
             }
             .padding(16).hengeCard()
@@ -267,9 +267,9 @@ struct JITSetupFlow: View {
              subtitle: "The first check downloads and mounts Apple's Developer Disk Image, "
                      + "which can take a minute.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Tap **Check setup**. Henge checks LocalDevVPN and prepares the Developer Disk Image.",
+                point(1, "Tap **Check setup**. Solstice checks LocalDevVPN and prepares the Developer Disk Image.",
                       done: jit.prepared || attached)
-                point(2, "Tap **Enable JIT**. Henge's helper attaches and a Mac can start.", done: attached)
+                point(2, "Tap **Enable JIT**. Solstice's helper attaches and a Mac can start.", done: attached)
             }
             .padding(16).hengeCard()
 

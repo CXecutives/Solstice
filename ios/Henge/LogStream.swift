@@ -291,8 +291,8 @@ final class LogStream: ObservableObject {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
         let build = info["CFBundleVersion"] as? String ?? "?"
-        return "---- Henge log from \(HengeLog.deviceModel) (\(d.systemName) \(d.systemVersion)), "
-             + "Henge \(version) (\(build)), to \(want.host):\(want.port) ----"
+        return "---- Solstice log from \(HengeLog.deviceModel) (\(d.systemName) \(d.systemVersion)), "
+             + "Solstice \(version) (\(build)), to \(want.host):\(want.port) ----"
     }
 
     private static func describe(_ error: NWError) -> String {

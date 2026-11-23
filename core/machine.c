@@ -180,7 +180,7 @@ static int init_rest(HvMachine *m) {
     }
     m->locks_initialized = 1;
     /* HV_JIT_CAP (testing): MB of the region to use from the start, not only after the first full flush, so a
-       device reaches its full flushes in minutes (henge-env.txt on iOS). */
+       device reaches its full flushes in minutes (solstice-env.txt on iOS). */
     if (getenv("HV_JIT_CAP")) hv_knob[HV_K_JITCAP] = atoi(getenv("HV_JIT_CAP"));
     m->jit.limit = hv_knob[HV_K_JITCAP] > 0 ? ((size_t)hv_knob[HV_K_JITCAP] << 20) / sizeof(uint32_t) : 0;
     /* The TLB layout (cpu.h): HV_TLBT from the environment here too, so the Mac tool and the tests can pick it. */

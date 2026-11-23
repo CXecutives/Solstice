@@ -4,11 +4,13 @@
    network drive with nothing to install for that part. The network hands each connection the guest makes to
    10.0.2.4:80 to a Unix socket in the app's own storage: no TCP port is open, so other apps can't reach this.
 
-   /.henge/ is not part of the folder. It has the clipboard, where the helper inside macOS (tools/henge-agent.m)
+   /.solstice/ is not part of the folder. It has the clipboard, where the helper inside macOS (tools/henge-agent.m)
    waits for the device's clipboard and sends the guest's, and what it takes to install that helper.
 
    Locks are accepted but not enforced: macOS only writes to a server that offers them, and there is one client. */
 #include "share.h"
+
+#include "brand.h"
 
 #include <copyfile.h>
 #include <dirent.h>
@@ -42,12 +44,12 @@
 /* Connections served at once (one thread each); more wait in the listen queue. */
 #define MAX_CONNS 32
 #define SMALL_BODY_MAX (16 * 1024 * 1024) /* a clipboard, or a request's XML */
-#define TEMP_PREFIX ".henge-put-"
+#define TEMP_PREFIX ".solstice-put-"
 
 /* Seconds a connection may sit without a request before it is closed, so idle keep-alive connections do not keep
    the MAX_CONNS threads. A clipboard long-poll waits on clip_cond, not in recv, and is not cut short by it. */
 static int idle_seconds = 90;
-/* Seconds a clipboard request without X-Henge-Token (a helper from before the key) is held before its 403: that
+/* Seconds a clipboard request without the key header (a helper from before the key) is held before its 403: that
    helper retries at once on an answer, so an immediate one would have it loop nonstop. */
 static int keyless_hold_seconds = 25;
 
@@ -111,7 +113,7 @@ typedef struct Request {
     char destination[PATH_MAX]; /* decoded path */
     char if_header[256];
     char host[256];  /* the Host header, or the host of an absolute target */
-    char token[80];  /* X-Henge-Token */
+    char token[80];  /* SOLSTICE_HEADER_TOKEN */
     long long length;
     int chunked, expect_continue, close, overwrite, depth, host_seen;
     long long range_from, range_to; /* -1: none */
@@ -285,7 +287,7 @@ static char *body_small(Conn *c, Request *r, size_t *len) {
 
 static int respond(Conn *c, Request *r, int status, const char *reason, const char *headers, const char *body, size_t len) {
     char head[2048];
-    int n = snprintf(head, sizeof head, "HTTP/1.1 %d %s\r\nServer: Henge\r\nContent-Length: %zu\r\n%s%s\r\n", status, reason, len,
+    int n = snprintf(head, sizeof head, "HTTP/1.1 %d %s\r\nServer: " SOLSTICE_NAME "\r\nContent-Length: %zu\r\n%s%s\r\n", status, reason, len,
                      headers ? headers : "", r->close ? "Connection: close\r\n" : "");
     if (send_all(c->fd, head, (size_t)n) != 0) return -1;
     return (body && len && strcmp(r->method, "HEAD") != 0) ? send_all(c->fd, body, len) : 0;
@@ -380,7 +382,7 @@ static int do_propfind(Conn *c, Request *r) {
     adds(&t, "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:multistatus xmlns:D=\"DAV:\">");
     const char *slash = strrchr(r->path, '/');
     int is_root = strcmp(r->path, "/") == 0;
-    add_entry(&t, r->path, is_root ? "Henge" : (slash && slash[1] ? slash + 1 : r->path), &st, is_root);
+    add_entry(&t, r->path, is_root ? SOLSTICE_SHARE_NAME : (slash && slash[1] ? slash + 1 : r->path), &st, is_root);
     if (S_ISDIR(st.st_mode) && r->depth != 0) {
         DIR *d = opendir(local);
         struct dirent *e;
@@ -457,7 +459,7 @@ static int do_get(Conn *c, Request *r) {
     strftime(modified, sizeof modified, "%a, %d %b %Y %H:%M:%S GMT", &tm);
     char head[1024];
     int n = snprintf(head, sizeof head,
-                     "HTTP/1.1 %s\r\nServer: Henge\r\nContent-Length: %lld\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n"
+                     "HTTP/1.1 %s\r\nServer: " SOLSTICE_NAME "\r\nContent-Length: %lld\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n"
                      /* a file put here and opened in the guest's browser runs as nobody's page, not 10.0.2.4's */
                      "Content-Security-Policy: sandbox\r\nX-Content-Type-Options: nosniff\r\n"
                      "Last-Modified: %s\r\nETag: \"%llx-%llx\"\r\n",
@@ -612,7 +614,7 @@ static int do_lock(Conn *c, Request *r) {
     if (open_ && end && (size_t)(end - open_) < sizeof token) { /* a refresh keeps its token */
         snprintf(token, sizeof token, "%.*s", (int)(end - open_ - 1), open_ + 1);
     } else {
-        snprintf(token, sizeof token, "opaquelocktoken:henge-%lx-%lx", (unsigned long)time(NULL), __atomic_add_fetch(&counter, 1, __ATOMIC_RELAXED));
+        snprintf(token, sizeof token, "opaquelocktoken:solstice-%lx-%lx", (unsigned long)time(NULL), __atomic_add_fetch(&counter, 1, __ATOMIC_RELAXED));
     }
     int status = 200;
     char local[PATH_MAX];
@@ -636,43 +638,50 @@ static int do_lock(Conn *c, Request *r) {
     return rc;
 }
 
-/* ---- /.henge/ ---- */
+/* ---- /.solstice/ ---- */
 
-/* What "curl -s http://10.0.2.4/.henge/install | sh" runs in macOS. */
+/* What "curl -s http://10.0.2.4/.solstice/install | sh" runs in macOS. It first removes what the versions before the
+   rename put there (SOLSTICE_OLD_*): their helper, its launch agent, their folder where it is empty. */
 static const char install_script[] =
     "#!/bin/sh\n"
-    "D=\"$HOME/Library/Application Support/Henge\"\n"
-    "P=\"$HOME/Library/LaunchAgents/com.henge.agent.plist\"\n"
+    "D=\"$HOME/Library/Application Support/" SOLSTICE_SUPPORT_FOLDER "\"\n"
+    "P=\"$HOME/Library/LaunchAgents/" SOLSTICE_AGENT_LABEL ".plist\"\n"
+    "OD=\"$HOME/Library/Application Support/" SOLSTICE_OLD_SUPPORT_FOLDER "\"\n"
+    "launchctl bootout \"gui/$(id -u)/" SOLSTICE_OLD_AGENT_LABEL "\" 2>/dev/null\n"
+    "rm -f \"$HOME/Library/LaunchAgents/" SOLSTICE_OLD_AGENT_LABEL ".plist\" \"$OD/" SOLSTICE_OLD_AGENT_BINARY "\"\n"
+    "rmdir \"$OD\" 2>/dev/null\n"
+    "umount \"$HOME/" SOLSTICE_OLD_SHARE_NAME "\" 2>/dev/null\n"
+    "rmdir \"$HOME/" SOLSTICE_OLD_SHARE_NAME "\" 2>/dev/null\n"
     "mkdir -p \"$D\" \"$HOME/Library/LaunchAgents\"\n"
-    "launchctl bootout \"gui/$(id -u)/com.henge.agent\" 2>/dev/null\n"
-    "curl -fsS http://" HV_SHARE_ADDR "/.henge/agent | gunzip > \"$D/henge-agent\" || { echo 'Could not reach Henge.'; exit 1; }\n"
-    "chmod 755 \"$D/henge-agent\"\n"
+    "launchctl bootout \"gui/$(id -u)/" SOLSTICE_AGENT_LABEL "\" 2>/dev/null\n"
+    "curl -fsS http://" HV_SHARE_ADDR SOLSTICE_URL_PREFIX "agent | gunzip > \"$D/" SOLSTICE_AGENT_BINARY "\" || { echo 'Could not reach " SOLSTICE_NAME ".'; exit 1; }\n"
+    "chmod 755 \"$D/" SOLSTICE_AGENT_BINARY "\"\n"
     "cat > \"$P\" <<EOF\n"
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
     "<plist version=\"1.0\"><dict>\n"
-    "<key>Label</key><string>com.henge.agent</string>\n"
-    "<key>ProgramArguments</key><array><string>$D/henge-agent</string></array>\n"
+    "<key>Label</key><string>" SOLSTICE_AGENT_LABEL "</string>\n"
+    "<key>ProgramArguments</key><array><string>$D/" SOLSTICE_AGENT_BINARY "</string></array>\n"
     "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n"
     "<key>LimitLoadToSessionType</key><string>Aqua</string>\n"
     "<key>ProcessType</key><string>Background</string>\n"
     "</dict></plist>\n"
     "EOF\n"
     "launchctl bootstrap \"gui/$(id -u)\" \"$P\"\n"
-    "echo 'Solstice is set up.'\n"
+    "echo '" SOLSTICE_NAME " is set up.'\n"
     /* Solstice: Set Up also brings the part of a lighter Mac nobody sees (tune_script). How macOS looks and behaves
        stays as Apple made it; the visible part is the optional Lighter macOS command (lighten_script). */
-    "curl -fsS http://" HV_SHARE_ADDR "/.henge/tune | sh\n";
+    "curl -fsS http://" HV_SHARE_ADDR SOLSTICE_URL_PREFIX "tune | sh\n";
 
-/* What "curl -s http://10.0.2.4/.henge/lighten | sh" runs in macOS: less background work and drawing, for a Mac
+/* What "curl -s http://10.0.2.4/.solstice/lighten | sh" runs in macOS: less background work and drawing, for a Mac
    whose CPUs are emulated: less animation and drawing, and the system part (update checks, Time Machine) with the
    Mac's password once. Apple's own background agents can't be turned off with System Integrity Protection on
    (launchctl disable of gui/ agents did not survive a log out on the Mac bench, 2026-11-08), so it doesn't try.
    Reduce Motion and Reduce Transparency need System Settings (a script can't write com.apple.universalaccess).
    Nothing reads the script's own stdin (sh is reading the script from it). */
-#define HV_SPINS_LABEL "com.henge.ticketspins"
+#define HV_SPINS_LABEL SOLSTICE_SPINS_LABEL
 #define HV_SPINS_PLIST "/Library/LaunchDaemons/" HV_SPINS_LABEL ".plist"
-/* What Set Up runs in macOS ("curl -s http://10.0.2.4/.henge/tune | sh", also the start of lighten): only what
+/* What Set Up runs in macOS ("curl -s http://10.0.2.4/.solstice/tune | sh", also the start of lighten): only what
    nobody sees. macOS updates are not downloaded or installed by themselves (Solstice runs macOS 15.6.1, and a
    background download is gigabytes of emulated work), Power Nap is off, and a LaunchDaemon helps CPUs that wait.
    Nothing reads the script's own stdin (sh is reading the script from it). */
@@ -689,6 +698,8 @@ static const char tune_script[] =
        daemon lets background work wake the CPUs less: timers of background-QoS threads may slip up to 250 ms
        (xnu's 100) and those of latency tier 3 (apps in App Nap) up to 150 ms (75), so they share wakeups. Timers
        of everything on screen keep their 1 ms, or animations would stutter. */
+    "  sudo launchctl bootout system/" SOLSTICE_OLD_SPINS_LABEL " 2>/dev/null </dev/null\n"
+    "  sudo rm -f /Library/LaunchDaemons/" SOLSTICE_OLD_SPINS_LABEL ".plist </dev/null\n"
     "  sudo tee " HV_SPINS_PLIST " >/dev/null <<'EOF'\n"
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
@@ -707,8 +718,8 @@ static const char tune_script[] =
 
 static const char lighten_script[] =
     "#!/bin/sh\n"
-    "curl -fsS http://" HV_SHARE_ADDR "/.henge/tune | sh\n"
-    "echo 'Making macOS lighter for Henge...'\n"
+    "curl -fsS http://" HV_SHARE_ADDR SOLSTICE_URL_PREFIX "tune | sh\n"
+    "echo 'Making macOS lighter for " SOLSTICE_NAME "...'\n"
     "defaults write com.apple.universalaccess reduceMotion -bool true 2>/dev/null </dev/null || "
     "echo '  Reduce Motion: turn it on in System Settings, Accessibility, Motion.'\n"
     "defaults write com.apple.universalaccess reduceTransparency -bool true 2>/dev/null </dev/null || "
@@ -762,7 +773,7 @@ static const char lighten_script[] =
     "echo 'Done: animations, desktop widgets, the screen saver, a moving wallpaper, Siri and suggestions are off;'\n"
     "echo 'with the password also Spotlight indexing, Time Machine, update checks and App Store updates.'\n"
     "echo 'Also turn on Reduce Motion and Reduce Transparency: System Settings, Accessibility.'\n"
-    "echo 'Log out and back in for all of it to take effect. To undo: curl -s http://" HV_SHARE_ADDR "/.henge/unlighten | sh'\n";
+    "echo 'Log out and back in for all of it to take effect. To undo: curl -s http://" HV_SHARE_ADDR SOLSTICE_URL_PREFIX "unlighten | sh'\n";
 
 /* And back. The wallpaper stays as it is: pick one in System Settings. */
 static const char unlighten_script[] =
@@ -837,7 +848,7 @@ static int clipboard_get(Conn *c, Request *r) {
     char *text = seq > since && device_clip ? strdup(device_clip) : NULL;
     pthread_mutex_unlock(&clip_mu);
     char headers[64];
-    snprintf(headers, sizeof headers, "X-Henge-Seq: %lu\r\n", seq);
+    snprintf(headers, sizeof headers, SOLSTICE_HEADER_SEQ ": %lu\r\n", seq);
     int rc = text ? respond(c, r, 200, "OK", headers, text, strlen(text)) : respond(c, r, 204, "No Content", headers, NULL, 0);
     free(text);
     return rc;
@@ -855,8 +866,8 @@ static int clipboard_put(Conn *c, Request *r) {
     return respond_empty(c, r, 204, "No Content");
 }
 
-/* The clipboard's key, new for each run of the app: the helper fetches it (GET /.henge/token) and sends it as
-   X-Henge-Token. A web page in the guest cannot: its own requests to 10.0.2.4 are cross-origin (it cannot read the
+/* The clipboard's key, new for each run of the app: the helper fetches it (GET /.solstice/token) and sends it as
+   X-Solstice-Token. A web page in the guest cannot: its own requests to 10.0.2.4 are cross-origin (it cannot read the
    answer or add the header), and the folder's files are served sandboxed (do_get). */
 static char clip_key[33];
 static pthread_once_t token_once = PTHREAD_ONCE_INIT;
@@ -906,7 +917,7 @@ static void hold_keyless(void) {
 }
 
 static int serve_henge(Conn *c, Request *r) {
-    const char *what = r->path + strlen("/.henge/");
+    const char *what = r->path + strlen(SOLSTICE_URL_PREFIX);
     if (!strcmp(what, "token") && !strcmp(r->method, "GET")) {
         if (body_discard(c, r) != 0) return -1;
         const char *t = share_token();
@@ -1000,7 +1011,7 @@ static int read_request(Conn *c, Request *r) {
                 snprintf(r->host, sizeof r->host, "%.*s", (int)(hl < sizeof r->host ? hl : sizeof r->host - 1), v);
             }
             r->host_seen++;
-        } else if (header_is(line, "X-Henge-Token", &v)) snprintf(r->token, sizeof r->token, "%s", v);
+        } else if (header_is(line, SOLSTICE_HEADER_TOKEN, &v)) snprintf(r->token, sizeof r->token, "%s", v);
         else if (header_is(line, "Destination", &v)) {
             const char *p = v;
             if (!strncasecmp(p, "http://", 7) || !strncasecmp(p, "https://", 8)) {
@@ -1024,7 +1035,12 @@ static int read_request(Conn *c, Request *r) {
 }
 
 static int handle(Conn *c, Request *r) {
-    if (!strncmp(r->path, "/.henge/", 8)) return serve_henge(c, r);
+    if (!strncmp(r->path, SOLSTICE_URL_PREFIX, strlen(SOLSTICE_URL_PREFIX))) return serve_henge(c, r);
+    if (!strncmp(r->path, SOLSTICE_OLD_URL_PREFIX, strlen(SOLSTICE_OLD_URL_PREFIX))) { /* a helper from before the rename */
+        if (body_discard(c, r) != 0) return -1;
+        hold_keyless();
+        return respond_empty(c, r, 403, "Forbidden");
+    }
     const char *m = r->method;
     if (!strcmp(m, "OPTIONS")) {
         if (body_discard(c, r) != 0) return -1;

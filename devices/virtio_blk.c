@@ -1,4 +1,5 @@
 #include "virtio_blk.h"
+#include "brand.h"
 
 #include <pthread/qos.h>
 #include <stdio.h>
@@ -112,7 +113,7 @@ static int handle(HvVirtioBlk *b, HvVirtqElem *e, uint32_t *written) {
         break;
     }
     case T_GET_ID: {
-        char id[20] = "hengevm-disk";
+        char id[20] = SOLSTICE_DEVICE_DISK_ID;
         uint32_t n = data < 20 ? data : 20;
         hv_virtq_write(v, e, 0, id, n);
         *written = n;

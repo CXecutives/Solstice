@@ -9,7 +9,7 @@ struct HengeApp: App {
 
     init() {
         // Order matters: HengeLog takes over stderr, so the engine's and the JIT
-        // allocator's first lines land in Documents/henge.log too.
+        // allocator's first lines land in Documents/solstice.log too.
         HengeLog.start()
         HengeLog.log("boot", "address space: \(henge_largest_reservation_gb()) GB can be reserved in one piece")
         SafeMode.noteLaunch() // before the engine's settings: two launches in a row that ended with a Mac up start it safe
@@ -31,7 +31,7 @@ struct HengeApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .onOpenURL { url in HengeLog.log("app", "opened with \(url.absoluteString)") } // henge:// back from LocalDevVPN
+                .onOpenURL { url in HengeLog.log("app", "opened with \(url.absoluteString)") } // solstice:// back from LocalDevVPN
         }
     }
 }
@@ -77,7 +77,7 @@ struct RootView: View {
             Button("OK", role: .cancel) {}
             Button("Use Solstice's Settings") { SafeMode.turnOff() }
         } message: {
-            Text("The last two times, Solstice ended while a Mac was running. Until the next update it starts Macs with Henge's standard engine settings. Settings, Performance turns this off.")
+            Text("The last two times, Solstice ended while a Mac was running. Until the next update it starts Macs with the original engine settings. Settings > Advanced turns this off.")
         }
         .sheet(isPresented: $jit.showSetup) { JITSetupFlow() }
         // Swiped away in the app switcher while a Mac ran: a quit, not a crash, for SafeMode.
