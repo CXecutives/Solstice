@@ -69,13 +69,13 @@ int main(void) {
     /* HV_DUMP=file: every translated block (guest VA, guest words, host words) for disassembly. */
     if (getenv("HV_DUMP")) {
         FILE *f = fopen(getenv("HV_DUMP"), "wb");
-        for (int i = 0; f && i < m.nblocks; i++) {
+        for (int i = 1; f && i <= m.nblocks; i++) { /* records from 1, in the order made (one CPU, no eviction) */
             HvBlock *b = &m.blocks[i];
-            uint32_t *end = i + 1 < m.nblocks ? m.blocks[i + 1].code : m.jit.base + m.jit.used;
-            uint64_t hdr[3] = {b->va, b->ninsns, (uint64_t)(end - b->code)};
+            uint32_t *code = hv_block_code(&m, b), *end = i < m.nblocks ? hv_block_code(&m, &m.blocks[i + 1]) : m.jit.base + m.jit.used;
+            uint64_t hdr[3] = {b->va, b->ninsns, (uint64_t)(end - code)};
             fwrite(hdr, sizeof hdr, 1, f);
             fwrite((const void *)(uintptr_t)b->va, 4, b->ninsns, f);
-            fwrite(b->code, 4, (size_t)(end - b->code), f);
+            fwrite(code, 4, (size_t)(end - code), f);
         }
         if (f) fclose(f);
     }

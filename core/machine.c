@@ -7,10 +7,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
+#include "dispatch.h"
 #include "mmu.h"
 #include "sysreg.h"
+
+_Static_assert(sizeof(*((HvMachine *)0)->slots) == 8, "HV_SLOT: two 8-byte words (hv_chain_thunk reads the target at +8)");
 
 extern void hv_exit(void);
 extern void hv_helper_entry(void);
@@ -61,8 +66,99 @@ int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes) {
     return init_rest(m);
 }
 
+/* ---- tables ---- */
+
+static size_t page_bytes(void) {
+    static size_t ps;
+    if (!ps) ps = (size_t)getpagesize();
+    return ps;
+}
+
+void *hv_pages_alloc(size_t bytes) {
+    if (!bytes) return NULL;
+    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    return p == MAP_FAILED ? NULL : p;
+}
+
+void hv_pages_free(void *p, size_t bytes) {
+    if (p && bytes) munmap(p, bytes);
+}
+
+void hv_pages_zero(void *p, size_t bytes) {
+    if (!p || !bytes) return;
+    size_t ps = page_bytes();
+    uintptr_t a = (uintptr_t)p, e = a + bytes, lo = (a + ps - 1) & ~(uintptr_t)(ps - 1), hi = e & ~(uintptr_t)(ps - 1);
+    if (hi <= lo) {
+        memset(p, 0, bytes);
+        return;
+    }
+    memset(p, 0, lo - a);
+    memset((void *)hi, 0, e - hi);
+    /* The kernel keeps the old pages if it refuses the new ones (it puts back what it took): then zero them. */
+    if (mmap((void *)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) == MAP_FAILED)
+        memset((void *)lo, 0, hi - lo);
+}
+
+/* How many records, slots and buckets a JIT region of jit_bytes gets: as many blocks as it holds at
+   HV_BLOCK_MIN_BYTES each (so the code filling, not this, is what evicts), and a bucket per one to two blocks. One
+   place for init_rest and hv_machine_table_bytes. */
+static void table_counts(size_t jit_bytes, uint32_t *blocks, uint32_t *slots, uint32_t *buckets) {
+    size_t n = jit_bytes / HV_BLOCK_MIN_BYTES;
+    if (n < 4096) n = 4096;
+    *blocks = (uint32_t)n;
+    *slots = (uint32_t)n * HV_SLOTS_PER_BLOCK;
+    uint32_t b = 4096;
+    while ((size_t)b * 2 <= n) b *= 2;
+    *buckets = b;
+}
+
+/* Per slot: the HV_SLOT pair, slot_xa, then the 32-bit arrays (site, stub, cond, xpa, xnext, xprev). */
+#define SLOT_BYTES (2 * sizeof(uint64_t) + sizeof(uint64_t) + 6 * sizeof(uint32_t))
+_Static_assert(SLOT_BYTES == 48, "an exit slot: 48 bytes");
+
+static size_t percpu_tables_bytes(void) {
+    return (size_t)HV_IJC_TABLES * HV_IJC_TABLE_BYTES + (sizeof(uint64_t) << HV_UCODE_BITS) + 65536 * sizeof(uint64_t[4]) +
+           (size_t)HV_STASHES * HV_STASH_CAP * (sizeof(HvTlbEntry) + sizeof(uint16_t));
+}
+
+size_t hv_machine_table_bytes(size_t jit_bytes, int ncpus) {
+    uint32_t blocks, slots, buckets;
+    table_counts(jit_bytes, &blocks, &slots, &buckets);
+    if (ncpus < 1) ncpus = 1;
+    if (ncpus > HV_MAX_CPUS) ncpus = HV_MAX_CPUS;
+    return ((size_t)blocks + 1) * sizeof(HvBlock) + (size_t)slots * SLOT_BYTES + (size_t)buckets * sizeof(uint32_t) +
+           hv_cc_table_bytes(blocks) + HV_MAX_CPUS * sizeof(HvPerCpu) + (size_t)ncpus * percpu_tables_bytes();
+}
+
+/* A CPU's tables, at its first reset (or before, hv_machine_add_cpus). */
+static int percpu_tables(HvPerCpu *p) {
+    if (p->tables) return 0;
+    size_t bytes = percpu_tables_bytes();
+    uint8_t *t = hv_pages_alloc(bytes);
+    if (!t) return -1;
+    p->tables = t;
+    p->tables_bytes = bytes;
+    p->ijc = (uint64_t *)(void *)t;
+    t += (size_t)HV_IJC_TABLES * HV_IJC_TABLE_BYTES;
+    p->ucode = (uint64_t *)(void *)t;
+    t += sizeof(uint64_t) << HV_UCODE_BITS;
+    p->cid_chunks = (uint64_t (*)[4])(void *)t;
+    t += 65536 * sizeof(uint64_t[4]);
+    for (int k = 0; k < HV_STASHES; k++, t += HV_STASH_CAP * sizeof(HvTlbEntry)) p->stash[k].ent = (HvTlbEntry *)(void *)t;
+    for (int k = 0; k < HV_STASHES; k++, t += HV_STASH_CAP * sizeof(uint16_t)) p->stash[k].slot = (uint16_t *)(void *)t;
+    return 0;
+}
+
+int hv_machine_add_cpus(HvMachine *m, int n) {
+    for (int i = 0; i < n && i < HV_MAX_CPUS; i++)
+        if (percpu_tables(&m->percpu[i]) != 0) return -1;
+    return 0;
+}
+
 static int init_rest(HvMachine *m) {
     hv_kva_init();
+    m->percpu = hv_pages_alloc(HV_MAX_CPUS * sizeof *m->percpu);
+    if (!m->percpu) return -1;
     pthread_mutex_init(&m->big_mu, NULL);
     pthread_cond_init(&m->big_cv, NULL);
     pthread_mutexattr_t ra;
@@ -107,39 +203,72 @@ static int init_rest(HvMachine *m) {
        costs ~13% of the code (Mac 2026-11-09: 296-300 against 259-261 bytes a block), and the phone's code cache
        fills every 40-60 s: worth a phone A/B (HV_RECHECK 0 vs 1 over a login), not a Mac one (~7K such accesses/s). */
     hv_knob[HV_K_RECHECK] = getenv("HV_RECHECK") ? atoi(getenv("HV_RECHECK")) : 1;
-    /* As many blocks as the region holds (a block is at least ~160 bytes of
-       code), so the region filling, not this table, is what flushes; two
-       chainable exits each at most. Untouched entries cost nothing. */
-    size_t bytes = m->jit.capacity * sizeof(uint32_t);
-    m->max_blocks = (uint32_t)(bytes / 160 < 4096 ? 4096 : bytes / 160);
-    m->max_slots = m->max_blocks * 2;
-    m->blocks = calloc(m->max_blocks, sizeof(HvBlock));
-    if (!m->blocks) return -1;
+    /* Records, slots and buckets for the whole region (table_counts), mapped, so what no block uses costs nothing. */
+    uint32_t buckets;
+    table_counts(m->jit.capacity * sizeof(uint32_t), &m->max_blocks, &m->max_slots, &buckets);
+    m->blocks_bytes = ((size_t)m->max_blocks + 1) * sizeof(HvBlock); /* blocks[0] is never used: index 0 ends a bucket */
+    m->blocks = hv_pages_alloc(m->blocks_bytes);
+    m->hash_bytes = (size_t)buckets * sizeof *m->hash;
+    m->hash = hv_pages_alloc(m->hash_bytes);
+    m->hash_mask = buckets - 1;
+    m->slots_bytes = (size_t)m->max_slots * SLOT_BYTES;
+    uint8_t *s = hv_pages_alloc(m->slots_bytes);
+    if (!m->blocks || !m->hash || !s) return -1;
+    size_t n = m->max_slots;
+    m->slots = (uint64_t *)(void *)s, s += n * 2 * sizeof(uint64_t); /* HV_SLOT: two words each */
+    m->slot_xa = (uint64_t *)(void *)s, s += n * sizeof(uint64_t);
+    m->slot_site = (uint32_t *)(void *)s, s += n * sizeof(uint32_t);
+    m->slot_stub = (uint32_t *)(void *)s, s += n * sizeof(uint32_t);
+    m->slot_cond = (uint32_t *)(void *)s, s += n * sizeof(uint32_t);
+    m->slot_xpa = (uint32_t *)(void *)s, s += n * sizeof(uint32_t);
+    m->slot_xnext = (uint32_t *)(void *)s, s += n * sizeof(uint32_t);
+    m->slot_xprev = (uint32_t *)(void *)s;
+    if (getenv("HV_JIT_POISON")) { /* debugging: each block's full-flush count, checked as it is entered and chained */
+        m->block_jit_gen = hv_pages_alloc(((size_t)m->max_blocks + 1) * sizeof *m->block_jit_gen);
+        if (!m->block_jit_gen) return -1;
+    }
     m->stop_pc = ~0ull;
     m->stop_pc2 = ~0ull;
     m->chain = 1;
-    m->slots = calloc((size_t)m->max_slots * 2, sizeof *m->slots); /* HV_SLOT: two words each */
-    m->slot_site = calloc(m->max_slots, sizeof *m->slot_site);
-    m->slot_stub = calloc(m->max_slots, sizeof *m->slot_stub);
-    m->slot_cond = calloc(m->max_slots, sizeof *m->slot_cond);
-    m->slot_xa = calloc(m->max_slots, sizeof *m->slot_xa);
-    m->slot_xpa = calloc(m->max_slots, sizeof *m->slot_xpa);
-    m->slot_xnext = calloc(m->max_slots, sizeof *m->slot_xnext);
-    m->slot_xprev = calloc(m->max_slots, sizeof *m->slot_xprev);
-    if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->slot_xnext || !m->slot_xprev) return -1;
     if (hv_cc_init(m) != 0) return -1; /* the JIT region's segments: after the limit and the tables above */
-    for (int i = 0; i < HV_MAX_CPUS; i++) { /* untouched pages cost nothing, so every CPU gets its tables now */
-        HvPerCpu *p = &m->percpu[i];
-        p->ijc = calloc(HV_IJC_TABLES * HV_IJC_TABLE_BYTES / 8, 8);
-        p->ucode = calloc(1u << HV_UCODE_BITS, 8);
-        p->cid_chunks = calloc(65536, sizeof *p->cid_chunks);
-        if (!p->ijc || !p->ucode || !p->cid_chunks) return -1;
-        for (int k = 0; k < HV_STASHES; k++) {
-            p->stash[k].slot = calloc(HV_STASH_CAP, sizeof *p->stash[k].slot);
-            p->stash[k].ent = calloc(HV_STASH_CAP, sizeof *p->stash[k].ent);
-            if (!p->stash[k].slot || !p->stash[k].ent) return -1;
-        }
+    return 0; /* each CPU's tables: hv_machine_add_cpus, or its first reset */
+}
+
+/* Every CPU paused: the full flush the dispatcher does (stop_the_world), then the tables' pages back. */
+int hv_machine_trim(HvMachine *m) {
+    for (int i = 0; i < m->ncpus; i++)
+        if (m->cpus[i] && __atomic_load_n(&m->percpu[i].active, __ATOMIC_SEQ_CST)) return -1;
+    pthread_mutex_lock(&m->tr_mu);
+    hv_flush_blocks(m);
+    hv_pages_zero(m->blocks, m->blocks_bytes);
+    hv_pages_zero(m->hash, m->hash_bytes);
+    hv_pages_zero(m->slots, m->slots_bytes);
+    if (m->block_jit_gen) hv_pages_zero(m->block_jit_gen, ((size_t)m->max_blocks + 1) * sizeof *m->block_jit_gen);
+    hv_cc_trim(m);
+    for (int i = 0; i < m->nram; i++) { /* the pages' notes of cached targets: none are left */
+        HvRam *r = &m->ram[i];
+        hv_pages_zero(r->ijc_va, r->npages * sizeof *r->ijc_va);
     }
+    for (int i = 0; i < m->ncpus; i++) {
+        HvCpu *c = m->cpus[i];
+        HvPerCpu *p = &m->percpu[i];
+        if (!c || !p->tables) continue;
+        for (int k = 0; k < HV_STASHES; k++) { /* the stashes go with the rest: their entries are refilled as used */
+            p->stash[k].ttbr0 = 0;
+            p->stash[k].n = 0;
+            __atomic_add_fetch(&p->stash[k].gen, 1, __ATOMIC_SEQ_CST);
+        }
+        hv_pages_zero(p->tables, p->tables_bytes); /* the branch caches (emptied by the flush), ucode, cid_chunks */
+        p->ijc_tables_used = 0;
+        p->ucode_count = 0;
+        p->ijc_keyed_count = 0;
+        p->last_fill[0] = p->last_fill[1] = 0;
+        hv_pages_zero(p->ijc_keyed, sizeof p->ijc_keyed);
+        hv_pages_zero(p->ijc_pages, sizeof p->ijc_pages);
+        hv_pages_zero(p->ijc_hint, sizeof p->ijc_hint);
+        hv_pages_zero(p->jc, sizeof p->jc);
+    }
+    pthread_mutex_unlock(&m->tr_mu);
     return 0;
 }
 
@@ -147,10 +276,11 @@ __thread HvCpu *hv_self;
 
 _Static_assert(offsetof(HvStats, small_at) % sizeof(uint64_t) == 0, "HvStats: counters first");
 
+/* Only the CPUs there are: a CPU never reset counted nothing, and reading its pages would make them. */
 void hv_stats_total(HvMachine *m, HvStats *out) {
     *out = m->stats;
     uint64_t *sum = (uint64_t *)(void *)out;
-    for (int i = 0; i < HV_MAX_CPUS; i++) {
+    for (int i = 0; i < m->ncpus && m->percpu; i++) {
         const uint64_t *c = (const uint64_t *)(const void *)&m->percpu[i].own.stats;
         for (size_t k = 0; k < HV_STATS_COUNTERS; k++) sum[k] += __atomic_load_n(&c[k], __ATOMIC_RELAXED);
     }
@@ -158,13 +288,19 @@ void hv_stats_total(HvMachine *m, HvStats *out) {
 
 uint64_t hv_stat_blocks(HvMachine *m) {
     uint64_t n = __atomic_load_n(&m->stats.blocks, __ATOMIC_RELAXED);
-    for (int i = 0; i < HV_MAX_CPUS; i++) n += __atomic_load_n(&m->percpu[i].own.stats.blocks, __ATOMIC_RELAXED);
+    for (int i = 0; i < m->ncpus && m->percpu; i++) n += __atomic_load_n(&m->percpu[i].own.stats.blocks, __ATOMIC_RELAXED);
+    return n;
+}
+
+uint64_t hv_stat_translations(HvMachine *m) {
+    uint64_t n = __atomic_load_n(&m->stats.translations, __ATOMIC_RELAXED);
+    for (int i = 0; i < m->ncpus && m->percpu; i++) n += __atomic_load_n(&m->percpu[i].own.stats.translations, __ATOMIC_RELAXED);
     return n;
 }
 
 uint64_t hv_stat_slow_mem(HvMachine *m) {
     uint64_t n = 0;
-    for (int i = 0; i < HV_MAX_CPUS; i++) n += __atomic_load_n(&m->percpu[i].own.slow_mem, __ATOMIC_RELAXED);
+    for (int i = 0; i < m->ncpus && m->percpu; i++) n += __atomic_load_n(&m->percpu[i].own.slow_mem, __ATOMIC_RELAXED);
     return n;
 }
 
@@ -519,34 +655,26 @@ void hv_machine_free(HvMachine *m) {
         free(m->ram[i].code_pages);
         free(m->ram[i].page_gen);
         free(m->ram[i].whint);
-        free(m->ram[i].ijc_va);
-        free(m->ram[i].xhead);
+        hv_pages_free(m->ram[i].ijc_va, m->ram[i].npages * sizeof *m->ram[i].ijc_va);
+        hv_pages_free(m->ram[i].xhead, m->ram[i].npages * sizeof *m->ram[i].xhead);
+        free(m->ram[i].code_hash);
     }
-    free(m->blocks);
-    for (int i = 0; i < HV_MAX_CPUS; i++) {
+    hv_pages_free(m->blocks, m->blocks_bytes);
+    hv_pages_free(m->hash, m->hash_bytes);
+    hv_pages_free(m->slots, m->slots_bytes);
+    hv_pages_free(m->block_jit_gen, ((size_t)m->max_blocks + 1) * sizeof *m->block_jit_gen);
+    for (int i = 0; i < HV_MAX_CPUS && m->percpu; i++) {
+        HvPerCpu *p = &m->percpu[i];
         /* hv_run keeps a thread send right for statistics; CPU workers have ended. */
-        if (m->percpu[i].thread) mach_port_deallocate(mach_task_self(), m->percpu[i].thread);
-        free(m->percpu[i].ijc);
-        free(m->percpu[i].ucode);
-        free(m->percpu[i].cid_chunks);
-        for (int k = 0; k < HV_STASHES; k++) {
-            free(m->percpu[i].stash[k].slot);
-            free(m->percpu[i].stash[k].ent);
-        }
+        if (p->thread) mach_port_deallocate(mach_task_self(), p->thread);
+        hv_pages_free(p->tables, p->tables_bytes);
         if (m->locks_initialized) {
-            pthread_mutex_destroy(&m->percpu[i].wake_mu);
-            pthread_cond_destroy(&m->percpu[i].wake_cv);
-            pthread_mutex_destroy(&m->percpu[i].req_mu);
+            pthread_mutex_destroy(&p->wake_mu);
+            pthread_cond_destroy(&p->wake_cv);
+            pthread_mutex_destroy(&p->req_mu);
         }
     }
-    free(m->slots);
-    free(m->slot_site);
-    free(m->slot_stub);
-    free(m->slot_cond);
-    free(m->slot_xa);
-    free(m->slot_xpa);
-    free(m->slot_xnext);
-    free(m->slot_xprev);
+    hv_pages_free(m->percpu, HV_MAX_CPUS * sizeof *m->percpu);
     hv_cc_free(m);
     if (m->locks_initialized) {
         pthread_mutex_destroy(&m->big_mu);
@@ -562,13 +690,13 @@ void hv_machine_free(HvMachine *m) {
 }
 
 int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int readonly) {
-    if (m->nram == HV_MAX_RAM) return -1;
+    size_t pages = (size + (1u << HV_TLB_PAGE_BITS) - 1) >> HV_TLB_PAGE_BITS;
+    if (m->nram == HV_MAX_RAM || pages >= (1u << 28)) return -1; /* hv_xpa: 28 bits of page (4 TB) */
     HvRam *r = &m->ram[m->nram++];
     r->pa = pa;
     r->size = size;
     r->host = host;
     r->readonly = readonly;
-    size_t pages = (size + (1u << HV_TLB_PAGE_BITS) - 1) >> HV_TLB_PAGE_BITS;
     r->pages_log2 = 0;
     while ((1ull << r->pages_log2) < pages) r->pages_log2++;
     /* A power of two, so translated code bounds-checks a page index with one shift (IC IVAU). */
@@ -577,8 +705,8 @@ int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int
     r->page_gen = calloc(pages, sizeof *r->page_gen);
     r->npages = pages;
     r->whint = calloc(pages * HV_MAX_CPUS, sizeof *r->whint);
-    r->ijc_va = calloc(pages, sizeof *r->ijc_va);
-    r->xhead = calloc(pages, sizeof *r->xhead);
+    r->ijc_va = hv_pages_alloc(pages * sizeof *r->ijc_va); /* given back by hv_machine_trim, xhead by a full flush */
+    r->xhead = hv_pages_alloc(pages * sizeof *r->xhead);
     r->code_hash = getenv("HV_CODE_CHECK") ? calloc(pages, sizeof *r->code_hash) : NULL;
     return r->code_pages && r->page_gen && r->whint && r->ijc_va && r->xhead ? 0 : -1;
 }
@@ -631,9 +759,9 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
         m->slot_xnext[idx] = m->slot_xprev[idx] = 0;
         m->slot_xpa[idx] = 0;
         __atomic_store_n(HV_SLOT(m, idx), 0, __ATOMIC_RELEASE);
-        uint32_t *site = m->slot_site[idx];
+        uint32_t *site = hv_jit_word(m, m->slot_site[idx]);
         if (site) {
-            uint32_t insn = 0x14000000u | (uint32_t)((m->slot_stub[idx] - site) & 0x3ffffff); /* back to its stub */
+            uint32_t insn = 0x14000000u | (uint32_t)((hv_jit_word(m, m->slot_stub[idx]) - site) & 0x3ffffff); /* back to its stub */
             hv_jit_write(&m->jit, site, &insn, 4);
             hv_jit_finish(&m->jit, site, 1);
         }
@@ -801,23 +929,29 @@ void hv_cpu_reset_index(HvCpu *cpu, HvMachine *m, uint32_t index) {
     memset(cpu, 0, a);
     memset((char *)cpu + a + sizeof cpu->m, 0, b - a - sizeof cpu->m);
     memset((char *)cpu + b + sizeof cpu->pc_state, 0, sizeof *cpu - b - sizeof cpu->pc_state);
+    HvPerCpu *p = &m->percpu[index];
+    /* Its tables before other CPUs can see it (they read them for TLBIs); made at the board's start
+       (hv_machine_add_cpus) unless a test resets the CPU first. */
+    if (percpu_tables(p) != 0) {
+        fprintf(stderr, "hengevm: no memory for cpu %u's tables\n", index);
+        abort();
+    }
     cpu->m = m;
     cpu->index = index;
     cpu->cntvoff = m->cntvoff;
-    cpu->pc_state = &m->percpu[index];
+    cpu->pc_state = p;
     m->cpus[index] = cpu;
     if (m->ncpus <= (int)index) m->ncpus = (int)index + 1;
     if (index == 0) m->cpu = cpu;
-    HvPerCpu *p = cpu->pc_state;
     /* Ids start over, so entries tagged with the old ones must go. */
     for (int t = 0; t < HV_IJC_TABLES; t++)
-        if (p->ijc_tables_used >> t & 1) memset(p->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8), 0, HV_IJC_TABLE_BYTES);
+        if (p->ijc_tables_used >> t & 1) hv_pages_zero(p->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8), HV_IJC_TABLE_BYTES);
     p->ijc_tables_used = 0;
-    memset(p->ijc_keyed, 0, sizeof p->ijc_keyed);
+    hv_pages_zero(p->ijc_keyed, sizeof p->ijc_keyed);
     p->ijc_keyed_count = 0;
     memset(p->ijc_pages, 0, sizeof p->ijc_pages);
     memset(p->ijc_hint, 0, sizeof p->ijc_hint);
-    memset(p->jc, 0, sizeof p->jc);
+    hv_pages_zero(p->jc, sizeof p->jc);
     cpu->ijc = (uint64_t)(uintptr_t)p->ijc;
     cpu->lines_ptr = (uint64_t)(uintptr_t)&p->irq_line;
     for (int t = 0; t < HV_IJC_TABLES; t++) cpu->ijc_tab[t] = (uint64_t)(uintptr_t)(p->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8));

@@ -337,7 +337,7 @@ void hv_vm_destroy(void) {
     hv_disk_close(&disk);
     hv_disk_close(&aux);
     hv_machine_free(&m);
-    memset(cpus, 0, sizeof cpus);
+    memset(cpus, 0, (size_t)ncpus * sizeof cpus[0]); /* only those it had: ~2 MB each, untouched otherwise */
     ncpus = 0;
     boot_args_offset = 0;
     boot_last_scan = 0;

@@ -42,19 +42,20 @@ typedef struct HvMmio {
     int self_locked;     /* the device takes its own lock (the GIC): no device lock around it */
 } HvMmio;
 
+/* A translated block's record. There is one for every block the code cache could hold (machine.c), so it is kept
+   small: what a lookup compares first, then where its code is and the bucket's next block as 32-bit offsets. */
 typedef struct HvBlock {
-    uint32_t jit_gen; /* full flushes when it was made */
-    uint32_t stag;    /* its code-cache segment's tag when placed (codecache.h): another now, and it is gone */
     uint64_t va, pa;
-    uint32_t flags;      /* HV_BLOCK_* state the translation depends on */
-    uint32_t ninsns;
     uint32_t gen;        /* page_gen of its page when translated */
-    struct HvRam *ram;   /* where its page lives, for a quick staleness check */
-    uint64_t pg;
-    uint32_t *code;
-    struct HvBlock *next;
-    uint32_t maker;      /* the CPU that translated it (index + 1; 0: not a CPU, as in tests) */
+    uint32_t stag;       /* its code-cache segment's tag when placed (codecache.h): another now, and it is gone */
+    uint32_t code_off;   /* its code: words from the JIT region's base (hv_block_code) */
+    uint32_t next;       /* the next block in its hash bucket: an index into HvMachine.blocks, 0 at the end */
+    uint32_t flags;      /* HV_BLOCK_* state the translation depends on */
+    uint16_t ninsns;     /* at most HV_MAX_BLOCK_INSNS */
+    uint8_t ram;         /* where its page lives (HvMachine.ram), for a quick staleness check (hv_block_gen) */
+    uint8_t maker;       /* the CPU that translated it (index + 1; 0: not a CPU, as in tests) */
 } HvBlock;
+_Static_assert(sizeof(HvBlock) == 40, "HvBlock: 40 bytes");
 
 #define HV_BLOCK_EL1   1u        /* translated for EL1 (selects tlb[1]) */
 #define HV_BLOCK_FPOFF 2u        /* CPACR_EL1.FPEN traps FP/SIMD at this EL */
@@ -63,11 +64,12 @@ typedef struct HvBlock {
 
 #define HV_MAX_RAM 8
 #define HV_MAX_MMIO 48
-#define HV_BLOCK_HASH (1 << 21) /* one bucket per block: chains are walked on every front-cache miss */
 #define HV_JC_BITS 16
-#define HV_MAX_BLOCKS (3 << 20) /* a macOS boot runs well over a million distinct blocks; a full flush retranslates them all */
 #define HV_PROF_RING (1 << 16)
-#define HV_MAX_SLOTS (6 << 20)  /* chainable exits: about two per block */
+/* Block records and exit slots are reserved for a code cache full of blocks this small (bytes of translated code; the
+   Mac's mix averages ~300): running out of records evicts a segment early, as a full cache does (codecache.c). */
+#define HV_BLOCK_MIN_BYTES 240
+#define HV_SLOTS_PER_BLOCK 2
 
 /* Counters for --stats: where the time goes. Each CPU writes its own copy (HvPerCpu.own); HvMachine.stats holds what
    is counted off the CPUs (devices, the kicker), under a lock, or rarely; readers sum them (hv_stats_total). Every
@@ -169,6 +171,10 @@ typedef struct HvPerCpu {
     /* Interrupt lines into this CPU, driven by the GIC. First and together:
        translated code reads both with one load (HvCpu.lines_ptr). */
     int irq_line, fiq_line;
+    /* Its big tables in one mapping (the branch cache, ucode, cid_chunks, the stashes' entries), made when the CPU is
+       first reset (hv_machine_add_cpus): a machine pays only for the CPUs it has. */
+    uint8_t *tables;
+    size_t tables_bytes;
     uint64_t *ijc;           /* indirect-branch cache tables (cpu->ijc points here) */
     uint64_t ijc_pages[2][1024]; /* hashed bitmap of the user pages any process cached targets in (for all-ASID TLBIs) */
     /* Hashed bitmap of (page, salt) pairs with cached targets: a TLBI for one
@@ -251,11 +257,30 @@ typedef struct HvMachine {
 
     HvJitRegion jit;
     HvCodeCache cc;          /* the JIT region's segments and their evictions (codecache.c) */
-    HvBlock *hash[HV_BLOCK_HASH];
+
+    /* Read on every CPU's hot paths and written rarely: on a cache line of their own (128 bytes: Apple's), away from
+       the counters translations write. */
+    int flush_pending __attribute__((aligned(128))); /* set by helpers; the dispatcher flushes once the block has left */
+    int stw_active;          /* stopping every CPU to flush all translations (stw_mu) */
+    int chain;               /* block chaining and the indirect-branch cache are enabled */
+    int trace;               /* print every block entered */
+    int log;                 /* 1: unknown sysregs, undefined instructions, unmapped accesses; 2: also every exception */
+    int gen_checks;
+    int slow_mem;            /* tests: send every load and store through hv_mem_emulate */
+    int stats_interval;      /* seconds between --stats lines, 0 = off */
+    int stats_deep;          /* the costly diagnostics too (page walks and decodes per miss, the block-hash walk, thread probes) */
+    uint32_t hash_mask;      /* buckets - 1 */
+    uint64_t stop_pc;        /* tests: leave the dispatcher when pc reaches this */
+    uint64_t stop_pc2;       /* debugging: a second such place */
+    /* The block hash: per bucket the index of its first block in blocks (0: none; blocks[0] is never used). A power of
+       two of buckets about as many as there are records (machine.c). */
+    uint32_t *hash;
     HvBlock *blocks;
-    int nblocks;
+    /* Written as blocks are made: lines of their own. */
+    int nblocks __attribute__((aligned(128)));
     uint32_t max_blocks, max_slots; /* sized from the JIT region (machine.c) */
-    int flush_pending;   /* set by helpers; the dispatcher flushes once the block has left */
+    uint32_t *block_jit_gen; /* HV_JIT_POISON: per record, the full flushes when it was made (checked against jit_gen) */
+    size_t hash_bytes, blocks_bytes, slots_bytes; /* their mappings (hv_pages_alloc) */
 
     void *gic;
     /* Devices: called between blocks every so often and while the CPU waits.
@@ -266,37 +291,35 @@ typedef struct HvMachine {
     uint64_t (*icc_read)(struct HvMachine *m, HvCpu *cpu, uint32_t reg);
     void (*icc_write)(struct HvMachine *m, HvCpu *cpu, uint32_t reg, uint64_t v);
 
-    uint64_t stop_pc;    /* tests: leave the dispatcher when pc reaches this */
-    void (*stop_hook)(HvCpu *cpu); /* debugging: call this there instead of leaving */
-    uint64_t stop_pc2;   /* debugging: a second such place */
+    void (*stop_hook)(HvCpu *cpu); /* debugging: call this at stop_pc instead of leaving */
     uint32_t jit_gen;    /* full flushes so far, as blocks see them (HV_JIT_POISON checks) */
-    int gen_checks;
-    int trace;           /* print every block entered */
-    int log;             /* 1: unknown sysregs, undefined instructions, unmapped accesses; 2: also every exception */
-    int slow_mem;        /* tests: send every load and store through hv_mem_emulate */
     uint64_t switch_flush_pc[4]; /* HV_SWITCH_FLUSH=3: PCs of the TLBI VMALLE1s seen within 20 us of a TTBR0 change (xnu's pmap switch) */
     uint64_t access_pc;  /* with log on: guest PC of the load/store being emulated (each CPU keeps its own, HvPerCpu.own) */
     uint64_t watch_va;   /* debugging: log every write that touches this guest VA (0: off) */
     uint64_t watch_pa;   /* debugging: the same by physical address */
     HvStats stats;
-    int chain;               /* block chaining and the indirect-branch cache are enabled */
-    uint64_t *slots;         /* chainable exits, two words each (HV_SLOT): the block chained to (0: not chained), then the exit's guest target */
-    uint32_t **slot_site;    /* the B in each exit's stub that chaining rewrites to jump to the target */
-    uint32_t **slot_stub;    /* what that B goes to while it isn't chained */
-    uint32_t **slot_cond;    /* a conditional branch in a block's hot part that chaining may send straight to the target too */
+    /* Chainable exits, 48 bytes each over these arrays (one mapping, slots_bytes). slots: two words each (HV_SLOT),
+       the block chained to (0: not chained), then the exit's guest target; hv_chain_thunk reads both. The rest is
+       C's: words of translated code as hv_jit_ref keeps them (offset + 1, 0: none). */
+    uint64_t *slots;
+    uint32_t *slot_site;     /* the B in each exit's stub that chaining rewrites to jump to the target */
+    uint32_t *slot_stub;     /* what that B goes to while it isn't chained */
+    uint32_t *slot_cond;     /* a conditional branch in a block's hot part that chaining may send straight to the target too */
     /* Exits to another page (see put_branch_exit): the host addend the target
        page's TLB entry must hold for the exit to go straight to the chained
-       block (0: a same-page exit), and once chained, the target's physical page
-       (| 1) so that invalidating its code can unchain it. Each such page's chained exits are a list from its
+       block (0: a same-page exit), and once chained, the target's RAM page (hv_xpa) so that invalidating its code
+       can unchain it. Each such page's chained exits are a list from its
        HvRam.xhead through slot_xnext (slot + 1, 0 at the end); a slot is on one at a time, until the page's code changes. */
-    uint64_t *slot_xa, *slot_xpa;
+    uint64_t *slot_xa;
+    uint32_t *slot_xpa;
     uint32_t *slot_xnext, nxchained;
     uint32_t *slot_xprev;    /* the list the other way (slot + 1), so an evicted exit leaves it at once; slot_xnext also links freed slots (codecache.c) */
-    uint32_t nslots;
-    HvCpu *cpu;              /* CPU 0: the one that polls devices */
+    uint32_t nslots __attribute__((aligned(128))); /* taken by translations on every CPU: a line of its own */
+    HvCpu *cpu __attribute__((aligned(128))); /* CPU 0: the one that polls devices */
     HvCpu *cpus[HV_MAX_CPUS]; /* every CPU, so device and invalidation code can ask them to leave */
     int ncpus;
-    HvPerCpu percpu[HV_MAX_CPUS];
+    /* Per CPU (hv_pages_alloc, HV_MAX_CPUS of them): pages of a CPU never reset are never touched. */
+    HvPerCpu *percpu;
     /* With more than one CPU, only the holder of this runs guest code (a fair
        ticket lock, handed over at every kick and while a CPU sleeps). */
     int big_lock_on;
@@ -306,13 +329,10 @@ typedef struct HvMachine {
     pthread_mutex_t tr_mu;
     /* Stopping every CPU to flush all translations. */
     pthread_mutex_t stw_mu;
-    pthread_cond_t stw_cv;
-    int stw_active;
+    pthread_cond_t stw_cv;   /* stw_active: with the hot fields above */
     pthread_mutex_t big_mu;
     pthread_cond_t big_cv;
     uint64_t big_next, big_serving;
-    int stats_interval;  /* seconds between --stats lines, 0 = off */
-    int stats_deep;      /* the costly diagnostics too (page walks and decodes per miss, the block-hash walk, thread probes) */
     /* --profile: host PCs of the CPU thread sampled every millisecond, drained by the stats line. */
     uint64_t *prof;
     uint32_t prof_head, prof_tail;
@@ -329,9 +349,9 @@ typedef struct HvMachine {
     uint64_t cntvoff;
 } HvMachine;
 
-static inline uint32_t hv_block_hash(uint64_t va, uint64_t pa, uint32_t flags) {
+static inline uint32_t hv_block_hash(const HvMachine *m, uint64_t va, uint64_t pa, uint32_t flags) {
     uint64_t h = (va >> 2) ^ (pa >> 2) * 0x9e3779b97f4a7c15ull ^ flags;
-    return (uint32_t)(h ^ (h >> 29)) & (HV_BLOCK_HASH - 1);
+    return (uint32_t)(h ^ (h >> 29)) & m->hash_mask;
 }
 
 /* A block of a code-cache segment that was condemned is gone, whatever else matches (codecache.c). */
@@ -342,15 +362,54 @@ static inline int hv_block_live(const HvMachine *m, const HvBlock *b) {
 /* Lock-free: blocks are added with a release store; a condemned segment's leave the hash, their records kept as they
    were until every CPU has been back at the top of its loop (codecache.c); a full flush stops every CPU. */
 static inline HvBlock *hv_block_find(HvMachine *m, uint32_t h, uint64_t va, uint64_t pa, uint32_t flags, uint32_t gen) {
-    for (HvBlock *b = __atomic_load_n(&m->hash[h], __ATOMIC_ACQUIRE); b; b = __atomic_load_n(&b->next, __ATOMIC_ACQUIRE))
+    HvBlock *blocks = m->blocks;
+    for (uint32_t i = __atomic_load_n(&m->hash[h], __ATOMIC_ACQUIRE); i; i = __atomic_load_n(&blocks[i].next, __ATOMIC_ACQUIRE)) {
+        HvBlock *b = &blocks[i];
         if (b->va == va && b->pa == pa && b->flags == flags && b->gen == gen && hv_block_live(m, b)) return b;
+    }
     return NULL;
 }
+
+/* Where a block's code is, the RAM its page is in, and that page's generation now (not b->gen: b is stale). */
+static inline uint32_t *hv_block_code(const HvMachine *m, const HvBlock *b) { return m->jit.base + b->code_off; }
+static inline HvRam *hv_block_ram(HvMachine *m, const HvBlock *b) { return &m->ram[b->ram]; }
+static inline uint64_t hv_block_pg(HvMachine *m, const HvBlock *b) { return (b->pa - m->ram[b->ram].pa) >> HV_TLB_PAGE_BITS; }
+static inline uint32_t *hv_block_gen(HvMachine *m, const HvBlock *b) { return &m->ram[b->ram].page_gen[hv_block_pg(m, b)]; }
+/* HV_JIT_POISON: the full flushes when b was made (0 without the checks). */
+static inline uint32_t hv_block_jit_gen(const HvMachine *m, const HvBlock *b) {
+    return m->block_jit_gen ? m->block_jit_gen[b - m->blocks] : 0;
+}
+
+/* A word of translated code as a slot keeps it: its offset in the JIT region + 1, 0 for none; and back. */
+static inline uint32_t hv_jit_ref(const HvMachine *m, const uint32_t *w) { return w ? (uint32_t)(w - m->jit.base) + 1 : 0; }
+static inline uint32_t *hv_jit_word(const HvMachine *m, uint32_t ref) { return ref ? m->jit.base + (ref - 1) : (uint32_t *)0; }
+/* A chained exit's target page as slot_xpa keeps it: its RAM region (3 bits) and page there (28), and 1 (0: none). */
+static inline uint32_t hv_xpa(uint32_t ram, uint64_t pg) { return (ram << 28 | (uint32_t)pg) << 1 | 1; }
+static inline uint32_t hv_xpa_ram(uint32_t x) { return x >> 29; }
+static inline uint64_t hv_xpa_pg(uint32_t x) { return (x >> 1) & ((1u << 28) - 1); }
+_Static_assert(HV_MAX_RAM <= 8, "hv_xpa: 3 bits of RAM region");
+
+/* Zeroed memory from the kernel, a page as it is first touched (0 until then), and the same given back: hv_pages_zero
+   maps fresh pages over the whole pages of [p, p + bytes) (memset at the ends), so what was there costs nothing until
+   it is written again. Never on the JIT region (a debugger prepared it; it cannot be prepared again). */
+void *hv_pages_alloc(size_t bytes);
+void hv_pages_free(void *p, size_t bytes);
+void hv_pages_zero(void *p, size_t bytes);
+/* Every CPU paused, none to run before this returns: drop every translation and give back the pages of the block
+   records, exit slots, block hash and every CPU's branch caches (they cost nothing until the CPUs run again and
+   translate). 0, or -1 if a CPU is still in the dispatcher. */
+int hv_machine_trim(HvMachine *m);
+/* The per-CPU tables of CPUs 0 .. n-1 (each is made at its first reset otherwise): -1 if there is no room. */
+int hv_machine_add_cpus(HvMachine *m, int n);
+/* The address space the engine's tables take for a JIT region of jit_bytes and ncpus CPUs, besides guest RAM and
+   the tables that go with it (a few bytes per 16 KB page): for the app to leave room for when it sizes guest RAM. */
+size_t hv_machine_table_bytes(size_t jit_bytes, int ncpus);
 
 /* --stats readers: the machine's counters plus every CPU's own. */
 void hv_stats_total(HvMachine *m, HvStats *out);
 uint64_t hv_stat_blocks(HvMachine *m);   /* dispatcher entries, all CPUs */
 uint64_t hv_stat_slow_mem(HvMachine *m); /* hv_mem_emulate calls, all CPUs */
+uint64_t hv_stat_translations(HvMachine *m); /* blocks translated, all CPUs */
 
 int hv_machine_init(HvMachine *m, size_t jit_bytes);
 /* The same with JIT memory the host provides (iOS: the region a debugger granted and its writable alias). */

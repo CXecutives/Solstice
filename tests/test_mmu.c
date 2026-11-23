@@ -412,7 +412,7 @@ int main(void) {
         uint64_t *ents[3];
         static HvBlock fake[3];
         for (int i = 0; i < 3; i++) {
-            fake[i] = (HvBlock){.va = vas[i], .flags = 0, .code = (uint32_t *)(uintptr_t)0x1234};
+            fake[i] = (HvBlock){.va = vas[i], .flags = 0, .code_off = 0x1234};
             hv_ijc_fill(&cpu, &fake[i]);
             ents[i] = m.percpu[0].ijc + (size_t)hv_ijc_index(vas[i] ^ salt) * 2;
         }
@@ -454,7 +454,7 @@ int main(void) {
         uint64_t *ents[2];
         static HvBlock fake[2];
         for (int i = 0; i < 2; i++) {
-            fake[i] = (HvBlock){.va = vas[i], .flags = 0, .code = (uint32_t *)(uintptr_t)0x1234};
+            fake[i] = (HvBlock){.va = vas[i], .flags = 0, .code_off = 0x1234};
             hv_ijc_fill(&cpu, &fake[i]);
             ents[i] = m.percpu[0].ijc + (size_t)hv_ijc_index(vas[i] ^ salt) * 2;
         }
@@ -485,7 +485,7 @@ int main(void) {
             uint64_t salt = cpu.ijc_salt[0];
             uint64_t *ents[2];
             for (int i = 0; i < 2; i++) {
-                fb[i] = (HvBlock){.va = (i ? Q + 0x20 : P + 0x10), .flags = 0, .code = (uint32_t *)(uintptr_t)0x1234};
+                fb[i] = (HvBlock){.va = (i ? Q + 0x20 : P + 0x10), .flags = 0, .code_off = 0x1234};
                 hv_ijc_fill(&cpu, &fb[i]);
                 ents[i] = m.percpu[0].ijc + (size_t)hv_ijc_index(fb[i].va ^ salt) * 2;
             }
@@ -515,8 +515,8 @@ int main(void) {
         for (uint32_t i = 0; i < 4; i++) {
             uint32_t idx = base + i, pg = pages[i];
             *HV_SLOT(&m, idx) = 0x1000 + i;
-            m.slot_site[idx] = NULL;
-            m.slot_xpa[idx] = (r->pa + ((uint64_t)pg << 14)) | 1;
+            m.slot_site[idx] = 0;
+            m.slot_xpa[idx] = hv_xpa(0, pg); /* r is m.ram[0] */
             m.slot_xnext[idx] = r->xhead[pg];
             r->xhead[pg] = idx + 1;
             m.nxchained++;
