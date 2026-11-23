@@ -98,7 +98,7 @@ typedef struct {
     uint32_t nrel;
     DRel drel[MAX_DRELS];
     uint32_t ndrel;
-    int rec_bad;        /* a record's distance did not fit (cannot happen: see put_slow_record) */
+    int rec_bad;        /* a record's distance or PC did not fit (cannot happen: see put_slow_record) */
     uint32_t nhot, ncold; /* the finished block's parts in words, ncold with the pool */
     uint64_t pool[MAX_LITS];
     uint32_t npool;
@@ -2124,8 +2124,9 @@ int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t a
         hv_translate_discard_slots(m);
     }
     int r = translate_emit(m, b, code, avail, 1, 0);
-    /* -2: a slow path's record could not say how far its retry or join is. That cannot happen (put_slow_record),
-       but if it did, every access through the helper is slow and right, where failing would flush for ever. */
+    /* -2: a slow path's record could not say how far its retry or join is, or hold its PC (one that is not a
+       sign-extended 48-bit value). Neither happens for code a 48-bit address space runs (put_slow_record), but if it
+       did, every access through the helper is slow and right, where failing would flush for ever. */
     if (r == -2) {
         hv_translate_discard_slots(m);
         r = translate_emit(m, b, code, avail, 1, 1);

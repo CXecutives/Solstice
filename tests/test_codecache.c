@@ -19,6 +19,7 @@ DECLARE_PROGRAM(ccstress);
 extern const char codecache_programs_begin[], codecache_programs_finish[];
 
 #define ROUNDS 2 /* per run: each CPU starts over often (parked in between) */
+#define STATS_EVERY 2 /* s: the stats line's interval (HvMachine.stats_interval) in the runs with it */
 
 static const TestProgram prog = TEST_PROGRAM(ccstress);
 static HvMachine m;
@@ -76,7 +77,7 @@ static double now_s(void) {
 
 enum {
     RUN_CHANGES = 1,   /* code changes from another thread, and two full flushes */
-    RUN_STATS = 2,     /* the stats line every 2 s (its counters and the code-cache line) */
+    RUN_STATS = 2,     /* the stats line every STATS_EVERY s (its counters and the code-cache line) */
     RUN_SYNC_WAIT = 4, /* TLBI waits asleep, as on the phone (HV_SYNC_WAIT=1) */
     RUN_NO_CPU0 = 8,   /* the CPUs are 1.. (CPU 0 never runs: the stats line must come all the same) */
     RUN_ROOMY = 16,    /* nothing is evicted (the reference for how much is translated again) */
@@ -93,7 +94,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         return 1;
     }
     int changes = opts & RUN_CHANGES, sync_wait = hv_knob[HV_K_SYNCWAIT];
-    if (opts & RUN_STATS) m.stats_interval = 2;
+    if (opts & RUN_STATS) m.stats_interval = STATS_EVERY;
     if (opts & RUN_SYNC_WAIT) hv_knob[HV_K_SYNCWAIT] = 1;
     hv_machine_add_ram(&m, (uint64_t)(uintptr_t)codecache_programs_begin, codecache_programs_finish - codecache_programs_begin,
                        (void *)codecache_programs_begin, 1);
@@ -202,7 +203,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         /* The words per translated instruction must be the blocks' own code (it was the region's extent, which goes
            back down as segments are reused), with instructions and words counted for the same translations (the
            instructions were counted for translations then dropped too): as the translator's own totals say, within 1%.
-           And a line every 2 s, whichever CPUs run. */
+           And a line every stats_interval seconds, whichever CPUs run. */
         double wpi = (double)tot.translated_words / ((double)tot.translated_insns + 1e-9);
         double xw = (double)(hv_xlate_counts.hot - xc0.hot + hv_xlate_counts.cold - xc0.cold + hv_xlate_counts.pool - xc0.pool);
         double xwpi = xw / ((double)(hv_xlate_counts.insns - xc0.insns) + 1e-9);
@@ -211,7 +212,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
                (unsigned long long)lines, wpi, xwpi);
         if (!(wpi > 0.99 * xwpi && wpi < 1.01 * xwpi))
             printf("%s: %.2f words per translated instruction, the translator's totals %.2f: FAIL\n", name, wpi, xwpi), failed++;
-        if ((double)lines + 2 < secs / 2) printf("%s: %llu stats lines in %.1f s: FAIL\n", name, (unsigned long long)lines, secs), failed++;
+        if ((double)lines + 2 < secs / m.stats_interval) printf("%s: %llu stats lines in %.1f s: FAIL\n", name, (unsigned long long)lines, secs), failed++;
     }
     if (tot.flush_full) printf("%s: full flushes for room: FAIL\n", name), failed++;
     if (tot.block_flushes > (uint64_t)flushes_asked) /* (one asked for just before the end may not have run) */
