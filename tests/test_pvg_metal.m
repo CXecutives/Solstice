@@ -41,6 +41,8 @@ static Rec at_guard(const void *bytes, uint32_t size) {
     return (Rec){p, size};
 }
 
+static BOOL complained(HvReplay *r, NSString *prefix);
+
 static void test_short_records(HvReplay *r) {
     page_size = (size_t)getpagesize();
     guard = mmap(NULL, page_size * 2, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -86,6 +88,27 @@ static void test_short_records(HvReplay *r) {
         for (uint32_t size = 0; size <= 4; size += 4) [r info:tag rec:at_guard(NULL, size) task:1];
     [cb commit];
     [cb waitUntilCompleted];
+
+    /* Object entries too short for their makers: serialized objects (sampler, depth-stencil with both sides, fence,
+       pipelines, unknown) and textures (both description forms). */
+    static const uint32_t serialized_tags[] = {3, 4, 0xd, 0xe, 0xb, 0x33, 99};
+    for (size_t i = 0; i < sizeof serialized_tags / sizeof *serialized_tags; i++)
+        for (uint32_t size = 0; size <= 40; size++) {
+            uint32_t w[10] = {serialized_tags[i], size, 1, 0x30}; /* 0x30: both stencil sides; as a pipeline's data length, too long */
+            Rec rec = at_guard(w, size);
+            @autoreleasepool { [r serialized:[NSData dataWithBytesNoCopy:(void *)rec.p length:size freeWhenDone:NO] task:1]; }
+        }
+    check("a 27-byte sampler refused", complained(r, @"serialized object tag 3: 27 bytes"));
+    check("a depth-stencil with both sides in 39 bytes refused", complained(r, @"depth-stencil flags 30 in 39 bytes"));
+    for (uint32_t form = 0; form < 2; form++)
+        for (uint32_t size = 0; size < 12 + 0x18 + 12 + (form ? DESCRIPTOR_V2 : DESCRIPTOR_V1); size++) {
+            uint8_t bytes[12 + 0x18 + 12 + DESCRIPTOR_V2] = {0};
+            bytes[12 + 0x18] = form ? 0x34 : 0x14; /* the description's tag: which form it is */
+            Rec rec = at_guard(bytes, size);
+            HvObject *o = [HvObject new];
+            [r makeTexture:o from:rec.p size:size];
+            check("a texture entry too short: nothing made", o->object == nil);
+        }
     munmap(guard, page_size * 2);
     puts("short records: none read past its end");
 }

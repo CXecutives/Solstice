@@ -36,7 +36,8 @@ static MTLTextureSwizzleChannels safe_swizzle(const uint8_t *sw, const uint8_t *
     return MTLTextureSwizzleChannelsMake(sw[0], sw[1], sw[2], sw[3]);
 }
 
-/* The two serialized forms of a texture description. */
+/* The two serialized forms of a texture description, and the bytes each reads. */
+enum { DESCRIPTOR_V1 = 24, DESCRIPTOR_V2 = 0x27 };
 static MTLTextureDescriptor *descriptor_v1(const uint8_t *d) {
     MTLTextureDescriptor *t = [MTLTextureDescriptor new];
     t.textureType = (MTLTextureType)(d[0] & 0xf);
@@ -124,8 +125,12 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
 - (void)makeTexture:(HvObject *)o at:(uint64_t)at size:(uint32_t)size task:(uint32_t)task {
     NSMutableData *all = [NSMutableData dataWithLength:size];
     if (hv_pvg_lite_task_read(lite, task, at, all.mutableBytes, size)) return;
-    const uint8_t *d = all.bytes;
+    [self makeTexture:o from:all.bytes size:size];
+}
+
+- (void)makeTexture:(HvObject *)o from:(const uint8_t *)d size:(uint32_t)size {
     /* {length, page}, a layout table, {tag, size, ref}, the description. */
+    if (size < 12 + 0x18) { [self complain:@"texture entry too small"]; return; }
     memcpy(&o->length, d, 8);
     memcpy(&o->vpage, d + 8, 4);
     const uint8_t *layout = d + 12;
@@ -136,10 +141,11 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
     o->tex_block_h = layout[0x15];
     uint32_t table = o->tex_mips * 36;
     if (12 + 0x18 + table + 12 > size) { [self complain:@"texture entry too small"]; return; }
-    o->tex_layout = malloc(table);
-    memcpy(o->tex_layout, layout + 0x18, table);
     const uint8_t *rec = layout + 0x18 + table;
     uint32_t tag = *(const uint32_t *)rec;
+    if (12 + 0x18 + table + 12 + (tag == 0x34 || tag == 0x39 ? DESCRIPTOR_V2 : DESCRIPTOR_V1) > size) { [self complain:@"texture entry too small"]; return; }
+    o->tex_layout = malloc(table);
+    memcpy(o->tex_layout, layout + 0x18, table);
     MTLTextureDescriptor *t = (tag == 0x34 || tag == 0x39) ? descriptor_v2(rec + 12) : descriptor_v1(rec + 12);
     t.storageMode = MTLStorageModePrivate;
     t.usage |= MTLTextureUsageShaderRead;
