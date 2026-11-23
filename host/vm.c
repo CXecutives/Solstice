@@ -448,6 +448,21 @@ int hv_vm_disk_identity(char *out, size_t n) {
     return 0;
 }
 
+uint64_t hv_vm_disk_writes(void) {
+    return __atomic_load_n(&disk.writes, __ATOMIC_ACQUIRE) + __atomic_load_n(&aux.writes, __ATOMIC_ACQUIRE);
+}
+
+/* A press: low, then high, so each press is a fresh rising edge for the guest (the first starts from low anyway). */
+int hv_vm_power_button(void) {
+    if (!machine_created || !board.gpio) return -1;
+    hv_dev_lock(&m);
+    hv_pl061_set_input(board.gpio, 3, 0);
+    hv_pl061_set_input(board.gpio, 3, 1);
+    hv_dev_unlock(&m);
+    fprintf(stderr, "hengevm: power button pressed\n");
+    return 0;
+}
+
 void hv_vm_flush_disks(void) {
     hv_disk_flush(&disk);
     hv_disk_flush(&aux);

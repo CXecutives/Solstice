@@ -40,6 +40,12 @@ int henge_vm_continue(void);
 int henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
                     int cpus, const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int64_t *saved_at);
+/* A saved Mac is kept while the disk is as it was saved: after a resume (or running on after a save) the file goes
+   once the Mac writes its disk, or a new save replaces it. Call now and then while it runs; 1 if the file was deleted
+   now. A stop deletes it too if the disk moved. */
+int henge_vm_drop_spent_save(void);
+/* 1 if the Mac is paused and has not run since its last save, which is still there: saving again would only rewrite it. */
+int henge_vm_saved_unchanged(void);
 
 /* The machine's state. Normal guests are fully released before HENGE_VM_STOPPED; installer sessions retain
    their restore stack and can_start stays false. */
@@ -64,6 +70,8 @@ enum HengeVmOutcome {
 };
 int henge_vm_exit_outcome(void);
 void henge_vm_stop(void);
+/* Presses the Mac's power button: macOS shuts down properly (or asks first). 0, or -1 if no Mac runs. */
+int henge_vm_power_button(void);
 /* Testing: sets a translation knob (core/machine.h) in the running machine; nonzero if it exists. */
 int henge_vm_knob(const char *name, int value);
 /* The power profile (PowerPolicy.swift), live and kept for the Macs started later: 0 normal; 1 (Low Power Mode) an

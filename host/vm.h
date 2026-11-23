@@ -94,6 +94,10 @@ void hv_vm_link_flap(void);
 void hv_vm_flush_disks(void);
 /* The disk and auxiliary storage files as they are now (inode, size, last change): a saved machine resumes only onto these. */
 int hv_vm_disk_identity(char *out, size_t n);
+/* Writes to the disk and auxiliary storage since the machine was made: once it moves, a saved machine is out of date. */
+uint64_t hv_vm_disk_writes(void);
+/* The power button (the PL061's pin 3, as Virtualization.framework wires it): macOS shuts down properly, or asks. */
+int hv_vm_power_button(void);
 const char *hv_vm_reason_name(int reason);
 
 /* Input from the host UI, any thread. Keys are Linux input codes (KEY_A = 30). */

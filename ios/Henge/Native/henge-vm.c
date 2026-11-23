@@ -55,9 +55,72 @@ static void release_machine(void) {
     hv_vm_destroy();
 }
 
+/* The saved Mac this machine came from, or was last saved to (instant resume). It stays valid while the disk is
+   exactly as it was saved (hv_snapshot_restore checks the disk's identity), so it is kept until the running Mac writes
+   its disk -- a kill before that resumes the same Mac again -- or a new save replaces it. armed: the Mac runs on from
+   it, and save_writes is the disk's write count at that moment. Under save_mu, held only briefly (a save runs for
+   seconds while the UI asks henge_vm_drop_spent_save), with api_lock held and a machine there. */
+static pthread_mutex_t save_mu = PTHREAD_MUTEX_INITIALIZER;
+static char save_path[1024];
+static uint64_t save_writes;
+static int save_armed;
+
+static void set_save(const char *path) {
+    pthread_mutex_lock(&save_mu);
+    snprintf(save_path, sizeof save_path, "%s", path ? path : "");
+    save_armed = 0;
+    pthread_mutex_unlock(&save_mu);
+}
+
+static void arm_save(void) {
+    pthread_mutex_lock(&save_mu);
+    if (save_path[0]) {
+        save_writes = hv_vm_disk_writes();
+        save_armed = 1;
+    }
+    pthread_mutex_unlock(&save_mu);
+}
+
+/* The armed save, once the disk has moved past it. */
+static int drop_spent_save(void) {
+    pthread_mutex_lock(&save_mu);
+    int spent = save_armed && hv_vm_disk_writes() != save_writes;
+    if (spent) {
+        int gone = unlink(save_path) == 0;
+        fprintf(stderr, "henge: the Mac wrote its disk: the saved Mac is out of date%s\n", gone ? " and deleted" : "");
+        save_path[0] = 0;
+        save_armed = 0;
+    }
+    pthread_mutex_unlock(&save_mu);
+    return spent;
+}
+
+int henge_vm_drop_spent_save(void) {
+    pthread_rwlock_rdlock(&api_lock);
+    int r = (state == 1 || state == 4) ? drop_spent_save() : 0;
+    pthread_rwlock_unlock(&api_lock);
+    return r;
+}
+
+int henge_vm_saved_unchanged(void) {
+    pthread_mutex_lock(&save_mu);
+    int r = state == 4 && save_path[0] && !save_armed && access(save_path, F_OK) == 0;
+    pthread_mutex_unlock(&save_mu);
+    return r;
+}
+
+int henge_vm_power_button(void) {
+    if (!lock_running()) return -1;
+    int r = installer_session ? -1 : hv_vm_power_button();
+    pthread_rwlock_unlock(&api_lock);
+    return r;
+}
+
 static void on_exit(int reason) {
     pthread_rwlock_wrlock(&api_lock);
     state = 3;
+    drop_spent_save();
+    set_save(NULL);
     exit_reason = reason;
     int halt = hv_vm_cpu(0)->halted;
     exit_outcome = HENGE_VM_OUTCOME_ERROR;
@@ -201,7 +264,9 @@ int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen)
         snprintf(err, errlen, "The Mac is not paused.");
         return -1;
     }
+    set_save(NULL); /* the file is being replaced: nothing deletes it meanwhile */
     int r = hv_snapshot_save(path, ident, err, errlen);
+    if (r == 0) set_save(path); /* the Mac as it is now; spent once it runs on and writes its disk */
     pthread_rwlock_unlock(&api_lock);
     fprintf(stderr, "henge: %s\n", r ? err : "the paused Mac is saved");
     return r;
@@ -222,6 +287,7 @@ int henge_vm_continue(void) {
     }
     state = 1;
     apply_power_profile(1); /* the level may have changed while it was paused */
+    arm_save();
     int r = hv_vm_continue();
     if (r != 0) {
         /* No threads for its CPUs: it cannot run on. Release it, as a stop would. */
@@ -239,6 +305,7 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
     { extern void hv_prof_ios_start(void); hv_prof_ios_start(); }
     if (begin_start(err, errlen)) return -1;
     booted_ram_mb = ram_mb;
+    set_save(NULL);
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
         snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
@@ -254,12 +321,15 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
     if (hv_vm_create(&c, err, errlen) != 0) return failed_start();
     if (resume) {
         int restored = hv_snapshot_restore(resume, ident, err, errlen);
-        /* Used once: from here the Mac runs on and its disk moves past what the file holds. */
-        unlink(resume);
         if (restored != 0) {
+            /* Refused or unreadable: the Mac starts from cold instead, and its disk then moves past the file. */
+            unlink(resume);
             fprintf(stderr, "henge: resume failed: %s\n", err);
             return failed_start();
         }
+        /* Kept until the Mac writes its disk (drop_spent_save): a kill before that resumes it again. */
+        set_save(resume);
+        arm_save();
     }
     if (getenv("HV_STATS")) hv_vm_machine()->stats_interval = atoi(getenv("HV_STATS"));
     if (getenv("HV_STATS_DEEP")) hv_vm_machine()->stats_deep = atoi(getenv("HV_STATS_DEEP"));
@@ -367,6 +437,8 @@ void henge_vm_stop(void) {
     if (state == 4) { /* paused: its CPU threads have ended already, so nothing calls on_exit */
         pthread_rwlock_wrlock(&api_lock);
         if (state == 4) {
+            drop_spent_save();
+            set_save(NULL);
             hv_vm_destroy();
             exit_reason = HV_EXIT_HALT;
             exit_outcome = HENGE_VM_OUTCOME_HOST_STOP;
