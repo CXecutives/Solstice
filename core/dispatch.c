@@ -517,6 +517,8 @@ static void print_profile(HvMachine *m) {
     }
 }
 
+void (*hv_stats_io)(double seconds);
+
 static void print_stats(HvCpu *cpu, int force) {
     static uint64_t last_t, start_t;
     /* This uses floating point, and the host FP registers hold the guest's state. */
@@ -697,6 +699,7 @@ static void print_stats(HvCpu *cpu, int force) {
                 100 * RATE(why[3]) / tot, 100 * RATE(why[4]) / tot, 100 * RATE(why[5]) / tot);
     }
 #undef RATE
+    if (hv_stats_io) hv_stats_io(dt);
     if (m->prof) print_profile(m);
     /* The busiest system registers or SYS operations (reads + writes) this interval: deep stats only (the table's
        512 KB are written only then). */

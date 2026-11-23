@@ -77,6 +77,10 @@ uint64_t henge_vm_dns(int which);          /* guest DNS queries answered through
 int henge_vm_cpus_on(void);                /* CPUs the guest has started */
 int henge_vm_guest_el0(void);              /* any CPU running user code right now */
 
+/* The audio session: 1 an interruption began (a call, Siri, an alarm), 0 it ended (the Mac's sound plays again),
+   2 the media services were reset (the output is made anew), 3 the route changed. Any thread. */
+void henge_vm_audio_interrupted(int state);
+
 /* Input: Linux key codes, relative pointer, buttons 0 left 1 right 2 middle. */
 /* The shared folder and clipboard (host/share.c). henge_vm_share goes before henge_vm_boot; agent may be NULL.
    henge_share_take_clipboard returns what the guest copied, once: a malloc'd string, or NULL. */

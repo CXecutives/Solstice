@@ -514,7 +514,9 @@ static void test_virtio_blk_root(HvDisk *root) {
         uint64_t first = (from + hb - 1) / hb * hb, last = to / hb * hb;
         off_t hole = lseek(root->fd, (off_t)from, SEEK_HOLE);
         check("discarded blocks are a hole in the image", hole >= (off_t)first && hole < (off_t)last, 1);
+        check("the stats count the bytes punched", root->punched, last > first ? last - first : 0);
     }
+    check("the stats count the discard", blk->discards, 1);
     /* Write-zeroes, sectors 250-259. */
     dh[0] = 13, range[0] = 250, range[2] = 10;
     memcpy(ram(HDR(6)), dh, 16);
@@ -524,6 +526,7 @@ static void test_virtio_blk_root(HvDisk *root) {
     wr16(bar + 0x3000, 0);
     hv_virtio_blk_drain(blk);
     check("root write-zeroes status", ram(ST(6))[0], 0);
+    check("a write-zeroes is no discard", blk->discards, 1);
     hv_disk_read(root, 249 * 512, got, 12 * 512);
     check("write-zeroes: zeros, neighbours kept", !memcmp(got, ones, 512) && !memcmp(got + 512, zero, 10 * 512) && !memcmp(got + 11 * 512, ones, 512), 1);
     /* A flush after a discard has something to make safe. */
@@ -544,6 +547,12 @@ static void capture_tx(void *opaque, const uint8_t *frame, uint32_t len) {
     (void)opaque;
     memcpy(sent, frame, len < sizeof sent ? len : sizeof sent);
     sent_len = len;
+}
+
+static int rx_ready_calls;
+static void count_rx_ready(void *opaque) {
+    (void)opaque;
+    rx_ready_calls++;
 }
 
 static void test_virtio_net(void) {
@@ -571,10 +580,82 @@ static void test_virtio_net(void) {
     offer(rxq, 0);
     wr16(bar + 0x3000, 0);
     check("RX delivered", hv_virtio_net_receive(board.net, frame, 64), 1);
+    hv_virtio_net_rx_done(board.net);
     check("RX bytes", memcmp(ram(buf + 0x1000 + 12), frame, 64), 0);
+    check("RX header: checksum not vouched for unless negotiated", ram(buf + 0x1000)[0], 0);
     uint32_t used_len;
     memcpy(&used_len, ram(rxq + 0x2000 + 8), 4);
     check("RX used length", used_len, 76);
+
+    /* New receive buffers bring the frames that waited for them at once, not at the next poll. */
+    board.net->rx_ready = count_rx_ready;
+    rx_ready_calls = 0;
+    put_desc(rxq, 1, buf + 0x1800, 2048, 2, 0);
+    offer(rxq, 1);
+    wr16(bar + 0x3000, 0);
+    check("RX buffers posted: waiting frames delivered", rx_ready_calls, 1);
+    /* With GUEST_CSUM the guest is told libslirp's checksums are good (DATA_VALID). */
+    board.net->vio.driver_features |= 1ull << 1;
+    check("RX delivered into the new buffer", hv_virtio_net_receive(board.net, frame, 64), 1);
+    hv_virtio_net_rx_done(board.net);
+    check("RX header: DATA_VALID with GUEST_CSUM", ram(buf + 0x1800)[0], 2);
+    board.net->rx_ready = NULL;
+
+    /* With CSUM a frame may leave its checksum to the host (NEEDS_CSUM, csum_start, csum_offset): RFC 1071's example,
+       whose sum is 0xddf2. */
+    static const uint8_t rfc[10] = {0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7, 0, 0};
+    board.net->vio.driver_features |= 1ull << 0;
+    memset(ram(buf), 0, 12);
+    ram(buf)[0] = 1;                             /* NEEDS_CSUM */
+    wr16(buf + 6, 0), wr16(buf + 8, 8);          /* from byte 0, into bytes 8-9 */
+    memcpy(ram(buf + 12), rfc, sizeof rfc);
+    put_desc(txq, 0, buf, 12 + sizeof rfc, 0, 0);
+    offer(txq, 0);
+    wr16(bar + 0x3000 + 4, 1);
+    check("TX NEEDS_CSUM: the checksum filled in", (uint32_t)sent[8] << 8 | sent[9], 0x220d);
+    check("TX NEEDS_CSUM: the rest as sent", memcmp(sent, rfc, 8), 0);
+    uint8_t odd[5] = {0x12, 0x34, 0x56, 0, 0}; /* an odd length pads with a zero byte */
+    hv_virtio_net_finish_csum(odd, 5, 0, 3);
+    check("checksum of an odd length", (uint32_t)odd[3] << 8 | odd[4], (uint16_t)~(0x1234 + 0x5600));
+    hv_virtio_net_finish_csum(odd, 5, 4, 0); /* the field past the frame: left alone */
+    check("checksum field out of the frame ignored", odd[4], (uint16_t)~(0x1234 + 0x5600) & 0xff);
+    board.net->vio.driver_features &= ~3ull;
+}
+
+/* Sound whose host player stopped (iOS took the audio session for a call): the stream drains by the wall clock from
+   that moment, at its rate, so the guest's buffers keep coming back; with the player back the clock stops again. */
+static int fake_start(void *opaque, unsigned channels, unsigned format, unsigned rate_hz) {
+    (void)opaque, (void)channels, (void)format, (void)rate_hz;
+    return 0;
+}
+static void fake_stop(void *opaque) { (void)opaque; }
+
+static void test_virtio_snd_drain(void) {
+    HvVirtioSnd *d = board.snd;
+    check("virtio-snd made", d != NULL, 1);
+    if (!d) return;
+    const unsigned rate = 48000, frame = 4;
+    d->backend = (HvVirtioSndBackend){fake_start, fake_stop, d};
+    d->running = 1, d->frame_bytes = frame, d->rate_hz = rate;
+    atomic_store(&d->written, HV_VSND_RING / 2);
+    atomic_store(&d->consumed, 0);
+    d->clock_start_ns = 1, d->clock_start_consumed = 0; /* the stream began long ago */
+    hv_virtio_snd_poll(d);
+    check("snd: a playing host player drains, not the clock", atomic_load(&d->consumed), 0);
+    atomic_store(&d->host_off, 1);
+    hv_virtio_snd_poll(d);
+    check("snd: the clock drain starts from now, not from the stream's start", atomic_load(&d->consumed), 0);
+    usleep(20000);
+    hv_virtio_snd_poll(d);
+    uint64_t c = atomic_load(&d->consumed);
+    check("snd: the player off, the stream drains by the clock", c >= (uint64_t)rate * frame / 100 && c < HV_VSND_RING / 2, 1);
+    atomic_store(&d->host_off, 0);
+    usleep(5000);
+    hv_virtio_snd_poll(d);
+    check("snd: the player back, the clock stops", atomic_load(&d->consumed), c);
+    d->running = 0, d->backend = (HvVirtioSndBackend){0};
+    atomic_store(&d->written, 0);
+    atomic_store(&d->consumed, 0);
 }
 
 /* The memory balloon: a new target reaches the driver (config change interrupt), inflated 16 KB pages go back
@@ -791,6 +872,7 @@ int main(void) {
     test_virtio_blk(&aux);
     test_virtio_blk_root(&root);
     test_virtio_net();
+    test_virtio_snd_drain();
     test_virtio_balloon();
     puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();
