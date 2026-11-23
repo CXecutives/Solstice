@@ -35,11 +35,11 @@ final class DownloadHash {
 /// Downloads `url` into the file `part`, appending: a download that stops for any reason (no network, Solstice
 /// closed or killed) goes on from where the file ends the next time, with an HTTP range request (#58).
 /// Apple's CDN answers ranges; a server that ignores one (200) starts the file again. Written in 8 MB pieces and
-/// hashed as it arrives (`hash`); progress is said at most 4 times a second, not for every network packet.
+/// hashed as it arrives (`digest`); progress is said at most 4 times a second, not for every network packet.
 final class RangedDownload: NSObject, URLSessionDataDelegate {
     let url: URL
     let part: URL
-    let hash: DownloadHash
+    let digest: DownloadHash
     /// Bytes in `part` and the whole file's size once known, on the delegate's queue, at most every progressEvery.
     private let progress: (Int64, Int64) -> Void
     private static let progressEvery: TimeInterval = 0.25
@@ -57,7 +57,7 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
     init(url: URL, part: URL, hash: DownloadHash, progress: @escaping (Int64, Int64) -> Void) {
         self.url = url
         self.part = part
-        self.hash = hash
+        self.digest = hash
         self.progress = progress
     }
 
@@ -75,7 +75,7 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
             }
         }
         have = Self.size(of: part)
-        try hash.catchUp(with: part, to: have) // what an earlier launch (or a cut-short write) left
+        try digest.catchUp(with: part, to: have) // what an earlier launch (or a cut-short write) left
         var request = URLRequest(url: url)
         if have > 0 { request.setValue("bytes=\(have)-", forHTTPHeaderField: "Range") }
         let cfg = URLSessionConfiguration.default
@@ -154,7 +154,7 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
             case 200: // the whole file: start again
                 total = response.expectedContentLength
                 have = 0
-                hash.reset()
+                digest.reset()
             case 416: // nothing past where the file ends: it is complete (servers don't always say the size here)
                 let range = http?.value(forHTTPHeaderField: "Content-Range") ?? ""
                 total = Int64(range.split(separator: "/").last ?? "") ?? 0
@@ -162,8 +162,8 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
                     try? h.truncate(atOffset: UInt64(total))
                     try? h.close()
                     have = total
-                    hash.reset()
-                    try? hash.catchUp(with: part, to: have)
+                    digest.reset()
+                    try? digest.catchUp(with: part, to: have)
                 }
                 if total == 0 { total = have }
                 completionHandler(.cancel)
@@ -188,7 +188,7 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard handle != nil else { return }
         buffer.append(data)
-        hash.add(data)
+        digest.add(data)
         have += Int64(data.count)
         if buffer.count >= Self.writeChunk && !flush() {
             dataTask.cancel()
