@@ -97,6 +97,8 @@ static int fail(char *err, size_t n, const char *fmt, ...) {
     }
     return -1;
 }
+/* A file that can never be resumed (hv_snapshot_restore's -2): fail's message, and -2. */
+#define refuse(...) (fail(__VA_ARGS__), -2)
 
 /* The layouts this build saves: a file from a build where any of them differs is refused. */
 static uint64_t fingerprint(void) {
@@ -689,24 +691,31 @@ int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t e
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     int fd = open(path, O_RDONLY);
-    if (fd < 0) return fail(err, errlen, "No saved Mac: %s", strerror(errno));
+    if (fd < 0) {
+        int e = errno;
+        return e == ENOENT ? refuse(err, errlen, "No saved Mac.") : fail(err, errlen, "Cannot open the saved Mac: %s", strerror(e));
+    }
     fcntl(fd, F_NOCACHE, 1);
     SnapHeader h;
     int hr = read_header(fd, &h, ident, NULL);
     if (hr) {
         close(fd);
-        return fail(err, errlen, hr == -2 ? "The saved Mac is from another build of Henge or another disk." : "The saved Mac is incomplete or damaged.");
+        return refuse(err, errlen, hr == -2 ? "The saved Mac is from another build of Henge or another disk." : "The saved Mac is incomplete or damaged.");
     }
     char disk_now[256];
     h.disk[sizeof h.disk - 1] = 0;
-    if (hv_vm_disk_identity(disk_now, sizeof disk_now) != 0 || strcmp(disk_now, h.disk)) {
+    if (hv_vm_disk_identity(disk_now, sizeof disk_now) != 0) {
+        close(fd);
+        return fail(err, errlen, "Cannot read the Mac's disk.");
+    }
+    if (strcmp(disk_now, h.disk)) {
         close(fd);
         fprintf(stderr, "hengevm: snapshot: the disk changed since the save (%s, now %s)\n", h.disk, disk_now);
-        return fail(err, errlen, "The Mac's disk has changed since it was saved.");
+        return refuse(err, errlen, "The Mac's disk has changed since it was saved.");
     }
     if (h.ncpus != (uint32_t)ncpus || h.nram != (uint32_t)m->nram || h.ram_size != b->ram_size) {
         close(fd);
-        return fail(err, errlen, "The saved Mac had %u CPUs and %llu MB of RAM; this one is set up differently.", h.ncpus,
+        return refuse(err, errlen, "The saved Mac had %u CPUs and %llu MB of RAM; this one is set up differently.", h.ncpus,
                     (unsigned long long)(h.ram_size >> 20));
     }
     R r = {.fd = fd, .cap = 4u << 20};

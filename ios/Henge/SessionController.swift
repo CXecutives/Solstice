@@ -105,13 +105,18 @@ final class SessionController: ObservableObject {
             if let at = resumeAt {
                 HengeLog.log("resume", "picking up the Mac saved \(Int(Date().timeIntervalSince(at))) s ago")
                 let t0 = Date()
-                rc = henge_vm_resume(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus),
-                                     file, ident, &buffer, buffer.count)
-                if rc == 0 {
+                let resumed = henge_vm_resume(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus),
+                                              file, ident, &buffer, buffer.count)
+                if resumed == HENGE_VM_RESUMED {
                     HengeLog.log("resume", String(format: "resumed in %.1f s", Date().timeIntervalSince(t0)))
-                } else {
+                    rc = 0
+                } else if resumed == HENGE_VM_RESUME_REFUSED {
                     HengeLog.log("resume", "could not resume (\(String(cString: buffer))); starting it from cold")
                     buffer = [CChar](repeating: 0, count: 256)
+                } else {
+                    // Of the moment (memory, no JIT): the save is the only copy of the Mac's memory, so it stays for the next try.
+                    HengeLog.log("resume", "could not resume (\(String(cString: buffer))); the save is kept")
+                    return (-1, String(cString: buffer))
                 }
             }
             if rc != 0 {
