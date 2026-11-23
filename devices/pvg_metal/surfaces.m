@@ -90,13 +90,14 @@ static IOSurfaceRef make_iosurface(HvObject *to, const uint8_t *desc, uint64_t a
     return made;
 }
 
-/* Guest bytes sampled to tell whether a surface's pixels changed: one 8-byte word every SURFACE_SAMPLE bytes. One every
-   64 bytes read every cache line of a 4K video frame (27 MB) for every exec that named the surface; a decoded frame
-   changes nearly every word, so a sparser sample still sees each new one. */
-enum { SURFACE_SAMPLE = 1024 };
+/* Guest bytes sampled to tell whether a surface's pixels changed: one 8-byte word every SURFACE_SAMPLE bytes, in
+   every cache line up to SURFACE_DENSE bytes (a 1080p plane), so a small change (a pointer, a subtitle, a caret) is
+   seen; one every SURFACE_SPARSE above, as reading every cache line of a 4K frame (27 MB) for every exec that named it
+   cost too much, and a decoded frame changes nearly every word. */
+enum { SURFACE_SAMPLE = 64, SURFACE_SPARSE = 1024, SURFACE_DENSE = 4 << 20 };
 static uint64_t hash_bytes(const uint8_t *from, uint64_t len) {
-    uint64_t hash = 0xcbf29ce484222325ull;
-    for (uint64_t i = 0; i + 8 <= len; i += SURFACE_SAMPLE) {
+    uint64_t hash = 0xcbf29ce484222325ull, step = len <= SURFACE_DENSE ? SURFACE_SAMPLE : SURFACE_SPARSE;
+    for (uint64_t i = 0; i + 8 <= len; i += step) {
         uint64_t v;
         memcpy(&v, from + i, 8);
         hash = (hash ^ v) * 0x100000001b3ull;

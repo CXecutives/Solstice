@@ -344,6 +344,10 @@ static void test_video_surface(HvReplay *r) {
     IOSurfaceUnlock(s->iosurface, kIOSurfaceLockReadOnly, NULL);
     blit = nil;
     check("nothing changed: nothing copied", ![r syncSurface:s blit:&blit commandBuffer:nil] && blit == nil);
+    /* A small change, 16 bytes of one luma row (a pointer, a subtitle): still a new frame. */
+    for (int i = 0; i < 16; i++) guest[3 * ROW + i] ^= 0xff;
+    [r syncSurface:s blit:&blit commandBuffer:nil];
+    check("16 bytes changed in one row: copied", plane_matches(s->iosurface, 0, guest, ROW, W, H));
     printf("video surface: planes copied as the guest changed them (%s)\n", by_gpu ? "by the GPU" : "by the CPU: no GPU copy here");
 }
 
