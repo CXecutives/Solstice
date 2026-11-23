@@ -684,6 +684,18 @@ int hv_snapshot_check(const char *path, const char *ident, uint64_t *bytes, int6
     return r;
 }
 
+int hv_snapshot_shape(const char *path, const char *ident, uint64_t *ram_bytes, uint32_t *ncpus) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    SnapHeader h;
+    int r = read_header(fd, &h, ident, NULL);
+    close(fd);
+    if (r) return r;
+    if (ram_bytes) *ram_bytes = h.ram_size;
+    if (ncpus) *ncpus = h.ncpus;
+    return 0;
+}
+
 int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t errlen) {
     HvMachine *m = hv_vm_machine();
     HvVmapple *b = hv_vm_board();
@@ -716,7 +728,8 @@ int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t e
     }
     if (h.ncpus != (uint32_t)ncpus || h.nram != (uint32_t)m->nram || h.ram_size != b->ram_size) {
         close(fd);
-        return refuse(err, errlen, "The saved Mac had %u CPUs and %llu MB of RAM; this one is set up differently.", h.ncpus,
+        /* The file is fine, the machine is the wrong shape (hv_snapshot_shape says the right one): it is kept. */
+        return fail(err, errlen, "The saved Mac had %u CPUs and %llu MB of RAM; this one is set up differently.", h.ncpus,
                     (unsigned long long)(h.ram_size >> 20));
     }
     R r = {.fd = fd, .cap = 4u << 20};

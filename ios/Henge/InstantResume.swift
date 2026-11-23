@@ -44,22 +44,25 @@ enum InstantResume {
     static func file(for mac: VirtualMac) -> URL { mac.directory.appendingPathComponent("resume.hsnap") }
 
     /// What a saved Mac is for: this build of Solstice (a restored machine must meet the code that saved it), the Mac,
-    /// and what it was started with. The engine adds the disk's own identity.
-    static func ident(for mac: VirtualMac, ramMB: UInt64, cpus: Int) -> String {
+    /// and its screen. The engine adds the disk's own identity, and keeps the RAM and CPUs in the file's header
+    /// (henge_vm_saved_shape): the one place that says the shape a save goes back into.
+    static func ident(for mac: VirtualMac) -> String {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
         let build = info["CFBundleVersion"] as? String ?? "?"
         let commit = info["HengeBuildCommit"] as? String ?? "unstamped"
         let stamp = info["HengeBuildDate"] as? String ?? "?"
-        return "Solstice \(version) (\(build)) \(commit) \(stamp) mac \(mac.id.uuidString) ram \(ramMB) cpus \(cpus) "
+        return "Solstice \(version) (\(build)) \(commit) \(stamp) mac \(mac.id.uuidString) "
             + "screen \(mac.screen.width)x\(mac.screen.height) retina \(mac.isRetina)"
     }
 
-    /// A whole saved Mac for these settings, and when it was saved.
-    static func saved(for mac: VirtualMac, ramMB: UInt64, cpus: Int) -> Date? {
-        var at: Int64 = 0
-        guard henge_vm_saved_ok(file(for: mac).path, ident(for: mac, ramMB: ramMB, cpus: cpus), nil, &at) == 0 else { return nil }
-        return Date(timeIntervalSince1970: TimeInterval(at))
+    /// A whole saved Mac for this build and Mac: when it was saved, and the shape it goes back into (whatever the
+    /// settings say now: they apply when it starts afresh). Reads the file's header.
+    static func saved(for mac: VirtualMac) -> (at: Date, shape: StartShape.Shape)? {
+        let path = file(for: mac).path, id = ident(for: mac)
+        var at: Int64 = 0, ramMB: UInt64 = 0, cpus: Int32 = 0
+        guard henge_vm_saved_ok(path, id, nil, &at) == 0, henge_vm_saved_shape(path, id, &ramMB, &cpus) == 0 else { return nil }
+        return (Date(timeIntervalSince1970: TimeInterval(at)), StartShape.Shape(ramMB: ramMB, cpus: Int(cpus)))
     }
 
     /// Whether a file is there at all (the Home screen's hint; the start checks it properly).
@@ -131,11 +134,11 @@ enum InstantResume {
 
     /// Solstice is in the background: write the paused Mac out after saveAfter, in case iOS closes Solstice. At once
     /// when nothing keeps Solstice awake (iOS suspends it within seconds). It stays paused.
-    @MainActor static func suspend(_ mac: VirtualMac, ramMB: UInt64, cpus: Int) {
+    @MainActor static func suspend(_ mac: VirtualMac) {
         guard enabled, upOrComingUp || henge_vm_state() == HENGE_VM_PAUSED else { return }
         pending?.cancel()
         let delay = KeepAlive.awake ? saveAfter : 0
-        let item = DispatchWorkItem { MainActor.assumeIsolated { save(mac, ramMB: ramMB, cpus: cpus) } }
+        let item = DispatchWorkItem { MainActor.assumeIsolated { save(mac) } }
         pending = item
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         if delay > 0 { HengeLog.log("resume", "the Mac is saved if Solstice stays away \(Int(delay)) s") }
@@ -149,14 +152,14 @@ enum InstantResume {
         item.cancel()
     }
 
-    @MainActor private static func save(_ mac: VirtualMac, ramMB: UInt64, cpus: Int) {
+    @MainActor private static func save(_ mac: VirtualMac) {
         pending = nil
         // Paused for want of storage: a save of its memory is what would fill the device.
         guard !StorageGuard.holding else {
             HengeLog.log("resume", "not saved: storage is almost full")
             return
         }
-        let path = file(for: mac).path, id = ident(for: mac, ramMB: ramMB, cpus: cpus)
+        let path = file(for: mac).path, id = ident(for: mac)
         var task = UIBackgroundTaskIdentifier.invalid
         task = UIApplication.shared.beginBackgroundTask(withName: "Solstice save") {
             UIApplication.shared.endBackgroundTask(task)

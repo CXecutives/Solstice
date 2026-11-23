@@ -338,8 +338,16 @@ test-ranged-download: $(B)/test_ranged_download
 	$(B)/test_ranged_download
 .PHONY: test-ranged-download
 
+# What a start gets: a saved Mac's own RAM and CPUs, or the settings within what fits.
+$(B)/test_start_shape: ios/Henge/StartShape.swift tests/test_start_shape.swift | $(B)
+	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
+
+test-start-shape: $(B)/test_start_shape
+	$(B)/test_start_shape
+.PHONY: test-start-shape
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
 SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons \
-	test-lifecycle test-key-layout test-touch-gestures test-key-queue test-ranged-download
+	test-lifecycle test-key-layout test-touch-gestures test-key-queue test-ranged-download test-start-shape
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

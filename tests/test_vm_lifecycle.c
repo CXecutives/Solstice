@@ -253,6 +253,28 @@ int main(void) {
         henge_vm_stop();
         for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
         unlink(snap);
+        /* A save goes back into the shape it was made with (RAM, CPUs), whatever the next start would want: the file
+           says which, and another shape keeps the file instead of deleting it. */
+        rc = henge_vm_boot(rom, disk, aux, 1, 0, 128, 2, error, sizeof error);
+        usleep(30000);
+        rc |= henge_vm_suspend(snap, "test", error, sizeof error);
+        henge_vm_stop();
+        check("a save with 128 MB and 2 CPUs", rc == 0 && access(snap, F_OK) == 0);
+        uint64_t saved_mb = 0;
+        int saved_cpus = 0;
+        check("the save's shape", henge_vm_saved_shape(snap, "test", &saved_mb, &saved_cpus) == 0 && saved_mb == 128 && saved_cpus == 2);
+        check("no shape for another ident", henge_vm_saved_shape(snap, "other", &saved_mb, &saved_cpus) != 0);
+        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 1, snap, "test", error, sizeof error);
+        check("another shape does not resume and keeps the save", rc == HENGE_VM_RESUME_FAILED && access(snap, F_OK) == 0
+              && henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
+        henge_vm_saved_shape(snap, "test", &saved_mb, &saved_cpus);
+        rc = henge_vm_resume(rom, disk, aux, 1, 0, saved_mb, saved_cpus, snap, "test", error, sizeof error);
+        if (rc) fprintf(stderr, "resume in the save's shape: %s\n", error);
+        check("the save's own shape resumes", rc == HENGE_VM_RESUMED && henge_vm_state() == HENGE_VM_RUNNING
+              && henge_vm_ram_mb() == 128);
+        henge_vm_stop();
+        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
+        unlink(snap);
     }
     /* A device install: when its machine stops, the restore tools let go of its USB port and the machine is
        released, so a device starts in the same launch (it used to need Henge quit and opened again). */
