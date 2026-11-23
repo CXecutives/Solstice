@@ -16,6 +16,15 @@ static void test_archive_room(void) {
     unsigned long long cap = 768ull << 20;
     check("31 files saved, then one more: still room", !archive_full_at(32, 15ull << 20, cap));
     check("past the size cap: full", archive_full_at(1, cap + 1, cap));
+    /* At start the oldest files go, so that a session has room in files and in bytes. */
+    unsigned long long sizes[ARCHIVE_FILES + 8];
+    for (int i = 0; i < ARCHIVE_FILES + 8; i++) sizes[i] = 1ull << 20;
+    check("31 small files: none removed", archive_evict(sizes, 31, cap) == 0);
+    NSUInteger k = archive_evict(sizes, ARCHIVE_FILES + 8, cap);
+    check("too many files: the oldest go, room for a session left", ARCHIVE_FILES + 8 - k == ARCHIVE_FILES - ARCHIVE_ROOM);
+    check("after that, room again", !archive_full_at(ARCHIVE_FILES + 8 - k + 1, (ARCHIVE_FILES + 8 - k + 1) << 20, cap));
+    sizes[0] = sizes[1] = cap / 2;
+    check("too many bytes: the oldest go", archive_evict(sizes, 10, cap) == 2);
     puts("saved pipelines: room checked");
 }
 

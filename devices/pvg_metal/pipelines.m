@@ -119,18 +119,30 @@
    made it, and archives from another build are removed rather than loaded.
    Each save writes a new file holding only the pipelines added since the last save, and every file is loaded at start:
    on the Duo, serializing an archive that was loaded from a file wrote only what had been added to it, so one file
-   rewritten in place kept losing the earlier boots' pipelines. Past 32 files or the size cap nothing more is added.
+   rewritten in place kept losing the earlier boots' pipelines. So the files only grow in number: at start the oldest
+   go, if need be, until a session's worth of room is left under ARCHIVE_FILES and 7/8 of the size cap (a pipeline of
+   theirs still in use is compiled and saved again once); past the caps a session adds nothing more. They cannot be
+   merged: re-serializing a loaded archive loses its content, and which file a pipeline came from is not known.
    HV_PVG_ARCHIVE=0: none (for A/B); HV_PVG_ARCHIVE=reset: start again. HV_PVG_ARCHIVE_MB: the cap (default 768). */
 static unsigned long long archive_cap(void) {
     const char *mb = getenv("HV_PVG_ARCHIVE_MB");
     return (mb && atoi(mb) > 0 ? (unsigned long long)atoi(mb) : 768ull) << 20;
 }
 
-enum { ARCHIVE_FILES = 32 }; /* saved files at most */
+enum { ARCHIVE_FILES = 256, ARCHIVE_ROOM = 32 }; /* saved files at most; left free for a session at its start */
 
 /* Whether nothing more may be saved, with this many files of this many bytes saved. */
 static BOOL archive_full_at(NSUInteger files, unsigned long long bytes, unsigned long long cap) {
     return files >= ARCHIVE_FILES || bytes > cap;
+}
+
+/* How many of the oldest saved files (sizes oldest first) go at start, for this session to have room. */
+static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger files, unsigned long long cap) {
+    unsigned long long total = 0;
+    for (NSUInteger i = 0; i < files; i++) total += bytes[i];
+    NSUInteger k = 0;
+    while (k < files && (files - k > ARCHIVE_FILES - ARCHIVE_ROOM || total > cap - cap / 8)) total -= bytes[k++];
+    return k;
 }
 
 - (id<MTLBinaryArchive>)emptyArchive {
@@ -167,12 +179,27 @@ static BOOL archive_full_at(NSUInteger files, unsigned long long bytes, unsigned
     unsigned unreadable = 0;
     NSArray<NSURL *> *files = [[fm contentsOfDirectoryAtURL:dir includingPropertiesForKeys:nil options:0 error:nil]
         sortedArrayUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) { return [a.lastPathComponent compare:b.lastPathComponent options:NSNumericSearch]; }];
+    NSMutableArray<NSURL *> *saved = [NSMutableArray new];
+    NSMutableData *sizes = [NSMutableData new];
     for (NSURL *u in files) {
         NSString *name = u.lastPathComponent;
         int n = 0;
         BOOL ours = [name hasPrefix:archive_prefix] && [name hasSuffix:@".bin"] &&
                     sscanf(name.UTF8String + archive_prefix.length, "%d.bin", &n) == 1 && !(opt && !strcmp(opt, "reset"));
         if (!ours) { /* another build, an unfinished save, or a reset */
+            [fm removeItemAtURL:u error:nil];
+            continue;
+        }
+        unsigned long long size = [[fm attributesOfItemAtPath:u.path error:nil] fileSize];
+        [saved addObject:u];
+        [sizes appendBytes:&size length:sizeof size];
+        if (n >= archive_next) archive_next = n + 1;
+    }
+    NSUInteger evicted = archive_evict(sizes.bytes, saved.count, archive_cap());
+    for (NSUInteger i = 0; i < saved.count; i++) {
+        NSURL *u = saved[i];
+        NSString *name = u.lastPathComponent;
+        if (i < evicted) { /* the oldest, for room */
             [fm removeItemAtURL:u error:nil];
             continue;
         }
@@ -187,16 +214,16 @@ static BOOL archive_full_at(NSUInteger files, unsigned long long bytes, unsigned
             continue;
         }
         [loaded addObject:a];
-        bytes += [[fm attributesOfItemAtPath:u.path error:nil] fileSize];
-        if (n >= archive_next) archive_next = n + 1;
+        bytes += ((const unsigned long long *)sizes.bytes)[i];
     }
     archive = [self emptyArchive];
     if (!archive) return;
     archives = loaded;
     archive_bytes = bytes;
     archive_full = archive_full_at(loaded.count, bytes, archive_cap());
-    fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %lu files, %.1f MB%s%s\n", (unsigned long)loaded.count, bytes / 1048576.0,
-            unreadable ? " (some unreadable, removed)" : "", archive_full ? " (full: nothing more is added)" : "");
+    fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %lu files, %.1f MB%s%s%s\n", (unsigned long)loaded.count, bytes / 1048576.0,
+            unreadable ? " (some unreadable, removed)" : "", evicted ? " (the oldest removed for room)" : "",
+            archive_full ? " (full: nothing more is added)" : "");
 }
 
 - (id)newState:(uint32_t)tag descriptor:(id)descriptor options:(MTLPipelineOption)options error:(NSError **)err {
