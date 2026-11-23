@@ -91,6 +91,8 @@ struct HvPvgLite {
     int metal_tried;
     uint32_t stamps_pending; /* channels Metal finished, for the next poll */
     uint64_t vblanks;        /* refresh events sent (HV_PVG_VBLANK) */
+    uint32_t hz;             /* the mode's refresh rate: HV_HZ when this Mac started (its display says it, refreshes keep it) */
+    uint64_t vblank_period;  /* host ticks (24 MHz) between refreshes; 0: none (HV_PVG_VBLANK=0) */
     HvVblankClock vclock;    /* the refreshes' grid: also CPU 0's device deadline (hv_pvg_lite_next_vblank) */
     uint64_t mapper_seen;    /* mapper entries handed over already (their unmaps given to Metal) */
     uint32_t mapper_waiting; /* mapper completions waiting for the GPU (do_mapper) */
@@ -204,11 +206,7 @@ static void display_set_page(HvPvgLite *p, uint64_t pa) {
     PUTF(0x28, (float)height_mm);
     PUT32(0x208, 1); /* one mode: */
     PUT32(0x210, display_h << 16 | display_w);
-    {   /* m4 fork: 120 Hz on ProMotion (HV_HZ), so WindowServer animates at the panel's rate */
-        const char *hz = getenv("HV_HZ");
-        uint32_t r = hz && atoi(hz) > 0 ? (uint32_t)atoi(hz) : 60;
-        PUT32(0x214, r << 16);
-    }
+    PUT32(0x214, p->hz << 16); /* m4 fork: 120 Hz on ProMotion (HV_HZ), so WindowServer animates at the panel's rate */
     PUTF(0xa10, 1.0f); /* identity colour matrix */
     PUTF(0xa24, 1.0f);
     PUTF(0xa38, 1.0f);
@@ -749,34 +747,21 @@ void hv_pvg_lite_mapper_done(HvPvgLite *p, uint64_t index) {
 }
 
 /* Device work no doorbell took care of: a channel that had to wait for another one's work. */
+/* The next refresh (host time), for CPU 0's deadline: the kicker and WFI wake it then, so the refreshes keep their
+   grid whatever else polls the devices. 0 before the guest named its display page. */
+uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
+    if (!p || !p->display_pa || !p->vblank_period) return 0;
+    return hv_vblank_next(&p->vclock);
+}
+
 /* The display's refresh: event 8 while the guest asks for it in its mask (+104), and the refresh's time at +68.
    AppleParavirtDisplay's vblank query reads that time from +68 of this page (macOS 15.6.1's kernelcache: a getter
    that is ldr x8, [page, #0x68]; str x8, [x1]). Left 0, WindowServer times its frames from 0: it logs "Timer delayed
    by <uptime>s" in bursts, its display timer re-arms at once, and the Mac spends minutes at a time switching threads
    (on an iPhone, 20-48K interrupts and 40-80K process switches a second where a calm Mac has 3-7K). Without event 8
    a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ). HV_PVG_VBLANK=0: neither, as before. */
-/* Host ticks (24 MHz) between refreshes; 0: none (HV_PVG_VBLANK=0). */
-static uint64_t vblank_period(void) {
-    static int on = -1;
-    static uint64_t period;
-    if (on < 0) {
-        const char *hz = getenv("HV_HZ");
-        uint64_t r = hz && atoi(hz) > 0 ? (uint64_t)atoi(hz) : 60;
-        period = 24000000ull / r;
-        on = !getenv("HV_PVG_VBLANK") || atoi(getenv("HV_PVG_VBLANK"));
-    }
-    return on ? period : 0;
-}
-
-/* The next refresh (host time), for CPU 0's deadline: the kicker and WFI wake it then, so the refreshes keep their
-   grid whatever else polls the devices. 0 before the guest named its display page. */
-uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
-    if (!p || !p->display_pa || !vblank_period()) return 0;
-    return hv_vblank_next(&p->vclock);
-}
-
 static void vblank(HvPvgLite *p) {
-    uint64_t period = vblank_period();
+    uint64_t period = p->vblank_period;
     if (!period || !p->display_pa) return;
     uint8_t *d = hv_phys_ptr(p->m, p->display_pa, 0x4000);
     if (!d) return;
@@ -872,6 +857,10 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
     p->iosfc_irq = iosfc_irq;
     p->log = getenv("HV_PVG_LITE_LOG") != NULL;
     p->tally = getenv("HV_PVG_TALLY") != NULL;
+    /* Read for each Mac: Settings can change the rate between two in one launch (#183). */
+    const char *hz = getenv("HV_HZ"), *refreshes = getenv("HV_PVG_VBLANK");
+    p->hz = hz && atoi(hz) > 0 ? (uint32_t)atoi(hz) : 60;
+    p->vblank_period = !refreshes || atoi(refreshes) ? 24000000ull / p->hz : 0;
     hv_machine_add_mmio(m, gfx_pa, 0x10000, p, gfx_read, gfx_write, "gfx");
     hv_machine_add_mmio(m, iosfc_pa, 0x10000, p, iosfc_read, iosfc_write, "iosurface");
     return p;
