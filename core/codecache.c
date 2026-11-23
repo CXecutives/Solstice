@@ -18,10 +18,16 @@
    simply be running there. A condemn (under the translation lock) bumps the segment's tag first, so from then on no
    lookup takes its blocks (hv_block_live), no chain is made into or out of it (chain() checks under the lock) and no
    block is published there (hv_cc_publish). Then, a step at a time, its blocks leave the hash and every exit chained
-   into it from elsewhere goes back to its stub; then every CPU is asked to empty its branch caches, and the epoch
-   moves. A CPU catches up at the top of its loop (hv_cc_service): it is out of translated code there, empties its
-   front cache, branch caches and return predictions itself (a block it ran since the request may have noted a return
-   into it), and forgets the exit it was about to chain; its next entry into code has an ISB. A parked CPU does the same
+   into it from elsewhere goes back to its stub; then the epoch moves, naming the segment (epoch_seg), and every CPU is
+   asked to leave. A CPU catches up at the top of its loop (hv_cc_service): it is out of translated code there, empties
+   its front cache, drops every entry of its branch caches and return predictions that leads into a segment condemned
+   since the epoch it saw last (a block it ran since the request may have noted a return into it; all of them, after
+   more epochs than the ring holds), and forgets the exit it was about to chain; its next entry into code has an ISB.
+   No entry into the segment can be made after that: its blocks are out of the hash and not live, and a fill (the
+   dispatcher's, the light path's) is of a block found live, on the CPU's own thread, after it caught up. So once
+   every CPU has, no branch cache leads into the segment, which is what lets a block found in a CPU's own branch cache
+   be entered without an ISB (light.c). Entries into other segments stay: a reset made every process's indirect
+   branches and returns miss once per eviction. A parked CPU does the same
    before it runs again. When every CPU has caught up, nothing it can reach leads into the segment, and nothing it was
    doing is still there: the segment's exits and block records are freed and it takes new code.
 
@@ -74,10 +80,11 @@ static void geometry(HvMachine *m) {
     if (n < 4 || cc->too_big) n = 0;
     cc->seg_shift = shift;
     cc->nseg = (uint32_t)n;
-    /* Tenured code may hold about three quarters (half, with few segments): the working set should fit, and the
+    /* Tenured code may hold about seven eighths (half, with few segments): the working set should fit, and the
        young stream need only hold code until it is evicted and marked (a block wanted again within two laps of that
-       comes back tenured). A starting point, to be set from the stats line of long device sessions. */
-    cc->tenure_max = n >= 8 ? (uint32_t)n * 3 / 4 - 1 : n ? (uint32_t)n / 2 - 1 : 0;
+       comes back tenured). Three quarters translated a quarter more a run in test_codecache's workload whose hot
+       pages fill the cache 0.7 times (the phone: 308 of 363 evictions were of tenured segments). */
+    cc->tenure_max = n >= 8 ? (uint32_t)n * 7 / 8 - 1 : n ? (uint32_t)n / 2 - 1 : 0;
 }
 
 void hv_cc_reset(HvMachine *m) {
@@ -275,6 +282,7 @@ static int take_free(HvCodeCache *cc) {
 static void close_seg(HvCodeCache *cc, int s) {
     int k = cc->kind[s];
     cc->state[s] = SEG_FULL;
+    __atomic_store_n(&cc->used[s], 0, __ATOMIC_RELAXED); /* in use from here on: entered again */
     cc->fifo[k][(cc->fifo_head[k] + cc->fifo_len[k]) % HV_CC_MAX_SEGS] = (uint8_t)s;
     cc->fifo_len[k]++;
     cc->open[k] = -1;
@@ -301,6 +309,17 @@ static int take_back(HvMachine *m, int force) {
         k = pick(cc);
     }
     if (k < 0) return 0;
+    /* A tenured segment entered since it filled or since its last chance (hv_cc_touch) goes to the back once instead
+       (when all of them were: the oldest after all). 4-7% fewer translations a run in test_codecache. */
+    if (k == HV_CC_TENURED)
+        for (uint32_t i = 0; i < cc->fifo_len[k]; i++) {
+            uint32_t h = cc->fifo[k][cc->fifo_head[k]];
+            if (!__atomic_load_n(&cc->used[h], __ATOMIC_RELAXED)) break;
+            __atomic_store_n(&cc->used[h], 0, __ATOMIC_RELAXED);
+            cc->fifo_head[k] = (cc->fifo_head[k] + 1) % HV_CC_MAX_SEGS;
+            cc->fifo[k][(cc->fifo_head[k] + cc->fifo_len[k] - 1) % HV_CC_MAX_SEGS] = (uint8_t)h;
+            cc->second_chances++;
+        }
     uint32_t s = cc->fifo[k][cc->fifo_head[k]];
     cc->fifo_head[k] = (cc->fifo_head[k] + 1) % HV_CC_MAX_SEGS;
     cc->fifo_len[k]--;
@@ -449,6 +468,30 @@ static void check_gone(HvMachine *m, uint32_t s) {
             HvBlock *b = __atomic_load_n(&c->pc_state->jc[j].b, __ATOMIC_RELAXED);
             if (b && in_seg(m, hv_block_code(m, b), s)) check_bad(m, "a front cache still holding a block of a freed segment", b->va);
         }
+        /* Its branch caches and return predictions: a live entry that leads into it (one of a salt given up, as a
+           reset leaves them, can never match again: ids and generations only go up until the tables are cleared). */
+        HvPerCpu *p = c->pc_state;
+        if (cc->evictions & 15) continue; /* megabytes a CPU: every 16th eviction */
+        for (int t = 0; t < HV_IJC_TABLES; t++) {
+            if (!(__atomic_load_n(&p->ijc_tables_used, __ATOMIC_RELAXED) >> t & 1)) continue;
+            const uint64_t *ent = p->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8);
+            for (size_t k = 0; k < HV_IJC_TABLE_BYTES / 8; k += 2) {
+                uint64_t tag = __atomic_load_n(&ent[k], __ATOMIC_RELAXED), code = __atomic_load_n(&ent[k + 1], __ATOMIC_RELAXED);
+                uint32_t id = (uint32_t)(tag >> 48);
+                int live = (t & HV_BLOCK_EL1) ? (id ^ 0xffff) == c->kernel_gen
+                                              : id && (c->asid_cid[c->cid_asid[id]] == id || id == c->ijc_salt[0] >> 48);
+                if (tag && live && in_seg(m, (const void *)(uintptr_t)code, s))
+                    check_bad(m, "a branch cache leading into a freed segment", tag);
+            }
+        }
+        const uint64_t *ret = (const uint64_t *)(const void *)c->ret_tab;
+        for (size_t k = 0; k < sizeof c->ret_tab / 8; k += 2) {
+            uint64_t tag = __atomic_load_n(&ret[k], __ATOMIC_RELAXED), h = __atomic_load_n(&ret[k + 1], __ATOMIC_RELAXED);
+            int t = (int)(k * 8 / HV_RET_TAB_BYTES);
+            uint64_t top = (tag ^ __atomic_load_n(&c->ret_salt[t & HV_BLOCK_EL1], __ATOMIC_RELAXED)) >> 48;
+            if (tag && (top == 0 || top == 0xffff) && in_seg(m, (const void *)(uintptr_t)h, s))
+                check_bad(m, "a return prediction into a freed segment", tag);
+        }
     }
 }
 
@@ -496,11 +539,12 @@ static int job_step(HvMachine *m) {
         if (end >= hw) cc->job_phase = JOB_PUBLISH;
         break;
     }
-    case JOB_PUBLISH: /* every CPU to empty its branch caches, and catch up */
-        for (int i = 0; i < m->ncpus; i++)
-            if (m->cpus[i] && m->cpus[i] != hv_self) hv_cpu_post(m->cpus[i], HV_REQ_IJC_RESET);
+    case JOB_PUBLISH: /* the epoch moves, naming the segment; every CPU to leave and catch up */
         cc->job_epoch = cc->epoch + 1;
+        __atomic_store_n(&cc->epoch_seg[cc->job_epoch & (HV_CC_EPOCHS - 1)], (uint8_t)s, __ATOMIC_RELAXED);
         __atomic_store_n(&cc->epoch, cc->job_epoch, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < m->ncpus; i++)
+            if (m->cpus[i] && m->cpus[i] != hv_self) hv_cpu_post(m->cpus[i], 0); /* (no request: out to the top of its loop) */
         cc->job_phase = JOB_WAIT;
         break;
     case JOB_WAIT:
@@ -561,15 +605,56 @@ static int cc_step(HvMachine *m) {
     return r;
 }
 
+/* Every entry of this CPU's branch caches (each table it filled) and return predictions (every table) that leads into
+   segment s: dropped. Its own thread, out of translated code; another CPU's TLBI may drop entries meanwhile, which
+   writes the same zeros. */
+static uint64_t ijc_drop_seg(HvCpu *cpu, uint32_t s) {
+    HvMachine *m = cpu->m;
+    HvPerCpu *p = cpu->pc_state;
+    uintptr_t lo = (uintptr_t)(m->jit.base + ((size_t)s << m->cc.seg_shift)), len = seg_words(&m->cc) * sizeof(uint32_t);
+    uint64_t n = 0;
+    for (int t = 0; t < HV_IJC_TABLES; t++) {
+        if (!(p->ijc_tables_used >> t & 1)) continue; /* never filled since it was last cleared: all zero */
+        uint64_t *ent = p->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8);
+        for (size_t i = 0; i < HV_IJC_TABLE_BYTES / 8; i += 2)
+            if ((uintptr_t)ent[i + 1] - lo < len) {
+                __atomic_store_n(&ent[i], 0, __ATOMIC_RELAXED); /* the empty tag */
+                __atomic_store_n(&ent[i + 1], 0, __ATOMIC_RELAXED);
+                n++;
+            }
+    }
+    uint64_t *ret = (uint64_t *)(void *)cpu->ret_tab;
+    for (size_t i = 0; i < sizeof cpu->ret_tab / 8; i += 2) /* {tag, the host return address} */
+        if ((uintptr_t)ret[i + 1] - lo < len) {
+            ret[i] = ret[i + 1] = 0;
+            n++;
+        }
+    return n;
+}
+
 /* Out of translated code, at the top of the dispatcher loop: nothing of what this CPU holds may lead into a segment
    condemned before the epoch it now acknowledges. */
 static int cc_ack(HvCpu *cpu) {
     HvPerCpu *p = cpu->pc_state;
-    uint32_t e = __atomic_load_n(&cpu->m->cc.epoch, __ATOMIC_SEQ_CST);
-    if (e == p->cc_seen) return 0;
+    HvCodeCache *cc = &cpu->m->cc;
+    uint32_t e = __atomic_load_n(&cc->epoch, __ATOMIC_SEQ_CST), seen = p->cc_seen;
+    if (e == seen) return 0;
     hv_cpu_process_requests(cpu);
-    hv_ijc_reset(cpu, 0); /* and the return predictions, each half */
-    hv_ijc_reset(cpu, 1);
+    /* The segments of the epochs since it last caught up. While this CPU is active no epoch after e can pass, so at
+       most one more is published meanwhile: half the ring is safe to read. Further behind (parked long, or a first
+       run): everything. */
+    if (cc->nseg && e - seen <= HV_CC_EPOCHS / 2) {
+        uint64_t t0 = mach_absolute_time(), n = 0;
+        for (uint32_t k = seen + 1; k != e + 1; k++)
+            n += ijc_drop_seg(cpu, __atomic_load_n(&cc->epoch_seg[k & (HV_CC_EPOCHS - 1)], __ATOMIC_RELAXED));
+        __atomic_add_fetch(&cc->ijc_scans, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&cc->ijc_dropped, n, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&cc->ijc_scan_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
+    } else {
+        hv_ijc_reset(cpu, 0); /* and the return predictions, each half */
+        hv_ijc_reset(cpu, 1);
+        __atomic_add_fetch(&cc->ijc_resets, 1, __ATOMIC_RELAXED);
+    }
     memset(p->jc, 0, sizeof p->jc);
     __atomic_store_n(&p->cc_seen, e, __ATOMIC_SEQ_CST);
     return 1;

@@ -90,6 +90,7 @@ typedef struct HvStats {
     uint64_t dev_waits, dev_wait_ticks; /* device lock taken while another CPU held it */
     uint64_t tr_waits, tr_wait_ticks;   /* translation lock likewise */
     uint64_t words_inline, words_ool, words_pool; /* translated code size by part */
+    uint64_t words_cold[5];   /* the out-of-line part by what it is for (HV_COLD_*, translate.h) */
     uint64_t refills;
     uint64_t ijc_light;       /* branch-cache misses resolved without the dispatcher (hv_ijc_resolve) */         /* TLB misses filled by the light path (hv_tlb_refill) */
     uint64_t stash_saves, stash_hits, stash_entries; /* user TLB entries kept across process switches */

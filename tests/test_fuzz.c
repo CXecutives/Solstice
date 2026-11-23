@@ -1029,6 +1029,12 @@ int main(void) {
     printf("code per guest instruction: hot %.2f cold %.2f pool %.2f total %.2f words (%llu blocks)\n",
            (double)(x.hot - x0.hot) / insns, (double)(x.cold - x0.cold) / insns, (double)(x.pool - x0.pool) / insns,
            (double)(x.hot - x0.hot + x.cold - x0.cold + x.pool - x0.pool) / insns, (unsigned long long)(x.blocks - x0.blocks));
+    printf("cold code per guest instruction: exits %.2f slow paths %.2f group copies %.2f branch-cache misses %.2f other %.2f\n",
+           (double)(x.cold_kind[HV_COLD_EXIT] - x0.cold_kind[HV_COLD_EXIT]) / insns,
+           (double)(x.cold_kind[HV_COLD_SLOW] - x0.cold_kind[HV_COLD_SLOW]) / insns,
+           (double)(x.cold_kind[HV_COLD_GROUP] - x0.cold_kind[HV_COLD_GROUP]) / insns,
+           (double)(x.cold_kind[HV_COLD_IJC] - x0.cold_kind[HV_COLD_IJC]) / insns,
+           (double)(x.cold_kind[HV_COLD_OTHER] - x0.cold_kind[HV_COLD_OTHER]) / insns);
     HvStats tot;
     hv_stats_total(&m, &tot);
     printf("slow paths: %llu helper accesses, %llu refills, %llu chained\n", (unsigned long long)hv_stat_slow_mem(&m),
