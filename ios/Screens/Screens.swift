@@ -160,6 +160,7 @@ enum Screens {
         await screen.whenUp(session)
         try? await Task.sleep(nanoseconds: 1_000_000_000) // animations, sheets and the first engine poll
         if case .session = screen.root {
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // the session's cards and details follow its run loop (1 s a turn)
             HengeLog.log("screens", "\(screen.name): state \(session.state.rawValue), error \(session.error ?? "none"), "
                          + "stuck \(session.stuck.map { "\($0)" } ?? "no"), storage paused \(session.storagePaused)")
         }
