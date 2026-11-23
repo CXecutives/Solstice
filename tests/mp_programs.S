@@ -70,12 +70,12 @@ _mp_timer_spin:
     mov x22, #0
     mov x23, #0
     msr daifclr, #2
-1:  mrs x11, cntvct_el0
+1:  mov x14, x21                    // before the timer is armed: a host that stalls past the deadline takes it at the msr
+    mrs x11, cntvct_el0
     add x12, x11, x1
     msr cntv_cval_el0, x12
     mov x13, #1
     msr cntv_ctl_el0, x13
-    mov x14, x21
 2:  cmp x21, x14
     b.eq 2b
     sub x15, x10, x12
@@ -94,12 +94,12 @@ _mp_timer_wfi:
     mov x22, #0
     mov x23, #0
     msr daifclr, #2
-1:  mrs x11, cntvct_el0
+1:  mov x14, x21                    // before the timer is armed: a host that stalls past the deadline takes it at the msr
+    mrs x11, cntvct_el0
     add x12, x11, x1
     msr cntv_cval_el0, x12
     mov x13, #1
     msr cntv_ctl_el0, x13
-    mov x14, x21
 2:  wfi
     cmp x21, x14
     b.eq 2b

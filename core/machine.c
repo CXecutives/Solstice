@@ -119,7 +119,7 @@ _Static_assert(SLOT_BYTES == 48, "an exit slot: 48 bytes");
 
 static size_t percpu_tables_bytes(void) {
     return (size_t)HV_IJC_TABLES * HV_IJC_TABLE_BYTES + (sizeof(uint64_t) << HV_UCODE_BITS) + 65536 * sizeof(uint64_t[4]) +
-           (size_t)HV_STASHES * HV_STASH_CAP * (sizeof(HvTlbEntry) + sizeof(uint16_t));
+           (size_t)HV_STASHES * HV_STASH_CAP * (sizeof(HvTlbEntry) + sizeof(uint16_t)) + (size_t)HV_TLB_SIZE * 4 * sizeof(uint32_t);
 }
 
 size_t hv_machine_table_bytes(size_t jit_bytes, int ncpus) {
@@ -147,6 +147,7 @@ static int percpu_tables(HvPerCpu *p) {
     t += 65536 * sizeof(uint64_t[4]);
     for (int k = 0; k < HV_STASHES; k++, t += HV_STASH_CAP * sizeof(HvTlbEntry)) p->stash[k].ent = (HvTlbEntry *)(void *)t;
     for (int k = 0; k < HV_STASHES; k++, t += HV_STASH_CAP * sizeof(uint16_t)) p->stash[k].slot = (uint16_t *)(void *)t;
+    p->stash_pos = (uint32_t *)(void *)t; /* zeroed: epoch 0, which no switch uses */
     return 0;
 }
 
@@ -248,7 +249,7 @@ int hv_machine_trim(HvMachine *m) {
     hv_cc_trim(m);
     for (int i = 0; i < m->nram; i++) { /* the pages' notes of cached targets: none are left */
         HvRam *r = &m->ram[i];
-        hv_pages_zero(r->ijc_va, r->npages * sizeof *r->ijc_va);
+        hv_pages_zero(r->ijc_va, r->npages * HV_IJC_VAS * sizeof *r->ijc_va);
     }
     for (int i = 0; i < m->ncpus; i++) {
         HvCpu *c = m->cpus[i];
@@ -406,6 +407,7 @@ void hv_cpu_process_requests(HvCpu *cpu) {
         for (uint32_t i = 0; i < n; i++) hv_tlbi_apply(cpu, q[i].op1, q[i].crn, q[i].crm, q[i].op2, q[i].xt);
     }
     if (flags & HV_REQ_IJC_RESET) {
+        HV_ST(cpu).user_reset_why[5]++; /* code under several VA pages (or more changed pages queued than fit) */
         hv_ijc_reset(cpu, 0);
         hv_ijc_reset(cpu, 1);
     } else {
@@ -530,15 +532,23 @@ void hv_ret_clear(HvCpu *cpu) {
     cpu->ret_salt[0] = cpu->ret_salt[1] = 1ull << 48;
 }
 
+/* exit_req and SEV reach a running CPU; the condition only one parked on wake_cv, so the mutex is taken only for a CPU
+   that is not running (active 0). No wake is lost: every wait on wake_cv comes after park() stored active = 0 (SEQ_CST)
+   and looks at wake_pending (SEQ_CST, under wake_mu) before it sleeps; this stores wake_pending (SEQ_CST) before it
+   loads active. In the single order of SEQ_CST operations one of the two comes first: if this load saw active = 1, the
+   park comes after it, so the waiter's later load sees wake_pending = 1 and does not sleep; if it saw 0, it signals
+   under wake_mu, which the waiter holds from its look until it sleeps. A wait for CPU_ON (wait_while_off) looks at
+   off/halted instead, which their setters change under wake_mu before they wake it. A wake that comes while the target
+   is on its way out of a wait (wake_pending stored before that wait clears it) is the one that wait took. */
 void hv_cpu_wake(HvCpu *cpu) {
-    HvPerCpu *pw = cpu->pc_state;
-    __atomic_store_n(&pw->poll_req, 1, __ATOMIC_SEQ_CST); /* for CPU 0: its tick polls the devices (vmapple.c) */
+    HvPerCpu *p = cpu->pc_state;
     __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&p->wake_pending, 1, __ATOMIC_SEQ_CST);
     __asm__ volatile("sev" ::: "memory");
     if (cpu->m->stats_interval) hv_stats_here(cpu->m)->kick_src[1]++;
-    HvPerCpu *p = cpu->pc_state;
+    if (__atomic_load_n(&p->active, __ATOMIC_SEQ_CST)) return;
     pthread_mutex_lock(&p->wake_mu);
-    p->wake_pending = 1;
+    __atomic_store_n(&p->wake_pending, 1, __ATOMIC_SEQ_CST);
     pthread_cond_signal(&p->wake_cv);
     pthread_mutex_unlock(&p->wake_mu);
 }
@@ -566,10 +576,62 @@ void hv_machine_halt(HvMachine *m, enum HvHaltReason reason) {
         if (m->cpus[i]) hv_cpu_wake(m->cpus[i]);
 }
 
-/* Device work is for CPU 0, which polls the devices. */
+/* Device work is for CPU 0, which polls the devices: the poll is asked for here (an interrupt raised for a CPU wakes
+   it without one, hv_cpu_wake). */
 void hv_machine_wake(HvMachine *m) {
     if (m->stats_interval) hv_stats_here(m)->kick_src[3]++;
-    if (m->cpu) hv_cpu_wake(m->cpu);
+    if (!m->cpu) return;
+    __atomic_store_n(&m->cpu->pc_state->poll_req, 1, __ATOMIC_SEQ_CST); /* before exit_req: its tick sees it */
+    hv_cpu_wake(m->cpu);
+}
+
+void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on) {
+    uint32_t now = __atomic_load_n(&m->dev_unsignalled, __ATOMIC_RELAXED);
+    if (!!(now & bit) == !!on) return; /* most calls: nothing changes */
+    if (!on) {
+        __atomic_fetch_and(&m->dev_unsignalled, ~bit, __ATOMIC_SEQ_CST);
+        return;
+    }
+    if (!__atomic_fetch_or(&m->dev_unsignalled, bit, __ATOMIC_SEQ_CST)) hv_machine_kicker_poke(m); /* it may sleep long */
+}
+
+/* The storm detector (machine.h). One counter per interrupt; the clock and a look at the WFI count once a window. */
+void hv_storm_irq(HvCpu *cpu, uint32_t intid) {
+    HvPerCpu *p = cpu->pc_state;
+    if (!p) return;
+    HvStorm *s = &p->storm;
+    if (s->armed) hv_storm_count(s->irq, intid);
+    if (++s->acks < HV_STORM_WINDOW) return;
+    uint64_t now = mach_absolute_time(), wfi = __atomic_load_n(&p->own.stats.wfi, __ATOMIC_RELAXED);
+    int hot = s->t0 && now - s->t0 < 24000000ull * HV_STORM_WINDOW / HV_STORM_RATE && (wfi - s->wfi0) * 4 >= (uint64_t)s->acks * 3;
+    if (hot && s->armed && !s->logged) {
+        double secs = (double)(now - s->t0) / 24e6;
+        fprintf(stderr, "hengevm: interrupt storm on cpu %u: %.0f interrupts/s, %.0f WFI/s, el%u pc %llx; cntv ctl %llx cval %+lld us, "
+                        "cntp ctl %llx cval %+lld us\n  interrupts:", cpu->index, s->acks / secs, (double)(wfi - s->wfi0) / secs,
+                cpu->el, (unsigned long long)cpu->pc, (unsigned long long)cpu->cntv_ctl,
+                (long long)((int64_t)(cpu->cntv_cval - (now - cpu->cntvoff)) / 24), (unsigned long long)cpu->cntp_ctl,
+                (long long)((int64_t)(cpu->cntp_cval - now) / 24));
+        for (int i = 0; i < HV_STORM_SLOTS && s->irq[i].n; i++)
+            fprintf(stderr, " %d x%u", s->irq[i].id == ~0u ? -1 : (int)s->irq[i].id, s->irq[i].n);
+        fprintf(stderr, "\n  msr:");
+        for (int i = 0; i < HV_STORM_SLOTS && s->msr[i].n; i++) {
+            uint32_t r = s->msr[i].id;
+            if (r == ~0u) fprintf(stderr, " other x%u", s->msr[i].n);
+            else if (r & 0x10000) fprintf(stderr, " pstate%o x%u", r & 0x3f, s->msr[i].n);
+            else fprintf(stderr, " S%u_%u_C%u_C%u_%u x%u", r >> 14, (r >> 11) & 7, (r >> 7) & 15, (r >> 3) & 15, r & 7, s->msr[i].n);
+        }
+        fprintf(stderr, "\n");
+        s->logged = 1;
+        s->episodes++;
+    } else if (!hot && s->logged) {
+        fprintf(stderr, "hengevm: interrupt storm on cpu %u over after %.1f s\n", cpu->index, (double)(now - s->began) / 24e6);
+    }
+    if (hot && !s->armed) s->began = now;
+    if (!hot) s->logged = 0;
+    s->armed = (uint8_t)hot;
+    memset(s->irq, 0, sizeof s->irq);
+    memset(s->msr, 0, sizeof s->msr);
+    s->t0 = now, s->wfi0 = wfi, s->acks = 0;
 }
 
 void hv_machine_kicker_poke(HvMachine *m) {
@@ -619,7 +681,11 @@ static uint64_t kicker_pass(HvMachine *m, uint64_t now, uint64_t *kicked, uint64
         } else if (due && due < wake) {
             wake = due;
         }
-        if (i == 0) { /* CPU 0 polls the devices while it runs, for work no device signals (vmapple.c) */
+        /* CPU 0 polls the devices while it runs, while one has work it does not signal (hv_machine_unsignalled); the
+           rest comes with hv_machine_wake, its device deadlines (in timer_due) and the safety kick. */
+        if (i == 0 && !__atomic_load_n(&m->dev_unsignalled, __ATOMIC_SEQ_CST)) {
+            *poll = now + HV_POLL_BUSY; /* the first poll one period after some work turns up */
+        } else if (i == 0) {
             if (kick && now >= *poll) {
                 __atomic_store_n(&m->percpu[0].poll_req, 1, __ATOMIC_SEQ_CST);
                 hv_cpu_kick(c);
@@ -676,7 +742,7 @@ void hv_machine_free(HvMachine *m) {
         free(m->ram[i].code_pages);
         free(m->ram[i].page_gen);
         free(m->ram[i].whint);
-        hv_pages_free(m->ram[i].ijc_va, m->ram[i].npages * sizeof *m->ram[i].ijc_va);
+        hv_pages_free(m->ram[i].ijc_va, m->ram[i].npages * HV_IJC_VAS * sizeof *m->ram[i].ijc_va);
         hv_pages_free(m->ram[i].xhead, m->ram[i].npages * sizeof *m->ram[i].xhead);
         free(m->ram[i].code_hash);
     }
@@ -726,7 +792,7 @@ int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int
     r->page_gen = calloc(pages, sizeof *r->page_gen);
     r->npages = pages;
     r->whint = calloc(pages * HV_MAX_CPUS, sizeof *r->whint);
-    r->ijc_va = hv_pages_alloc(pages * sizeof *r->ijc_va); /* given back by hv_machine_trim, xhead by a full flush */
+    r->ijc_va = hv_pages_alloc(pages * HV_IJC_VAS * sizeof *r->ijc_va); /* given back by hv_machine_trim, xhead by a full flush */
     r->xhead = hv_pages_alloc(pages * sizeof *r->xhead);
     r->code_hash = getenv("HV_CODE_CHECK") ? calloc(pages, sizeof *r->code_hash) : NULL;
     return r->code_pages && r->page_gen && r->whint && r->ijc_va && r->xhead ? 0 : -1;
@@ -792,13 +858,18 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
     pthread_mutex_unlock(&m->tr_mu);
     /* The indirect-branch cache may lead into the stale blocks: drop those entries (or, without HV_IJC_PAGES, the
        whole cache), here at once and on the other CPUs before they next leave a block (their cache lookups and
-       chained exits check exit_req first). Which entries: the page's blocks were cached under one VA page (ijc_va,
-       read after the generation went up; a fill notes its page before checking the generation, see
-       hv_ijc_fill_checked), so only that page's; under none, only the return predictions go; under several, all. */
-    uint64_t v = __atomic_exchange_n(&r->ijc_va[pg], 0, __ATOMIC_SEQ_CST);
-    if (!hv_knob[HV_K_IJCPAGES]) v = ~0ull;
-    if (m->stats_interval) hv_stats_here(m)->code_ijc[!v ? 0 : v == ~0ull ? 2 : 1]++;
-    if (!v) v = 1;
+       chained exits check exit_req first). Which entries: the page's blocks were cached under up to HV_IJC_VAS VA pages
+       (ijc_va, read after the generation went up; a fill notes its page before checking the generation, see
+       hv_ijc_fill_checked), so only those pages'; under none, only the return predictions go; under more, all. */
+    uint64_t vs[HV_IJC_VAS];
+    int nv = 0, all = !hv_knob[HV_K_IJCPAGES];
+    for (int j = 0; j < HV_IJC_VAS; j++) {
+        uint64_t v = __atomic_exchange_n(&r->ijc_va[pg * HV_IJC_VAS + j], 0, __ATOMIC_SEQ_CST);
+        if (v == ~0ull) all = 1;
+        else if (v) vs[nv++] = v;
+    }
+    if (m->stats_interval) hv_stats_here(m)->code_ijc[all ? 2 : nv ? 1 : 0]++;
+    if (!nv) vs[nv++] = 1;
     for (int i = 0; i < m->ncpus; i++) {
         HvCpu *c = m->cpus[i];
         if (!c) continue;
@@ -806,16 +877,17 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
            or no CPU running yet) it is a request, or a running CPU could read a
            half-written entry and jump into the wrong code. */
         if (c == hv_self) {
-            if (v == ~0ull) {
+            if (all) {
+                if (c->pc_state) HV_ST(c).user_reset_why[5]++;
                 hv_ijc_reset(c, 0);
                 hv_ijc_reset(c, 1);
             } else {
-                hv_ijc_drop_code_page(c, v);
+                for (int j = 0; j < nv; j++) hv_ijc_drop_code_page(c, vs[j]);
             }
-        } else if (v == ~0ull) {
+        } else if (all) {
             hv_cpu_post(c, HV_REQ_IJC_RESET);
         } else {
-            hv_cpu_post_ijc_page(c, v);
+            for (int j = 0; j < nv; j++) hv_cpu_post_ijc_page(c, vs[j]);
         }
     }
     hv_stats_here(m)->reset_why[4]++;

@@ -51,13 +51,19 @@ enum KeepAlive {
                 HengeLog.log("keepalive", "audio interruption \(ended ? "ended" : "began")")
                 playing = false
                 if ended { update() }
+                // The Mac's sound stopped with it: its stream runs on by the clock until the session is back.
+                henge_vm_audio_interrupted(ended ? 0 : 1)
             }
+        }
+        center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { _ in
+            henge_vm_audio_interrupted(3) // the Mac's sound plays on the new route if it stopped
         }
         center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
                 HengeLog.log("keepalive", "audio services were reset")
                 teardown()
                 update()
+                henge_vm_audio_interrupted(2)
             }
         }
         center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { _ in

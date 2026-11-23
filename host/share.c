@@ -30,7 +30,17 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef O_NOFOLLOW_ANY
+#define NOFOLLOW_ANY O_NOFOLLOW_ANY
+#else
+#define NOFOLLOW_ANY O_NOFOLLOW
+#endif
+
 #define HEAD_MAX (32 * 1024)
+/* A PUT stops short of leaving the device less free space than this: the guest's disk image grows into it. */
+#define FREE_FLOOR (1ll << 30)
+/* Connections served at once (one thread each); more wait in the listen queue. */
+#define MAX_CONNS 32
 #define SMALL_BODY_MAX (16 * 1024 * 1024) /* a clipboard, or a request's XML */
 #define TEMP_PREFIX ".henge-put-"
 
@@ -85,8 +95,10 @@ typedef struct Request {
     char query[128];
     char destination[PATH_MAX]; /* decoded path */
     char if_header[256];
+    char host[256];  /* the Host header, or the host of an absolute target */
+    char token[80];  /* X-Henge-Token */
     long long length;
-    int chunked, expect_continue, close, overwrite, depth;
+    int chunked, expect_continue, close, overwrite, depth, host_seen;
     long long range_from, range_to; /* -1: none */
     long chunk_left;
     int body_done;
@@ -152,18 +164,22 @@ static int send_all(int fd, const void *p, size_t n) {
     return 0;
 }
 
+/* Small reads (a request's head, a chunk's size line) come out of the read-ahead buffer, a system call per buffer
+   full and not per byte; a big one with the buffer empty goes straight into `out`. */
 static ssize_t conn_read(Conn *c, void *out, size_t n) {
-    if (c->at < c->have) {
-        size_t take = c->have - c->at < n ? c->have - c->at : n;
-        memcpy(out, c->buf + c->at, take);
-        c->at += take;
-        return (ssize_t)take;
+    if (c->at == c->have) {
+        void *into = n >= sizeof c->buf ? out : c->buf;
+        size_t cap = n >= sizeof c->buf ? n : sizeof c->buf;
+        ssize_t r;
+        do r = recv(c->fd, into, cap, 0);
+        while (r < 0 && errno == EINTR);
+        if (r <= 0 || into == out) return r;
+        c->at = 0, c->have = (size_t)r;
     }
-    for (;;) {
-        ssize_t r = recv(c->fd, out, n, 0);
-        if (r < 0 && errno == EINTR) continue;
-        return r;
-    }
+    size_t take = c->have - c->at < n ? c->have - c->at : n;
+    memcpy(out, c->buf + c->at, take);
+    c->at += take;
+    return (ssize_t)take;
 }
 
 /* A line of a chunked body's framing. */
@@ -381,12 +397,28 @@ static int do_proppatch(Conn *c, Request *r) {
     return rc;
 }
 
+/* A Range header's bytes (from, to; -1 where not given) of a file of `size` bytes: 0 the whole file, 1 the part
+   [*from, *to], -1 none of it can be given (416). */
+static int range_of(long long a, long long b, long long size, long long *from, long long *to) {
+    *from = 0, *to = size - 1;
+    if (a < 0 && b < 0) return 0;
+    if (a < 0) { /* the last b bytes */
+        if (b <= 0 || size == 0) return -1;
+        *from = size > b ? size - b : 0;
+        return 1;
+    }
+    if (a >= size || (b >= 0 && b < a)) return -1;
+    if (b >= 0 && b < *to) *to = b;
+    *from = a;
+    return 1;
+}
+
 static int do_get(Conn *c, Request *r) {
     if (body_discard(c, r) != 0) return -1;
     char local[PATH_MAX];
     struct stat st;
     if (local_path(r->path, local, sizeof local) != 0) return respond_empty(c, r, 404, "Not Found");
-    int fd = open(local, O_RDONLY | O_NOFOLLOW);
+    int fd = open(local, O_RDONLY | NOFOLLOW_ANY); /* a link anywhere on the way could lead out of the folder */
     if (fd < 0 || fstat(fd, &st) != 0) {
         if (fd >= 0) close(fd);
         return respond_empty(c, r, 404, "Not Found");
@@ -396,21 +428,12 @@ static int do_get(Conn *c, Request *r) {
         return respond_empty(c, r, 405, "Method Not Allowed");
     }
     long long from = 0, to = st.st_size - 1;
-    int partial = 0;
-    if (r->range_from >= 0 || r->range_to >= 0) {
-        if (r->range_from < 0) { /* the last N bytes */
-            from = st.st_size > r->range_to ? st.st_size - r->range_to : 0;
-        } else {
-            from = r->range_from;
-            if (r->range_to >= 0 && r->range_to < to) to = r->range_to;
-        }
-        if (from >= st.st_size && st.st_size > 0) {
-            close(fd);
-            char h[80];
-            snprintf(h, sizeof h, "Content-Range: bytes */%lld\r\n", (long long)st.st_size);
-            return respond(c, r, 416, "Range Not Satisfiable", h, NULL, 0);
-        }
-        partial = 1;
+    int partial = range_of(r->range_from, r->range_to, st.st_size, &from, &to);
+    if (partial < 0) {
+        close(fd);
+        char h[80];
+        snprintf(h, sizeof h, "Content-Range: bytes */%lld\r\n", (long long)st.st_size);
+        return respond(c, r, 416, "Range Not Satisfiable", h, NULL, 0);
     }
     long long len = st.st_size ? to - from + 1 : 0;
     char modified[64];
@@ -420,6 +443,8 @@ static int do_get(Conn *c, Request *r) {
     char head[1024];
     int n = snprintf(head, sizeof head,
                      "HTTP/1.1 %s\r\nServer: Henge\r\nContent-Length: %lld\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n"
+                     /* a file put here and opened in the guest's browser runs as nobody's page, not 10.0.2.4's */
+                     "Content-Security-Policy: sandbox\r\nX-Content-Type-Options: nosniff\r\n"
                      "Last-Modified: %s\r\nETag: \"%llx-%llx\"\r\n",
                      partial ? "206 Partial Content" : "200 OK", len, modified, (unsigned long long)st.st_size,
                      (unsigned long long)st.st_mtimespec.tv_sec);
@@ -442,6 +467,11 @@ static int do_get(Conn *c, Request *r) {
     }
     close(fd);
     return rc;
+}
+
+static long long free_bytes(int fd) {
+    struct statfs fs;
+    return fstatfs(fd, &fs) == 0 ? (long long)fs.f_bavail * (long long)fs.f_bsize : LLONG_MAX;
 }
 
 /* Into a temporary file beside it, then renamed, so a transfer cut short leaves the old file alone. */
@@ -473,7 +503,9 @@ static int do_put(Conn *c, Request *r) {
     body_ready(c, r);
     static const size_t piece = 256 * 1024;
     char *buf = malloc(piece);
-    int full = 0;
+    /* Room for it above the floor: known at once with a length, checked as it comes in otherwise. */
+    int full = !r->chunked && r->length > free_bytes(fd) - FREE_FLOOR;
+    long long written = 0, checked = 0;
     for (;;) {
         ssize_t got = body_read(c, r, buf, piece);
         if (got < 0) { /* the client went away: no response to give */
@@ -492,6 +524,11 @@ static int do_put(Conn *c, Request *r) {
                     break;
                 }
                 done += w;
+            }
+            written += got;
+            if (written - checked >= (64ll << 20)) {
+                checked = written;
+                if (free_bytes(fd) < FREE_FLOOR) full = 1;
             }
         }
     }
@@ -793,8 +830,51 @@ static int clipboard_put(Conn *c, Request *r) {
     return respond_empty(c, r, 204, "No Content");
 }
 
+/* The clipboard's key, new for each run of the app: the helper fetches it (GET /.henge/token) and sends it as
+   X-Henge-Token. A web page in the guest cannot: its own requests to 10.0.2.4 are cross-origin (it cannot read the
+   answer or add the header), and the folder's files are served sandboxed (do_get). */
+static char clip_key[33];
+static pthread_once_t token_once = PTHREAD_ONCE_INIT;
+
+static void make_token(void) {
+    uint8_t b[16];
+    arc4random_buf(b, sizeof b);
+    for (int i = 0; i < 16; i++) snprintf(clip_key + 2 * i, 3, "%02x", b[i]);
+}
+
+static const char *share_token(void) {
+    pthread_once(&token_once, make_token);
+    return clip_key;
+}
+
+static int token_ok(const Request *r) {
+    const char *t = share_token();
+    size_t n = strlen(t);
+    if (strlen(r->token) != n) return 0;
+    unsigned diff = 0;
+    for (size_t i = 0; i < n; i++) diff |= (unsigned char)(t[i] ^ r->token[i]);
+    return diff == 0;
+}
+
+/* Only requests made to 10.0.2.4 itself: a page in the guest's browser that points a name of its own at 10.0.2.4
+   (DNS rebinding) sends that name. No Host, or two, is refused as well. */
+static int host_ok(const Request *r) {
+    size_t n = strlen(HV_SHARE_ADDR);
+    if (r->host_seen > 1 || strncmp(r->host, HV_SHARE_ADDR, n) != 0) return 0;
+    return r->host[n] == 0 || strcmp(r->host + n, ":80") == 0;
+}
+
 static int serve_henge(Conn *c, Request *r) {
     const char *what = r->path + strlen("/.henge/");
+    if (!strcmp(what, "token") && !strcmp(r->method, "GET")) {
+        if (body_discard(c, r) != 0) return -1;
+        const char *t = share_token();
+        return respond(c, r, 200, "OK", "Content-Type: text/plain\r\nCache-Control: no-store\r\n", t, strlen(t));
+    }
+    if (!strcmp(what, "clipboard") && !token_ok(r)) {
+        if (body_discard(c, r) != 0) return -1;
+        return respond_empty(c, r, 403, "Forbidden");
+    }
     if (!strcmp(what, "install") && !strcmp(r->method, "GET")) {
         if (body_discard(c, r) != 0) return -1;
         return respond(c, r, 200, "OK", "Content-Type: text/plain\r\n", install_script, sizeof install_script - 1);
@@ -849,9 +929,12 @@ static int read_request(Conn *c, Request *r) {
         *query++ = 0;
         snprintf(r->query, sizeof r->query, "%s", query);
     }
-    /* A client may send the whole URL. */
-    if (!strncasecmp(r->target, "http://", 7)) {
+    /* A client may send the whole URL: its host counts as the Host header. */
+    int absolute = !strncasecmp(r->target, "http://", 7);
+    if (absolute) {
         char *p = strchr(r->target + 7, '/');
+        size_t hl = p ? (size_t)(p - (r->target + 7)) : strlen(r->target + 7);
+        snprintf(r->host, sizeof r->host, "%.*s", (int)(hl < sizeof r->host ? hl : sizeof r->host - 1), r->target + 7);
         memmove(r->target, p ? p : "/", strlen(p ? p : "/") + 1);
     }
     if (decode_path(r->target, r->path, sizeof r->path) != 0) return -1;
@@ -868,6 +951,14 @@ static int read_request(Conn *c, Request *r) {
         else if (header_is(line, "Depth", &v)) r->depth = v[0] == '0' ? 0 : 1;
         else if (header_is(line, "Overwrite", &v)) r->overwrite = v[0] != 'F' && v[0] != 'f';
         else if (header_is(line, "If", &v)) snprintf(r->if_header, sizeof r->if_header, "%s", v);
+        else if (header_is(line, "Host", &v)) {
+            if (!absolute) {
+                size_t hl = strlen(v);
+                while (hl && (v[hl - 1] == ' ' || v[hl - 1] == '\t')) hl--;
+                snprintf(r->host, sizeof r->host, "%.*s", (int)(hl < sizeof r->host ? hl : sizeof r->host - 1), v);
+            }
+            r->host_seen++;
+        } else if (header_is(line, "X-Henge-Token", &v)) snprintf(r->token, sizeof r->token, "%s", v);
         else if (header_is(line, "Destination", &v)) {
             const char *p = v;
             if (!strncasecmp(p, "http://", 7) || !strncasecmp(p, "https://", 8)) {
@@ -929,7 +1020,12 @@ static void *connection(void *arg) {
             }
             break;
         }
-        if (getenv("HV_SHARE_LOG")) fprintf(stderr, "share: %s %s\n", r->method, r->path);
+        if (getenv("HV_SHARE_LOG")) fprintf(stderr, "share: %s %s (host %s)\n", r->method, r->path, r->host);
+        if (!host_ok(r)) {
+            r->close = 1;
+            respond_empty(c, r, 421, "Misdirected Request");
+            break;
+        }
         if (handle(c, r) != 0 || r->close) break;
     }
     close(c->fd);
@@ -938,26 +1034,56 @@ static void *connection(void *arg) {
     return NULL;
 }
 
+/* At most MAX_CONNS connections have a thread; the listener takes the next one only when one of them ends. */
+static pthread_mutex_t conns_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t conns_cv = PTHREAD_COND_INITIALIZER;
+static int conns;
+
+static void conn_ended(void) {
+    pthread_mutex_lock(&conns_mu);
+    conns--;
+    pthread_cond_signal(&conns_cv);
+    pthread_mutex_unlock(&conns_mu);
+}
+
+static void *connection_thread(void *arg) {
+    connection(arg);
+    conn_ended();
+    return NULL;
+}
+
 static void *listener(void *arg) {
     int server = (int)(intptr_t)arg;
     for (;;) {
+        pthread_mutex_lock(&conns_mu);
+        while (conns >= MAX_CONNS) pthread_cond_wait(&conns_cv, &conns_mu);
+        conns++;
+        pthread_mutex_unlock(&conns_mu);
         int fd = accept(server, NULL, NULL);
         if (fd < 0) {
-            if (errno == EINTR || errno == ECONNABORTED) continue;
+            int e = errno;
+            conn_ended();
+            if (e == EINTR || e == ECONNABORTED) continue;
             usleep(100000);
             continue;
         }
         int on = 1;
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
         Conn *c = calloc(1, sizeof *c);
+        if (!c) {
+            close(fd);
+            conn_ended();
+            continue;
+        }
         c->fd = fd;
         pthread_t t;
         pthread_attr_t a;
         pthread_attr_init(&a);
         pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-        if (pthread_create(&t, &a, connection, c) != 0) {
+        if (pthread_create(&t, &a, connection_thread, c) != 0) {
             close(fd);
             free(c);
+            conn_ended();
         }
         pthread_attr_destroy(&a);
     }

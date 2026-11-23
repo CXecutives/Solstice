@@ -20,4 +20,7 @@ void hv_fp_leave(HvCpu *cpu);
 
 void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what);
 
+/* Set by the host: more lines for the stats, from the devices' data paths (network, sound), over `seconds`. */
+extern void (*hv_stats_io)(double seconds);
+
 #endif

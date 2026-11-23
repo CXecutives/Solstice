@@ -39,6 +39,8 @@ typedef struct HvVirtioSnd {
     unsigned channels, format, rate, frame_bytes, rate_hz;
     uint32_t buffer_bytes, period_bytes;
     int prepared, running;
+    int clock_on; /* CPU thread: the wall-clock drain ran at the last poll (in padding, as host_off: the size is part
+                     of a saved Mac's fingerprint, and neither is saved) */
     /* ring: written by the CPU thread, read by the backend */
     uint8_t *ring;
     _Atomic uint64_t written, consumed;
@@ -47,6 +49,9 @@ typedef struct HvVirtioSnd {
     HvVirtqElem pending[HV_VSND_PENDING];
     uint64_t pending_end[HV_VSND_PENDING]; /* `written` after this buffer's data */
     uint32_t phead, pcopy, ptail; /* pcopy: next one whose audio is not yet in the ring */
+    /* The host's player is not playing (iOS took the audio session, or the output would not start): the ring drains
+       by the wall clock as with no backend. The backend's thread sets it; the CPU thread reads it. */
+    _Atomic int host_off;
     uint64_t underruns, xfers;
     /* `written` at the end of the oldest buffer whose audio is in the ring (none: UINT64_MAX), for the backend: it
        wakes the CPU thread only once that much has been played, when a buffer can go back. CPU thread writes it. */
@@ -59,5 +64,7 @@ void hv_virtio_snd_poll(HvVirtioSnd *d);
 void hv_virtio_snd_resume(HvVirtioSnd *d);
 /* Backend thread: take up to `len` bytes of PCM; the rest of `buf` is silence. Returns bytes taken. */
 uint32_t hv_virtio_snd_pull(HvVirtioSnd *d, void *buf, uint32_t len);
+/* The stats printer: buffers played and underruns over the last `seconds`. */
+void hv_virtio_snd_stats(HvVirtioSnd *d, double seconds);
 
 #endif
