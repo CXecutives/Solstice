@@ -22,6 +22,13 @@ CALLS = {"bl", "b"}
 RELOC = re.compile(r"^([0-9a-f]{8})\s+(?:True|False)\s+\S+\s+(True|False)\s+(\S+)\s+\S+\s+(\S+)")
 
 
+def is_bitcode(obj):
+    """An LTO object (LLVM bitcode, the app's link makes its code): nothing to read here. What the roots reach must
+    be in plain objects, so a call into one of these counts as an external call and fails the gate."""
+    head = Path(obj).read_bytes()[:4]
+    return head in (bytes.fromhex("4243c0de"), bytes.fromhex("dec0170b"))  # raw bitcode, bitcode wrapper
+
+
 def disassemble(obj):
     """{function: [(mnemonic, operands)]} and {address: function} for one object."""
     out = subprocess.run(["otool", "-tV", str(obj)], capture_output=True, text=True, check=True).stdout
@@ -63,6 +70,10 @@ def main(build_dir):
         sys.exit(f"simd_gate: no objects under {build_dir}; run `make ios-lib` first")
     graph, simd, insns_of, indirect = {}, {}, {}, {}
     nreloc = 0
+    lto = [o.name for o in objs if is_bitcode(o)]
+    objs = [o for o in objs if o.name not in lto]
+    if lto:
+        print(f"simd_gate: {len(lto)} LTO objects not read (their code is made at link time)")
     for obj in objs:
         funcs, at = disassemble(obj)
         starts = sorted(at)
