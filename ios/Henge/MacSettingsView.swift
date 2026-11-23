@@ -1,101 +1,60 @@
 import SwiftUI
 
-/// One Mac: what it has, and what can be done with it.
+/// One Mac: what it has, and what can be done with it. What it starts with applies at its next start; a Mac saved by
+/// Instant Resume (to the person still running) can be restarted from here to take it at once.
 struct MacSettingsView: View {
     @ObservedObject private var machines = Machines.shared
     @Environment(\.dismiss) private var dismiss
     @State private var mac: VirtualMac
+    /// What it starts with, as this screen opened: a change offers Restart Now.
+    private let startedWith: VirtualMac
+    let start: (VirtualMac) -> Void
     @State private var confirmDelete = false
+    @State private var confirmRestart = false
     @State private var movingExport = false
-    @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
 
-    init(mac: VirtualMac) { _mac = State(initialValue: mac) }
+    init(mac: VirtualMac, start: @escaping (VirtualMac) -> Void) {
+        _mac = State(initialValue: mac)
+        startedWith = mac
+        self.start = start
+    }
+
+    /// Settings the Mac only takes when it starts.
+    private var startChanged: Bool {
+        mac.ramMB != startedWith.ramMB || mac.cpus != startedWith.cpus || mac.preset != startedWith.preset
+            || mac.reportHostIdentity != startedWith.reportHostIdentity || mac.reportHostModelID != startedWith.reportHostModelID
+    }
+
+    /// A saved Mac to restart, and JIT on to start it.
+    private var canRestart: Bool { startChanged && JITBootstrap.ready && InstantResume.hasSave(for: mac) }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                DeskHeading("Name")
-                TextField("Name", text: $mac.name)
-                    .font(.system(size: 16))
-                    .submitLabel(.done)
-                    .padding(.horizontal, 17)
-                    .padding(.vertical, 14)
-                    .deskCard()
-                    .onSubmit(save)
-
-                DeskHeading("Memory")
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("\(mac.ramMB / 1024) GB").font(.system(size: 26, weight: .bold))
-                        Spacer()
-                        Text(Entitlements.increasedMemory ? "Outside the app's limit once JIT is on" : "Used from free storage if needed")
-                            .font(.system(size: 13)).foregroundStyle(Desk.dim).multilineTextAlignment(.trailing)
-                    }
-                    Stepper("Memory", value: Binding(get: { mac.ramMB / 1024 }, set: { mac.ramMB = $0 * 1024; save() }), in: Device.memoryChoices)
-                        .font(.system(size: 16))
-                    if let note = Device.memoryNote(mac.ramMB / 1024) {
-                        Text(note).font(.system(size: 13)).foregroundStyle(Desk.dim)
-                    }
+        Form {
+            Group {
+                Section("Name") {
+                    TextField("Name", text: $mac.name)
+                        .submitLabel(.done)
+                        .onSubmit(save)
                 }
-                .padding(17)
-                .deskCard()
-
-                DeskHeading("Processors")
-                Stepper(value: $cpus, in: 1...6) {
-                    HStack {
-                        Text("CPUs").font(.system(size: 16))
-                        Spacer()
-                        Text("\(cpus)").font(.system(size: 16, weight: .semibold))
-                    }
-                }
-                .padding(.horizontal, 17)
-                .padding(.vertical, 10)
-                .deskCard()
-
-                DeskHeading("About This Mac")
-                VStack(alignment: .leading, spacing: 12) {
-                    Toggle(isOn: Binding(get: { mac.reportHostIdentity ?? false }, set: {
-                        mac.reportHostIdentity = $0
-                        if !$0 { mac.reportHostModelID = false }
-                        save()
-                    })) {
-                        Text("Report this \(Device.name)").font(.system(size: 16))
-                    }
-                    Text("The Mac says it is \(Device.marketingName)\(Device.chipName.map { " with the \($0) chip" } ?? ""). Changes apply the next time this Mac starts.")
-                        .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                    if mac.reportHostIdentity == true {
-                        Toggle(isOn: Binding(get: { mac.reportHostModelID ?? false }, set: { mac.reportHostModelID = $0; save() })) {
-                            Text("Also report a model identifier").font(.system(size: 16))
-                        }
-                        Text("Reports \(Device.snappedModelIdentifier(forOS: mac.osName)) so this Mac shows a matching icon; the name stays \(Device.marketingName). Snaps to the newest \(Device.name) this macOS recognises. Experimental: macOS keys some hardware decisions off the model.")
-                            .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                    }
-                }
-                .padding(17)
-                .deskCard()
-
                 ScreenSettings(mac: $mac, save: save)
-
-                DeskHeading("Storage")
-                VStack(spacing: 11) {
-                    HStack {
-                        Text("\(ByteText.string(UInt64(max(mac.bytesUsed, 0)))) used").font(.system(size: 16))
-                        Spacer()
-                        Text("of \(ByteText.string(UInt64(max(mac.diskBytes, 0))))").font(.system(size: 16)).foregroundStyle(Desk.dim)
+                memory
+                Section("Processors") {
+                    Stepper(value: Binding(get: { mac.cpus }, set: { mac.cpuCount = $0; save() }), in: DeviceProfile.cpuChoices) {
+                        LabeledContent("CPUs", value: "\(mac.cpus)")
                     }
-                    DeskBar(fraction: Double(mac.bytesUsed) / Double(max(mac.diskBytes, 1)))
                 }
-                .padding(17)
-                .deskCard()
-
-                DeskHeading("Manage")
+                about
+                if canRestart {
+                    Section {
+                        Button("Restart Now") { confirmRestart = true }
+                    }
+                }
+                storage
                 manage
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 24)
-            .deskColumn()
+            .listRowBackground(Desk.card)
         }
-        .background(Desk.page)
+        .deskForm()
         .navigationTitle(mac.name)
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear(perform: save)
@@ -113,53 +72,92 @@ struct MacSettingsView: View {
         } message: {
             Text("Its disk is removed from this \(Device.name).")
         }
+        .confirmationDialog("Restart \(mac.name)?", isPresented: $confirmRestart, titleVisibility: .visible) {
+            Button("Restart", role: .destructive) {
+                save()
+                InstantResume.discard(for: mac)
+                dismiss()
+                start(mac)
+            }
+        } message: {
+            Text("It starts afresh; what was open and not saved on it is lost.")
+        }
+    }
+
+    private var memory: some View {
+        let choices = Device.memoryChoices
+        let gb = min(max(mac.ramMB / 1024, choices.lowerBound), choices.upperBound)
+        let cap = Device.profile.guestCapMB == nil ? nil : "Up to \(choices.upperBound) GB starts on this \(Device.name)."
+        let note = [cap, Device.memoryNote(gb)].compactMap { $0 }.joined(separator: " ")
+        return Section {
+            Stepper(value: Binding(get: { gb }, set: { mac.ramMB = $0 * 1024; save() }), in: choices) {
+                LabeledContent("Memory", value: "\(gb) GB")
+            }
+        } header: {
+            Text("Memory")
+        } footer: {
+            if !note.isEmpty { Text(note) }
+        }
+    }
+
+    private var about: some View {
+        Section {
+            Toggle("Report This \(Device.name)", isOn: Binding(get: { mac.reportHostIdentity ?? false }, set: {
+                mac.reportHostIdentity = $0
+                if !$0 { mac.reportHostModelID = false }
+                save()
+            }))
+            if mac.reportHostIdentity == true {
+                Toggle("Report a Model Identifier", isOn: Binding(get: { mac.reportHostModelID ?? false }, set: { mac.reportHostModelID = $0; save() }))
+            }
+        } header: {
+            Text("About This Mac")
+        } footer: {
+            Text((mac.reportHostIdentity == true
+                  ? "The Mac says it is \(Device.marketingName)\(Device.chipName.map { " with the \($0) chip" } ?? "")."
+                    + (mac.reportHostModelID == true ? " \(Device.snappedModelIdentifier(forOS: mac.osName)) gives a matching icon; experimental, as macOS keys some hardware decisions off the model." : "")
+                    + "\n\n"
+                  : "")
+                 + "Applies the next time this Mac starts.")
+        }
+    }
+
+    private var storage: some View {
+        Section("Storage") {
+            VStack(spacing: 8) {
+                LabeledContent("\(ByteText.string(UInt64(max(mac.bytesUsed, 0)))) used",
+                               value: "of \(ByteText.string(UInt64(max(mac.diskBytes, 0))))")
+                DeskBar(fraction: Double(max(mac.bytesUsed, 0)) / Double(max(mac.diskBytes, 1)))
+            }
+            .padding(.vertical, 4)
+        }
     }
 
     private var manage: some View {
-        VStack(spacing: 0) {
+        Section {
             if let name = machines.exporting {
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("Exporting \(name)… keep Henge open").font(.system(size: 15))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Exporting \(name)… keep Solstice open")
                     DeskBar(fraction: machines.exported)
                 }
-                .padding(17)
             } else {
-                row("Export", symbol: "square.and.arrow.up", tint: Desk.accentLight) { machines.export(mac) }
+                Button { machines.export(mac) } label: { Label("Export", systemImage: "square.and.arrow.up") }
             }
             if let folder = machines.lastExport {
-                divider
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Saved in Files, under Henge, Exports, \(folder.lastPathComponent). Deleting Henge deletes it too, so move it somewhere else first.")
-                        .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                    Button("Move Out of Henge…") { movingExport = true }
-                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(Desk.accentLight)
+                    Text("Saved in Files > On My \(Device.name) > Solstice > Exports > \(folder.lastPathComponent). Deleting Solstice deletes it too.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Move Out of Solstice…") { movingExport = true }
                 }
-                .padding(17)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            divider
-            row("Delete this Mac", symbol: nil, tint: Desk.bad) { confirmDelete = true }
-        }
-        .deskCard()
-    }
-
-    private var divider: some View { Rectangle().fill(Desk.hairline).frame(height: 0.5) }
-
-    private func row(_ title: String, symbol: String?, tint: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack {
-                Text(title).font(.system(size: 16)).foregroundStyle(tint)
-                Spacer()
-                if let symbol { Image(systemName: symbol).foregroundStyle(tint) }
-            }
-            .padding(.horizontal, 17)
-            .padding(.vertical, 14)
-            .contentShape(Rectangle())
+            Button("Delete This Mac", role: .destructive) { confirmDelete = true }
+        } header: {
+            Text("Manage")
         }
     }
 
     private func save() {
-        if mac.name.isEmpty { mac.name = "Mac" }
+        if mac.name.trimmingCharacters(in: .whitespaces).isEmpty { mac.name = "Mac" }
         machines.update(mac)
     }
 }

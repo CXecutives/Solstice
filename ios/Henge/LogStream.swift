@@ -7,7 +7,7 @@ import UIKit
 /// Sends the log to a computer on the same network, line by line, so a session can be watched
 /// live instead of copied off the device afterwards.
 ///
-/// The app is the client: `tools/solstice-log-listen.py` listens on the computer, prints what
+/// The app is the client: `tools/henge-log-listen.py` listens on the computer, prints what
 /// arrives and appends it to a file. Lines are queued while the computer is away, and the queue
 /// is bounded, so a session that runs for hours without a listener cannot grow without limit.
 /// Plain TCP: each line goes out with the app's container path and host names taken out (LogPrivacy), and a computer
@@ -15,10 +15,6 @@ import UIKit
 final class LogStream: ObservableObject {
     static let shared = LogStream()
 
-    static let enabledKey = "solstice.logstream.enabled"
-    static let hostKey = "solstice.logstream.host"
-    static let portKey = "solstice.logstream.port"
-    static let defaultPort = 7777
 
     enum State: Equatable {
         case off
@@ -44,7 +40,7 @@ final class LogStream: ObservableObject {
     /// Lines per send. Enough to keep up with a boot's flood, small enough not to stall.
     private static let batchLimit = 256
 
-    private let queue = DispatchQueue(label: "com.solstice.logstream")
+    private let queue = DispatchQueue(label: "com.henge.logstream")
     private let lock = NSLock()
 
     // Guarded by `lock`: what the settings say and what is waiting to go out.
@@ -87,10 +83,10 @@ final class LogStream: ObservableObject {
     /// setting changes; safe from any thread.
     func applySettings() {
         let d = UserDefaults.standard
-        let on = d.bool(forKey: Self.enabledKey)
-        let host = (d.string(forKey: Self.hostKey) ?? "").trimmingCharacters(in: .whitespaces)
-        let raw = d.integer(forKey: Self.portKey)
-        let port = raw > 0 && raw < 65_536 ? UInt16(raw) : UInt16(Self.defaultPort)
+        let on = d.bool(forKey: SettingKey.logStreamOn.rawValue)
+        let host = (d.string(forKey: SettingKey.logStreamHost.rawValue) ?? "").trimmingCharacters(in: .whitespaces)
+        let raw = d.integer(forKey: SettingKey.logStreamPort.rawValue)
+        let port = raw > 0 && raw < 65_536 ? UInt16(raw) : UInt16(SettingDefault.logStreamPort)
         lock.lock()
         enabled = on && !host.isEmpty
         let want = enabled ? Target(host: host, port: port) : nil
@@ -295,8 +291,8 @@ final class LogStream: ObservableObject {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
         let build = info["CFBundleVersion"] as? String ?? "?"
-        return "---- Solstice log from \(HengeLog.deviceModel) (\(d.systemName) \(d.systemVersion)), "
-             + "Solstice \(version) (\(build)), to \(want.host):\(want.port) ----"
+        return "---- Henge log from \(HengeLog.deviceModel) (\(d.systemName) \(d.systemVersion)), "
+             + "Henge \(version) (\(build)), to \(want.host):\(want.port) ----"
     }
 
     private static func describe(_ error: NWError) -> String {

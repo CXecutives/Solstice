@@ -33,7 +33,7 @@ enum Device {
     /// The size a Mac's screen preset gives here.
     static func macScreen(_ preset: ScreenPreset) -> MacScreen { MacScreen.resolve(preset, screenFacts) }
 
-    /// The refresh rates macOS can be told on this panel (Settings > Performance), and the one without a choice.
+    /// The refresh rates macOS can be told on this panel (Settings > Advanced), and the one without a choice.
     static var refreshChoices: [Int] { DeviceProfile.refreshChoices(panelMax: UIScreen.main.maximumFramesPerSecond) }
     static let defaultRefresh = DeviceProfile.defaultRefresh
 
@@ -46,7 +46,7 @@ enum Device {
         isPad: isPad)
 
     /// How much memory to suggest for a new Mac.
-    static var suggestedRAMGB: Int { profile.ramGB }
+    static var suggestedRAMGB: Int { profile.suggestedGB }
 
     /// The screen a Mac made before presets got here by default (MacScreen.migrate keeps it Recommended).
     static var legacyScreen: (width: Int, height: Int, uiScale: Double?) {
@@ -61,8 +61,8 @@ enum Device {
         return sysctlbyname(name, &value, &size, nil, 0) == 0 ? Int(value) : nil
     }
 
-    /// The choices for a Mac's memory, in GB.
-    static let memoryChoices = 1...16
+    /// The choices for a Mac's memory, in GB: only what boots on this device (DeviceProfile).
+    static var memoryChoices: ClosedRange<Int> { profile.memoryChoicesGB }
 
     /// What a choice risks on this device, if anything. An install always gets at least 2 GB (Installer.install).
     static func memoryNote(_ gb: Int) -> String? {

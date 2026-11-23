@@ -14,7 +14,6 @@ enum KeyLayout: String, CaseIterable, Identifiable {
     case us
     case german
 
-    static let key = "henge.keyboard.layout"
 
     var id: String { rawValue }
 

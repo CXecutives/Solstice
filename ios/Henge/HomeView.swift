@@ -41,7 +41,7 @@ struct HomeView: View {
             }
             .background(Desk.page)
             .navigationTitle(Brand.name)
-            .navigationDestination(for: VirtualMac.self) { MacSettingsView(mac: $0) }
+            .navigationDestination(for: VirtualMac.self) { MacSettingsView(mac: $0) { running = $0 } }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -157,7 +157,6 @@ private struct MacHero: View {
     let start: () -> Void
     let turnOnJIT: () -> Void
     let jitNote: String?
-    @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
 
     var body: some View {
         VStack(spacing: 0) {
@@ -177,7 +176,7 @@ private struct MacHero: View {
                     }
                     .padding(.top, 15)
                     .padding(.horizontal, 5)
-                    Text("\(mac.summary) · \(cpus) CPUs")
+                    Text("\(mac.summary) · \(mac.cpus) CPUs")
                         .font(.system(size: 15))
                         .foregroundStyle(Desk.dim)
                         .frame(maxWidth: .infinity, alignment: .leading)

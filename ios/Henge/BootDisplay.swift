@@ -17,8 +17,7 @@ struct BootDisplay: View {
     @State private var image: CGImage?
     @State private var gpuLive = false
     @State private var stopped = false
-    @AppStorage("henge.matchScreenColors") private var matchScreenColors = true
-    @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
+    @AppStorage(SettingKey.screenBrightness.rawValue) private var screenBrightness = SettingDefault.screenBrightness
 
     var body: some View {
         ZStack {
@@ -40,7 +39,7 @@ struct BootDisplay: View {
                     }
                 }
                 GPUScreen(display: display, role: role, surface: surface, cornerRadius: cornerRadius,
-                          matchScreenColors: matchScreenColors, brightness: screenBrightness)
+                          brightness: screenBrightness)
                     .allowsHitTesting(false)
             }
         }
@@ -110,7 +109,6 @@ private struct GPUScreen: UIViewRepresentable {
     let role: DisplayTargetSelection.Role
     let surface: UUID
     let cornerRadius: CGFloat
-    let matchScreenColors: Bool
     let brightness: Double
     private static let srgb = CGColorSpace(name: CGColorSpace.sRGB)
 
@@ -178,9 +176,8 @@ private struct GPUScreen: UIViewRepresentable {
 
     @MainActor private func setColorSpace(_ view: Screen) {
         let metalLayer = view.layer as! CAMetalLayer
-        // The guest's display profile is sRGB, and the presenter writes sRGB
-        // values. A nil colorspace skips matching on wide-gamut iPad screens.
-        metalLayer.colorspace = matchScreenColors ? Self.srgb : nil
+        // The guest's display profile is sRGB, and the presenter writes sRGB values: matched on every panel.
+        metalLayer.colorspace = Self.srgb
         // Brightness: the engine reads henge.display.brightness and dims the frame as it draws it (an opaque
         // layer needs no blending by the system compositor, where a dimmed view did). A change draws it again.
         if view.shownBrightness == nil {
