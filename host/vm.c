@@ -500,6 +500,14 @@ int hv_vm_pause_clean(void) { return hv_vm_paused() && pause_clean; }
 /* Where the guest's counter goes on from after a pause or a restore: as much later as the wall clock moved meanwhile, so
    its clock is right at once (macOS then also checks it with the network) -- the counter on a host (an iPhone asleep)
    stops for longer than the wall clock does. A jump of 10 minutes was seen to do no harm beyond what a Mac left alone
+int hv_vm_trim(void) {
+    pthread_mutex_lock(&pause_mu);
+    int paused = pause_state == 2; /* its CPU threads have ended (hv_vm_finish_pause) */
+    int r = paused ? hv_machine_trim(&m) : -1;
+    pthread_mutex_unlock(&pause_mu);
+    return r;
+}
+
    that long does (its display goes off for being idle: hv_vm_start nudges the pointer after it). HV_RESUME_CLOCK=
    continuous: no time passes for the guest at all (its clock is then behind until macOS sets it, which can be hours). */
 uint64_t hv_vm_resume_counter(uint64_t counter, int64_t wall_ns) {

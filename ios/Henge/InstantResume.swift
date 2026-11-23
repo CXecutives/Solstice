@@ -43,7 +43,9 @@ enum InstantResume {
     }
 
     /// Henge stopped being active (the app switcher, a call, Control Center, going home): stop the Mac where it is
-    /// while the GPU is still Henge's, so what only the GPU holds goes back into the Mac's memory.
+    /// while the GPU is still Henge's, so what only the GPU holds goes back into the Mac's memory. At once, so without
+    /// rest()'s balloon first (the guest needs seconds for it, and Henge may be in the background, its GPU gone, by
+    /// then); suspend() gives the engine's memory back instead, and a saved Mac loses nothing if iOS closes Henge.
     static func pause() {
         guard enabled, henge_vm_state() == 1 else { return }
         queue.async {
@@ -73,7 +75,17 @@ enum InstantResume {
             var buffer = [CChar](repeating: 0, count: 256)
             let rc = henge_vm_pause(&buffer, buffer.count)
             HengeLog.log("keepalive", rc == 0 ? "the Mac waits, paused, while Henge is in the background" : "the Mac was not paused: \(String(cString: buffer))")
+            if rc == 0 { trim() }
         }
+    }
+
+    /// Paused in the background: the translated code is dropped and the engine's tables go back to iOS (hv_vm_trim),
+    /// so the waiting Mac costs only its own memory; it translates again once it runs on. On the queue.
+    private static func trim() {
+        let before = henge_available_memory(), t0 = Date()
+        let rc = henge_vm_trim()
+        let freed = Int64(henge_available_memory()) - Int64(before)
+        HengeLog.log("memory", rc == 0 ? "paused: the engine gave back \(max(freed, 0) >> 20) MB in \(Int(Date().timeIntervalSince(t0) * 1000)) ms" : "paused, but the engine's tables were not given back")
     }
 
     /// Henge is in the background: write the paused Mac out, in case iOS closes Henge. It stays paused.
@@ -95,6 +107,7 @@ enum InstantResume {
             var buffer = [CChar](repeating: 0, count: 256)
             /* Paused already, unless Henge went straight to the background. */
             var rc = henge_vm_state() == 4 ? 0 : henge_vm_pause(&buffer, buffer.count)
+            if rc == 0 { trim() } // before the save: its buffers then meet the memory the engine had
             if rc == 0 { rc = henge_vm_save(path, id, &buffer, buffer.count) }
             let took = String(format: "%.1f", Date().timeIntervalSince(t0))
             if rc == 0 {
