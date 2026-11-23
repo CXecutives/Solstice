@@ -87,6 +87,7 @@ final class SessionController: ObservableObject {
         henge_vm_set_display(UInt32(screen.pixels.width), UInt32(screen.pixels.height))
         henge_vm_set_display_mm(UInt32(screen.mm?.width ?? 0), UInt32(screen.mm?.height ?? 0))
         HengeLog.log("session", "screen \(mac.preset.rawValue) \(screen.pixels.width)x\(screen.pixels.height) mm \(screen.mm.map { "\($0.width)x\($0.height)" } ?? "none") shown at \(String(format: "%.3f", screen.factor))x")
+        henge_vm_set_keyboard_iso(KeyLayout.current.isISO ? 1 : 0) // the Mac reads its keyboard's kind as it starts
         if mac.reportHostIdentity == true {
             let modelID = Device.snappedModelIdentifier(forOS: mac.osName)
             henge_vm_set_identity(Device.chipName, Device.marketingName,

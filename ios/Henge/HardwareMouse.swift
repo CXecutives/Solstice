@@ -3,12 +3,24 @@ import GameController
 
 /// A Magic Keyboard's trackpad or a mouse, while a Mac is running. GameController gives the raw motion,
 /// which macOS then accelerates as it would for its own mouse.
+///
+/// GameController calls on `queue`, a queue of its own at user-interactive priority, so the pointer doesn't
+/// wait for the main thread's drawing and layout. Everything here but `start`, `stop` and `releaseButtons`
+/// (main thread, which hand over to the queue) runs on it.
 final class HardwareMouse {
     static let shared = HardwareMouse()
     static let speedKey = "henge.mouse.speed"
     static let reverseKey = "henge.mouse.reverse"
     static let scrollSpeedKey = "henge.mouse.scrollSpeed"
+    static let defaultScrollSpeed = 0.3
 
+    /// The Scroll speed setting as a factor, 1 at the default: how much faster than the Mac's own scrolling.
+    static func scrollFactor(_ speed: Double) -> CGFloat {
+        CGFloat((speed.isFinite ? min(max(speed, 0.1), 1.5) : defaultScrollSpeed) / defaultScrollSpeed)
+    }
+
+    private let queue = DispatchQueue(label: "henge.mouse", qos: .userInteractive)
+    private var scrollScale: Float = 1 // scrollFactor of the setting, read when it changes rather than per event
     private var observers: [NSObjectProtocol] = []
     private var mice: [GCMouse] = []
     private var buttons = PhysicalMouseButtons(swapsRightAndMiddle: false)
@@ -29,19 +41,28 @@ final class HardwareMouse {
     private static let undoWindow: CFTimeInterval = 0.06
     private static let undoLimit: Int32 = 6   // pixels: more than this before a press was meant
     private static let dragStart: Int32 = 8   // pixels with a button down before it counts as a drag
-    private let scrollFingers = ScrollFingers()
+    private lazy var scrollFingers = ScrollFingers(queue: queue)
 
     func start() {
         let defaults = UserDefaults.standard
-        speed = defaults.object(forKey: Self.speedKey) == nil ? 1 : Float(defaults.double(forKey: Self.speedKey))
-        reverse = defaults.bool(forKey: Self.reverseKey)
+        let speed: Float = defaults.object(forKey: Self.speedKey) == nil ? 1 : Float(defaults.double(forKey: Self.speedKey))
+        let reverse = defaults.bool(forKey: Self.reverseKey)
         releaseButtons()
         let swapButtons = defaults.bool(forKey: PhysicalMouseButtons.swapKey)
-        buttons = PhysicalMouseButtons(swapsRightAndMiddle: swapButtons)
-        buttonsLogged = 0
         HengeLog.log("input", "physical mouse: swap right/middle \(swapButtons ? "on" : "off")")
-        lastScrollFirst = 0
-        lastScrollSecond = 0
+        queue.async {
+            self.speed = speed
+            self.reverse = reverse
+            self.buttons = PhysicalMouseButtons(swapsRightAndMiddle: swapButtons)
+            self.buttonsLogged = 0
+            self.lastScrollFirst = 0
+            self.lastScrollSecond = 0
+        }
+        readScrollSpeed()
+        observers.append(NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.readScrollSpeed()
+        })
+        AbsolutePointer.refresh()
         GCMouse.mice().forEach(attach)
         observers.append(NotificationCenter.default.addObserver(forName: .GCMouseDidConnect, object: nil, queue: .main) { [weak self] note in
             if let mouse = note.object as? GCMouse { self?.attach(mouse) }
@@ -56,14 +77,23 @@ final class HardwareMouse {
             let scene = note.userInfo?[UIPointerLockState.sceneUserInfoKey] as? UIScene
             let locked = scene?.pointerLockState?.isLocked ?? false
             HengeLog.log("input", "pointer lock: \(locked ? "on" : "off")")
+            AbsolutePointer.refresh()
         })
         PointerLock.set(true)
+    }
+
+    /// Main thread: the setting, for the queue.
+    private func readScrollSpeed() {
+        let defaults = UserDefaults.standard
+        let speed = defaults.object(forKey: Self.scrollSpeedKey) == nil ? Self.defaultScrollSpeed : defaults.double(forKey: Self.scrollSpeedKey)
+        let scale = Float(Self.scrollFactor(speed))
+        queue.async { self.scrollScale = scale }
     }
 
     func stop() {
         PointerLock.set(false)
         releaseButtons()
-        scrollFingers.end()
+        queue.async { self.scrollFingers.end() }
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
         for mouse in mice {
@@ -78,17 +108,20 @@ final class HardwareMouse {
     }
 
     func releaseButtons() {
-        for button in buttons.releaseAll() { henge_vm_mouse_button(button, 0) }
-        buttonsDown = 0
-        dragging = false
-        heldSteps.removeAll()
-        heldX = 0
-        heldY = 0
+        queue.async {
+            for button in self.buttons.releaseAll() { henge_vm_mouse_button(button, 0) }
+            self.buttonsDown = 0
+            self.dragging = false
+            self.heldSteps.removeAll()
+            self.heldX = 0
+            self.heldY = 0
+        }
     }
 
     private func attach(_ mouse: GCMouse) {
         guard let input = mouse.mouseInput, !mice.contains(where: { $0 === mouse }) else { return }
         mice.append(mouse)
+        mouse.handlerQueue = queue
         HengeLog.log("input", "mouse: \(mouse.vendorName ?? "?"), right button \(input.rightButton != nil), middle \(input.middleButton != nil)")
         input.mouseMovedHandler = { [weak self] _, dx, dy in self?.moved(dx, dy) }
         input.leftButton.pressedChangedHandler = { [weak self] _, _, pressed in self?.button(0, pressed) }
@@ -100,7 +133,7 @@ final class HardwareMouse {
     /// GameController's Y runs upward. What doesn't make a whole step yet waits for the next move.
     /// While iPadOS won't lock the pointer, the Mac's pointer follows the iPad's (AbsolutePointer) instead.
     private func moved(_ dx: Float, _ dy: Float) {
-        guard !AbsolutePointer.inUse else { return }
+        guard !AbsolutePointer.inUseLately else { return }
         restX += dx * speed
         restY -= dy * speed
         let x = restX.rounded(), y = restY.rounded()
@@ -160,7 +193,7 @@ final class HardwareMouse {
             if buttonsDown == 0 { heldSteps.removeAll(); heldX = 0; heldY = 0; dragging = false }
         }
         henge_vm_mouse_button(guestButton, pressed ? 1 : 0)
-        if !pressed { StickyKeys.shared.releaseAll() }
+        if !pressed { DispatchQueue.main.async { StickyKeys.shared.used() } }
     }
 
     /// GameController puts vertical motion on the first axis and horizontal on the second, as the fingers' travel
@@ -187,14 +220,10 @@ final class HardwareMouse {
             scrollFingers.end()
             return
         }
-        let defaults = UserDefaults.standard
-        let configured = defaults.object(forKey: Self.scrollSpeedKey) == nil
-            ? 0.3 : defaults.double(forKey: Self.scrollSpeedKey)
-        let scale = Float(configured.isFinite ? min(max(configured, 0.1), 1.5) : 0.3)
         // GameController's values are the content's way; fingers on the Mac's pad move the other way.
         let way: Float = reverse ? 1 : -1
         // Sensor units per GameController unit: about 40 at the default speed (0.3).
-        let gain = way * ScrollFingers.unitsPerPoint * scale / 0.3
+        let gain = way * ScrollFingers.unitsPerPoint * scrollScale
         scrollFingers.move(dx: horizontalChanged ? second * gain : 0, dy: verticalChanged ? first * gain : 0)
     }
 }

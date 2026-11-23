@@ -81,6 +81,9 @@ struct SettingsView: View {
                     }
                     .listRowBackground(Desk.card)
                 }
+                TouchSettings()
+                KeyboardSettings()
+                ClipboardSettings()
                 Section("Performance") {
                     if safeMode {
                         LabeledContent("Safe mode", value: "On")

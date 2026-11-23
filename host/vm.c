@@ -672,16 +672,21 @@ void hv_vm_stop(void) {
     hv_machine_halt(&m, HV_HALT_HOST);
 }
 
-/* macOS's virtio mouse driver drops BTN_RIGHT, so the right button is a Control-click, with the right
-   Control. The USB keyboard is read every 10 ms and the click goes over virtio, so Control goes down
-   50 ms before the click and comes up 50 ms after it. The waits run on a serial queue that the pointer's
-   moves and buttons all go through, so they stay in order and the caller (often the main thread) never
-   waits. The guest's right Control and left button each have two owners, and stay down while either holds them. */
+/* The right button is the Mac's own secondary click: two fingers resting on its trackpad and the pad
+   pressed (hv_xhci_secondary_click), which macOS takes as a right click by default. (Its virtio mouse
+   driver drops BTN_RIGHT.) Until the guest has switched the pad to multitouch, a Control-click with the
+   right Control stands in: the USB keyboard is read every 10 ms and the click goes over virtio, so Control
+   goes down 50 ms before the click and comes up 50 ms after it, timed with dispatch_after so nothing on the
+   pointer queue waits. Moves, buttons and the wheel all go through that serial queue, so they stay in order
+   and the caller (often the main thread) never waits. The guest's right Control and left button each have
+   two owners, and stay down while either holds them. */
 #define HID_RIGHT_CONTROL 0xe4
 #define LINUX_KEY_RIGHTCTRL 97
+#define CONTROL_CLICK_LEAD (50 * NSEC_PER_MSEC)
 static os_unfair_lock rctrl_lock = OS_UNFAIR_LOCK_INIT;
 static int rctrl_user, rctrl_click;
 static int left_user, left_click, left_sent; /* only the pointer queue touches these */
+static int right_down, right_native;         /* the same */
 
 static dispatch_queue_t pointer_queue(void) {
     static dispatch_queue_t q;
@@ -696,6 +701,7 @@ static void stop_pointer(void) {
        discard queued input before releasing the keyboard and mouse. */
     dispatch_sync(pointer_queue(), ^{
         left_user = left_click = left_sent = 0;
+        right_down = right_native = 0;
         os_unfair_lock_lock(&rctrl_lock);
         rctrl_user = rctrl_click = 0;
         os_unfair_lock_unlock(&rctrl_lock);
@@ -750,6 +756,21 @@ static void left_update(void) {
     hv_virtio_input_send(board.mouse, HV_EV_SYN, 0, 0);
 }
 
+static void control_click_release(void *ctx) {
+    (void)ctx;
+    if (atomic_load(&input_stopping)) return;
+    rctrl_hold(&rctrl_click, 0);
+}
+
+/* The Control-click's button, CONTROL_CLICK_LEAD after Control went down (or before it comes up). */
+static void control_click_button(void *ctx) {
+    if (atomic_load(&input_stopping)) return;
+    int down = (int)(intptr_t)ctx;
+    left_click = down;
+    left_update();
+    if (!down) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, CONTROL_CLICK_LEAD), pointer_queue(), NULL, control_click_release);
+}
+
 static void button_now(void *ctx) {
     if (atomic_load(&input_stopping)) return;
     intptr_t v = (intptr_t)ctx;
@@ -757,17 +778,16 @@ static void button_now(void *ctx) {
     if (button == 0) {
         left_user = down;
         left_update();
-    } else if (button == 1 && down != left_click) {
-        if (down) {
-            rctrl_hold(&rctrl_click, 1);
-            usleep(50000);
+    } else if (button == 1 && down != right_down) {
+        right_down = down;
+        if (down) right_native = hv_xhci_multitouch(board.usb);
+        if (right_native) {
+            hv_xhci_secondary_click(board.usb, down);
+            return;
         }
-        left_click = down;
-        left_update();
-        if (!down) {
-            usleep(50000);
-            rctrl_hold(&rctrl_click, 0);
-        }
+        if (down) rctrl_hold(&rctrl_click, 1);
+        /* Both ways the same delay, so a quick click's release can't overtake its press. */
+        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, CONTROL_CLICK_LEAD), pointer_queue(), (void *)(intptr_t)down, control_click_button);
     } else if (button == 2) {
         zero_motion();
         hv_virtio_input_send(board.mouse, HV_EV_KEY, HV_BTN_MIDDLE, down);
@@ -819,6 +839,10 @@ void hv_vm_touch_button(int down) { hv_xhci_touch_button(board.usb, down); }
 void hv_vm_pointer_at(double x, double y) {
     hv_xhci_pointer(board.usb, (int)(x * HV_PTR_MAX + 0.5), (int)(y * HV_PTR_MAX + 0.5));
 }
+
+void hv_vm_pointer_buttons(int buttons) { hv_xhci_pointer_buttons(board.usb, buttons); }
+
+void hv_vm_set_keyboard_iso(int iso) { hv_xhci_set_keyboard_iso(iso); }
 
 int hv_vm_pointer(int *x, int *y) {
     HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);

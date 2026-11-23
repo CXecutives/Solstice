@@ -103,6 +103,8 @@ void henge_vm_share(const char *folder, const char *socket_path, const char *age
 void henge_share_set_clipboard(const char *text);
 char *henge_share_take_clipboard(void);
 long henge_share_agent_seen(void);
+/* 1 once the helper in macOS has the clipboard henge_share_set_clipboard gave it. */
+int henge_share_clipboard_taken(void);
 
 /* The size macOS is told its screen is. Before henge_vm_boot. */
 void henge_vm_set_display(uint32_t width, uint32_t height);
@@ -127,6 +129,10 @@ void henge_vm_touch_frame(uint32_t ts_ms); /* commit one frame with every finger
 void henge_vm_touch_button(int down); /* the pad's full press (a click) */
 /* Put the Mac's pointer at x, y, each 0..1 across its screen: for an iPad pointer iPadOS won't lock. */
 void henge_vm_pointer_at(double x, double y);
+/* Its buttons, pressed where it is now: bit 0 left, 1 right, 2 middle. */
+void henge_vm_pointer_buttons(int buttons);
+/* Before boot: the Mac's USB keyboard is an ISO one (1) or ANSI (0), to match its keyboard layout. */
+void henge_vm_set_keyboard_iso(int iso);
 /* Where the guest has its pointer, in display pixels. 0, or -1 before it has one. */
 int henge_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */
