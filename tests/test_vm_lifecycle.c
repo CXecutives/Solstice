@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Real native bridge and device workers; only the debugger allocation and
@@ -222,6 +223,35 @@ int main(void) {
         rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
         check("a changed disk refuses the saved Mac", rc != 0 && strstr(error, "disk has changed") != NULL);
         check("refused, it can start from cold", henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
+        unlink(snap);
+        /* A resume that fails for a reason of the moment (no JIT region, the machine cannot be made, the file cannot be
+           opened now) keeps the save: it is the only copy of what the Mac had in memory. */
+        rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
+        usleep(30000);
+        rc |= henge_vm_suspend(snap, "test", error, sizeof error);
+        henge_vm_stop();
+        check("save for the failed resumes", rc == 0 && access(snap, F_OK) == 0);
+        uint8_t *rw = mapping.rw_addr;
+        mapping.rw_addr = NULL;
+        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        mapping.rw_addr = rw;
+        check("no JIT region: the resume fails and the save stays", rc != 0 && access(snap, F_OK) == 0);
+        char nodisk[300];
+        snprintf(nodisk, sizeof nodisk, "%s/no-disk", dir);
+        rc = henge_vm_resume(rom, nodisk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        check("the machine cannot be made: the resume fails and the save stays", rc != 0 && access(snap, F_OK) == 0);
+        if (geteuid() != 0) { /* root opens it anyway */
+            chmod(snap, 0);
+            rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+            chmod(snap, 0600);
+            check("the file cannot be opened now: the resume fails and the save stays", rc != 0 && access(snap, F_OK) == 0);
+        }
+        check("after failed resumes it can start", henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
+        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        if (rc) fprintf(stderr, "resume after failed ones: %s\n", error);
+        check("the kept save still resumes", rc == 0 && henge_vm_state() == HENGE_VM_RUNNING);
+        henge_vm_stop();
+        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
         unlink(snap);
     }
     /* A device install: when its machine stops, the restore tools let go of its USB port and the machine is
