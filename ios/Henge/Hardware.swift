@@ -34,25 +34,46 @@ enum Device {
         return (Int((Double(s.width) / 264 * 25.4).rounded()), Int((Double(s.height) / 264 * 25.4).rounded()))
     }
 
-    /// A new Mac's starting values on this device: the one table for them, from its memory and its performance cores.
+    /// This device's starting values: the one table for them, from its memory and its performance cores.
     struct MacProfile {
         let ramGB: Int      // what leaves iOS room (GuestMemory.prepare caps it again at boot)
         let cpus: Int       // the guest takes CPUs as equals: more than the P cores + 1 only queue on E cores
         let uiScale: Double? // Size of Things (#215): less for the Mac to draw where the screen is small
         let performanceScreen: Bool
+        /// The code cache with the increased memory limit (JITBootstrap.defaultCodeCacheMB applies the signing).
+        let codeCacheMB: Int
+        /// The system's available memory as jetsam counts it (free and file-backed pages, henge_system_headroom_mb)
+        /// that MemoryRelief keeps the Mac between: under the low mark the Mac hands memory over in 256 MB steps,
+        /// over the high mark it gets it back slowly. From XNU's jetsam levels (bsd/kern/kern_memorystatus.c, the
+        /// fallback table: at most 6 GB idle apps are closed under 9% available and apps warned under 15%, above
+        /// 6 GB under 8% and 12%; 4% is critical; a device's own values may differ, and the log shows each step's
+        /// headroom). The low mark is about where iOS starts closing suspended apps:
+        /// they go before the Mac shrinks, and the Mac is still asked well before critical, where the pressure
+        /// path's 1 GB used to come too late. The high mark sits just over the warning level, which a calm device
+        /// gets back to (so memory handed over does not stay away for good), and more than one step above the low
+        /// mark, so a step either way cannot cross the other mark (no seesaw).
+        let headroomMB: ClosedRange<Int>
     }
 
     static let profile: MacProfile = {
         let mb = Int(ProcessInfo.processInfo.physicalMemory >> 20)
         let pCores = sysctlInt("hw.perflevel0.physicalcpu") ?? 2
-        // 4 GB (iPad Air 4, A14): the least that runs; a 2 GB Mac, and as little else as possible.
-        if mb < 5_000 { return MacProfile(ramGB: 2, cpus: 2, uiScale: 2.0 / 3, performanceScreen: true) }
+        // 4 GB (iPad Air 4, A14): the least that runs; a 2 GB Mac, and as little else as possible: a 384 MB code
+        // cache (its records come to another 200-270 MB).
+        if mb < 5_000 {
+            return MacProfile(ramGB: 2, cpus: 2, uiScale: 2.0 / 3, performanceScreen: true, codeCacheMB: 384,
+                              headroomMB: 340...700)
+        }
         // 8 GB: a 4 GB Mac, its code cache and records left iOS so little that it closed Henge (#214), so 3 GB.
         // A 6 GB device installed a 3 GB Mac too (#70). 16 GB: room for 6.
         let ram = mb >= 14_000 ? 6 : 3
         // iPhone 16 Pro (2 P + 4 E): 3. M-series iPads: 4, or one past the P cores with 16 GB.
         let cpus = pCores <= 2 ? 3 : mb >= 14_000 ? min(pCores + 1, 5) : 4
-        return MacProfile(ramGB: ram, cpus: cpus, uiScale: isPad ? nil : 0.8, performanceScreen: isPad)
+        // 6-8 GB (iPhone 16 Pro): 768 MB of code cache beside a 3 GB Mac. 12-16 GB: 1.5 GB where the signing
+        // allows it, else 1 GB (JITBootstrap).
+        let big = mb >= 9_000
+        return MacProfile(ramGB: ram, cpus: cpus, uiScale: isPad ? nil : 0.8, performanceScreen: isPad,
+                          codeCacheMB: big ? 1536 : 768, headroomMB: big ? 1100...2100 : 600...1100)
     }()
 
     /// How much memory to suggest for a new Mac.

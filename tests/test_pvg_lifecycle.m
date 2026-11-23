@@ -2,7 +2,9 @@
 #import <QuartzCore/CAMetalLayer.h>
 #include "pvg_lite.h"
 #include "vmapple.h"
+#include <mach/mach_time.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -175,8 +177,51 @@ static void test_replay(void) {
     hv_machine_free(&machine);
 }
 
+static int display_named(void) { return hv_pvg_lite_display_page(board.pvg) != NULL; }
+
+/* Several Macs in one launch (#183), each started after the refresh rate was changed in Settings: each is refreshed at
+   the rate its display says (HV_HZ when it starts), not the first one's. The first poll after the guest names its
+   display page starts the refreshes: the next is one period away. */
+static void test_refresh_rate_per_start(void) {
+    const char *was = getenv("HV_HZ");
+    char *saved = was ? strdup(was) : NULL;
+    static const unsigned rates[] = {60, 120, 30};
+    for (int i = 0; i < 3; i++) {
+        char hz[8];
+        snprintf(hz, sizeof hz, "%u", rates[i]);
+        setenv("HV_HZ", hz, 1);
+        HvCfgParams cfg = {.nr_cpus = 2};
+        if (hv_machine_init(&machine, 4 << 20) ||
+            hv_vmapple_create(&board, &machine, cpus, 64 << 20, NULL, NULL, &cfg, NULL)) { failures++; break; }
+        size_t size = hv_pvg_lite_state(board.pvg, NULL, 0);
+        uint8_t *blob = malloc(size);
+        hv_pvg_lite_state(board.pvg, blob, size);
+        long at = find_field(blob, size, 8, (G0 + 20) << 14, display_named);
+        check("display page named", at >= 0, 1);
+        if (at >= 0) {
+            uint64_t pa = (G0 + 20) << 14;
+            memcpy(blob + at, &pa, 8);
+            hv_pvg_lite_set_state(board.pvg, blob, size);
+            hv_pvg_lite_poll(board.pvg);
+            uint64_t period = 24000000ull / rates[i], next = hv_pvg_lite_next_vblank(board.pvg);
+            uint64_t away = next - mach_absolute_time();
+            check("refreshed at this start's rate", away <= period && away > period * 3 / 4, 1);
+            if (!(away <= period && away > period * 3 / 4))
+                printf("  %u Hz: next refresh %llu ticks away, a period is %llu\n", rates[i], (unsigned long long)away,
+                       (unsigned long long)period);
+        }
+        free(blob);
+        hv_vmapple_destroy(&board);
+        hv_machine_free(&machine);
+    }
+    if (saved) setenv("HV_HZ", saved, 1); else unsetenv("HV_HZ");
+    free(saved);
+    puts("refresh rate: 60, 120 and 30 Hz Macs one after the other, each refreshed at its own rate");
+}
+
 int main(void) {
     alarm(60);
+    test_refresh_rate_per_start();
     for (int cycle = 0; cycle < 6; cycle++) @autoreleasepool {
         HvCfgParams cfg = {.nr_cpus = 2};
         if (hv_machine_init(&machine, 4 << 20) ||

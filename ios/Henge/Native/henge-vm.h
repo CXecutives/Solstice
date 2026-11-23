@@ -57,6 +57,11 @@ int henge_vm_exit_outcome(void);
 void henge_vm_stop(void);
 /* Testing: sets a translation knob (core/machine.h) in the running machine; nonzero if it exists. */
 int henge_vm_knob(const char *name, int value);
+/* The power profile (PowerPolicy.swift), live and kept for the Macs started later: 0 normal; 1 or more saving (a
+   serious thermal state or Low Power Mode; 2, critical, is the same here, the app pauses the Mac): an idle CPU sleeps
+   at once (no HV_WFI_SPIN) and at most HV_SAVING_HZ frames a second go to the screen (macOS is still refreshed at its
+   mode's rate). */
+void henge_vm_set_power_profile(int level);
 /* The memory balloon (only with HV_BALLOON set before boot): asks the guest to hand over target_mb (when >= 0)
    and returns how many MB it has handed over, or -1 without a balloon. */
 long henge_vm_balloon(long target_mb);
@@ -122,5 +127,9 @@ uint64_t henge_largest_reservation_gb(void); /* measuring: the biggest PROT_NONE
 uint64_t henge_largest_mapping_mb(void);
 /* Bytes this process may still allocate before jetsam (os_proc_available_memory). */
 size_t henge_available_memory(void);
+/* The whole system's available memory as jetsam counts it (free and file-backed pages: what iOS can hand out without
+   compressing or closing apps), in MB, or -1 if it cannot say. A Mac's RAM is not in Henge's own footprint, so this,
+   not the line above, is what the balloon (MemoryRelief) answers to. */
+long henge_system_headroom_mb(void);
 
 #endif
