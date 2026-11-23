@@ -57,8 +57,10 @@ typedef struct {
 } Ool;
 
 /* Words hv_translate_place fills in once it knows where both parts went: a BL to one of its chunk's trampolines
-   (target: which, TRAMP_*), and a slow-path record's distances (target - record, in words; put_slow_record). */
-enum { DREL_TRAMP, DREL_DATA };
+   (target: which, TRAMP_*), and a slow-path record's distances (target - record, in words; put_slow_record): a whole
+   word, or the resume distance split over two (20 bits: its low 16 in the top half of the word at `at`, its high 4 in
+   the top of the word two on). */
+enum { DREL_TRAMP, DREL_DATA, DREL_RESUME };
 #define MAX_DRELS (5 * MAX_OOL)
 /* Each chunk's trampolines (chunk_take): a slow path's, a branch-cache miss's, a chainable exit's way to its thunk. */
 enum { TRAMP_SLOW, TRAMP_IJC, TRAMP_CHAIN, NTRAMP };
@@ -515,20 +517,22 @@ static void put_helper(Emit *e, uint64_t pc, uint32_t insn, uint32_t op);
 /* A slow path (a load or store's, a group check's, IC IVAU's, DC ZVA's, an EL0 counter read's), in the cold part:
        str  x30, [x28, #x30]
        bl   <the chunk's trampoline>     ; ldr x15, =hv_slow_thunk; br x15 (chunk_take)
-       .quad pc                          ; +0
+       .word pc                          ; +0   bits 31..0
+       .word pc >> 32 | resume << 16     ; +4   pc bits 47..32 (a guest PC is 48 bits, sign-extended); the low 16
+                                         ;      bits of resume: the word after the branch that came here, from the record
        .word insn                        ; +8   a group: the plain copy, words from the record
        .word meta                        ; +12  bit 0 group, 1 refill, 2 write, 4..3 TLB table, 5 recheck, 6 align,
-                                         ;      10..7 (tag offset from T - HV_CPU_TLB) / 8, 23..11 bytes - 1, 27..24 HV_OP_*
+                                         ;      10..7 (tag offset from T - HV_CPU_TLB) / 8, 23..11 bytes - 1, 27..24 HV_OP_*,
+                                         ;      31..28 resume's bits 19..16 (a chunk is 1 MB: 20 bits signed reach)
        .word regs                        ; +16  4..0 address, 9..5 A, 14..10 T, 19..15 U, 25..20 resume - retry,
                                          ;      31..26 join - resume
-       .word resume                      ; +20  the word after the branch that came here, from the record
-   8 words where the code it replaces (a retry branch, the exact recheck, the helper call with its pool entry and
+   7 words where the code it replaces (a retry branch, the exact recheck, the helper call with its pool entry and
    the branch back) took 18. hv_slow_thunk (host/enter.S) does what they did; the BL's return address is the record. */
 static void put_slow_record(Emit *e, const Ool *o) {
     uint32_t resume = o->at + 1, op = o->kind == OOL_SYS ? HV_OP_SYS : o->kind == OOL_MRS ? HV_OP_MRS : HV_OP_MEM;
     int mem = o->kind == OOL_SLOW || o->kind == OOL_GROUP;
     uint32_t back = mem ? resume - o->retry : 0, fwd = o->kind == OOL_GROUP ? 0 : o->join - resume;
-    if (back > 63 || fwd > 63) e->rec_bad = 1;
+    if (back > 63 || fwd > 63 || (uint64_t)((int64_t)(o->pc << 16) >> 16) != o->pc) e->rec_bad = 1;
     uint32_t meta = (o->kind == OOL_GROUP ? 1u : 0) | (uint32_t)(mem && o->refill) << 1 | (uint32_t)o->write << 2 |
                     (uint32_t)(o->table & 3) << 3 | (uint32_t)(mem && o->recheck) << 5 | (uint32_t)o->align << 6 |
                     (o->recheck ? (o->tag_off - HV_CPU_TLB) / 8 & 15 : 0) << 7 | (mem ? (uint32_t)(o->bytes - 1) & 0x1fff : 0) << 11 |
@@ -541,13 +545,12 @@ static void put_slow_record(Emit *e, const Ool *o) {
     put(e, 0x94000000u); /* bl the trampoline */
     uint32_t rec = e->n;
     put(e, (uint32_t)o->pc);
-    put(e, (uint32_t)(o->pc >> 32));
+    put_drel(e, DREL_RESUME, e->n, rec, resume, o->cold);
+    put(e, (uint32_t)(o->pc >> 32) & 0xffff);
     if (o->kind == OOL_GROUP) put_drel(e, DREL_DATA, e->n, rec, e->grp[o->grp].copy_at, e->grp[o->grp].copy_cold);
     put(e, o->kind == OOL_GROUP ? 0 : o->insn);
     put(e, meta);
     put(e, regs);
-    put_drel(e, DREL_DATA, e->n, rec, resume, o->cold);
-    put(e, 0);
     cold_for(e, kind0);
 }
 
@@ -2317,8 +2320,15 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
     uint32_t *base[2] = {dst, e->flat ? dst : cold}, *buf[2] = {e->hot, e->flat ? e->hot : e->cold};
     for (uint32_t k = 0; k < e->ndrel; k++) {
         const DRel *d = &e->drel[k];
-        if (d->kind == DREL_TRAMP) patch_branch(&buf[d->at_cold][d->at], (tramp + 4 * d->target) - (base[d->at_cold] + d->at));
-        else buf[d->at_cold][d->at] = (uint32_t)(int32_t)((base[d->t_cold] + d->target) - (base[d->at_cold] + d->ref));
+        int32_t dist = (int32_t)((base[d->t_cold] + d->target) - (base[d->at_cold] + d->ref));
+        if (d->kind == DREL_TRAMP) {
+            patch_branch(&buf[d->at_cold][d->at], (tramp + 4 * d->target) - (base[d->at_cold] + d->at));
+        } else if (d->kind == DREL_DATA) {
+            buf[d->at_cold][d->at] = (uint32_t)dist;
+        } else { /* within a chunk: |dist| < 2^18 */
+            buf[d->at_cold][d->at] |= (uint32_t)dist << 16;
+            buf[d->at_cold][d->at + 2] |= ((uint32_t)dist >> 16 & 15) << 28;
+        }
     }
     /* Exits in the page to blocks that exist already (or back to this one's
        start) are chained now, in the copy about to be written: no trip through

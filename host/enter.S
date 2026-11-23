@@ -38,6 +38,15 @@
 #define TLB_ADJ 15
 #define IJC_BITS 18
 #define OP_LIGHT_BIT 8            // HV_OP_LIGHT in HvHelperInfo.op (translate.h)
+
+// x0 = a slow-path record's resume distance in words (put_slow_record): its low 16 bits at +6, its high 4 in meta's
+// top (w20). Clobbers x1.
+.macro SLOW_RESUME
+    ldrh w0, [x19, #6]
+    ubfx w1, w20, #28, #4
+    orr w0, w0, w1, lsl #16
+    sbfx x0, x0, #0, #20
+.endm
 #define LIGHT_LEAVE 1             // HV_LIGHT_LEAVE (light.h)
 
     .text
@@ -389,7 +398,7 @@ _hv_slow_thunk:
     sub x0, x0, #TLB_ADJ
     lsr x0, x0, #14
     cbnz x0, 1f
-    ldrsw x0, [x19, #20]
+    SLOW_RESUME
     add x15, x19, x0, lsl #2       // resume (x15 is free there: never A or T)
     b 5f
 1:  mrs x0, nzcv
@@ -413,7 +422,7 @@ _hv_slow_thunk:
     mov x1, x22
     bl _hv_tlb_refill
     cbnz w0, 3f
-    ldrsw x0, [x19, #20]
+    SLOW_RESUME
     ubfx w1, w21, #20, #6
     sub x0, x0, x1
     add x15, x19, x0, lsl #2       // retry
@@ -421,12 +430,13 @@ _hv_slow_thunk:
 3:  tbnz w20, #0, 6f               // a group: its plain copy
     // The helper: {pc, insn, op} where it finds them, guest values in every register.
     ldr x0, [x19]
+    sbfx x0, x0, #0, #48           // the pc (resume's low bits above it)
     str x0, [x28, #CPU_SLOW_INFO]
     ldr w0, [x19, #8]
     str w0, [x28, #CPU_SLOW_INFO + 8]
     ubfx w0, w20, #24, #4
     str w0, [x28, #CPU_SLOW_INFO + 12]
-    ldrsw x0, [x19, #20]
+    SLOW_RESUME
     ubfx w1, w21, #26, #6
     add x0, x0, x1
     add x15, x19, x0, lsl #2       // join
