@@ -16,8 +16,8 @@ typedef struct HvRateMark {
    moves to now. 0 on the first read of a mark, or when no time passed. */
 double hv_stats_blocks_rate(HvMachine *m, HvRateMark *mark, uint64_t now);
 
-/* The stats line (HvMachine.stats_interval): every 4096 dispatcher entries of any CPU, from its dispatcher loop; the
-   CPU that finds it due prints it. */
+/* The stats line, every HvMachine.stats_interval seconds: each CPU's dispatcher loop asks every 4096 of its entries
+   whether it is due, and the CPU that finds it due prints it. */
 void hv_stats_tick(HvCpu *cpu);
 /* Set by the host: more lines for the stats, from the devices' data paths (network, sound), over `seconds`. */
 extern void (*hv_stats_io)(double seconds);

@@ -5,7 +5,10 @@
 // full flushes and the stats line in between in one of the runs, and the phone's sleeping TLBI waits in another. Every
 // run's x0 must be the native run's, and the cache must have gone round hundreds of times.
 #include "harness.h"
+#include "light.h"
+#include "mmu.h"
 #include "stats.h"
+#include "translate.h"
 
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -16,6 +19,7 @@ DECLARE_PROGRAM(ccstress);
 extern const char codecache_programs_begin[], codecache_programs_finish[];
 
 #define ROUNDS 2 /* per run: each CPU starts over often (parked in between) */
+#define STATS_EVERY 2 /* s: the stats line's interval (HvMachine.stats_interval) in the runs with it */
 
 static const TestProgram prog = TEST_PROGRAM(ccstress);
 static HvMachine m;
@@ -73,7 +77,7 @@ static double now_s(void) {
 
 enum {
     RUN_CHANGES = 1,   /* code changes from another thread, and two full flushes */
-    RUN_STATS = 2,     /* the stats line every 2 s (its counters and the code-cache line) */
+    RUN_STATS = 2,     /* the stats line every STATS_EVERY s (its counters and the code-cache line) */
     RUN_SYNC_WAIT = 4, /* TLBI waits asleep, as on the phone (HV_SYNC_WAIT=1) */
     RUN_NO_CPU0 = 8,   /* the CPUs are 1.. (CPU 0 never runs: the stats line must come all the same) */
     RUN_ROOMY = 16,    /* nothing is evicted (the reference for how much is translated again) */
@@ -90,7 +94,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         return 1;
     }
     int changes = opts & RUN_CHANGES, sync_wait = hv_knob[HV_K_SYNCWAIT];
-    if (opts & RUN_STATS) m.stats_interval = 2;
+    if (opts & RUN_STATS) m.stats_interval = STATS_EVERY;
     if (opts & RUN_SYNC_WAIT) hv_knob[HV_K_SYNCWAIT] = 1;
     hv_machine_add_ram(&m, (uint64_t)(uintptr_t)codecache_programs_begin, codecache_programs_finish - codecache_programs_begin,
                        (void *)codecache_programs_begin, 1);
@@ -132,6 +136,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     uint64_t nchanges = 0;
     if (changes) pthread_create(&changer, &attr, code_changer, &nchanges);
     uint64_t lines0 = hv_stats_lines;
+    HvXlateCounts xc0 = hv_xlate_counts;
     HvRateMark mark = {0};
     double rate0 = hv_stats_blocks_rate(&m, &mark, mach_absolute_time());
     double t0 = now_s(), laps = 0;
@@ -174,9 +179,15 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
            (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3, (unsigned long long)tot.cc_tenured,
            (unsigned long long)cc->stale, (unsigned long long)cc->check_bad, (unsigned long long)tot.block_flushes,
            (unsigned long long)tot.flush_full, (unsigned long long)nchanges);
-    printf("%s: branch caches caught up: %llu scanned (%.0f ms, %llu entries dropped), %llu reset\n", name,
-           (unsigned long long)cc->ijc_scans, (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped,
-           (unsigned long long)cc->ijc_resets);
+    printf("%s: branch caches caught up: %llu scanned (%llu passes over the tables, %llu scans more than one epoch "
+           "behind; %.0f ms, %.2f ms a scan, %llu entries dropped), %llu reset\n", name,
+           (unsigned long long)cc->ijc_scans, (unsigned long long)cc->ijc_passes, (unsigned long long)cc->ijc_behind,
+           (double)cc->ijc_scan_ticks / 24e3, (double)cc->ijc_scan_ticks / 24e3 / ((double)cc->ijc_scans + 1e-9),
+           (unsigned long long)cc->ijc_dropped, (unsigned long long)cc->ijc_resets);
+    /* However many epochs behind a CPU is, it reads its tables once. */
+    if (cc->ijc_passes != cc->ijc_scans)
+        printf("%s: %llu passes over the branch caches for %llu scans: FAIL\n", name, (unsigned long long)cc->ijc_passes,
+               (unsigned long long)cc->ijc_scans), failed++;
     last_translations = tot.translations, last_runs = runs, last_chances = cc->second_chances;
     /* (Entries into the segment there may be none: one CPU, few branches.) */
     if (!(opts & RUN_ROOMY) && !cc->ijc_scans) printf("%s: no branch cache caught up by a scan: FAIL\n", name), failed++;
@@ -189,13 +200,19 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         printf("%s: blocks/s since the mark %.0f (first read %.0f), %.0f entered in %.1f s: FAIL\n", name, rate, rate0,
                (double)tot.blocks, secs), failed++;
     if (opts & RUN_STATS) {
-        /* Every guest instruction takes some words: the count must be the blocks' own code (it was the region's
-           extent, which goes back down as segments are reused). And a line every 2 s, whichever CPUs run. */
+        /* The words per translated instruction must be the blocks' own code (it was the region's extent, which goes
+           back down as segments are reused), with instructions and words counted for the same translations (the
+           instructions were counted for translations then dropped too): as the translator's own totals say, within 1%.
+           And a line every stats_interval seconds, whichever CPUs run. */
         double wpi = (double)tot.translated_words / ((double)tot.translated_insns + 1e-9);
+        double xw = (double)(hv_xlate_counts.hot - xc0.hot + hv_xlate_counts.cold - xc0.cold + hv_xlate_counts.pool - xc0.pool);
+        double xwpi = xw / ((double)(hv_xlate_counts.insns - xc0.insns) + 1e-9);
         uint64_t lines = hv_stats_lines - lines0;
-        printf("%s: %llu stats lines, %.1f words per translated instruction\n", name, (unsigned long long)lines, wpi);
-        if (wpi < 2) printf("%s: %.2f words per translated instruction: FAIL\n", name, wpi), failed++;
-        if ((double)lines + 2 < secs / 2) printf("%s: %llu stats lines in %.1f s: FAIL\n", name, (unsigned long long)lines, secs), failed++;
+        printf("%s: %llu stats lines, %.2f words per translated instruction (the translator's totals: %.2f)\n", name,
+               (unsigned long long)lines, wpi, xwpi);
+        if (!(wpi > 0.99 * xwpi && wpi < 1.01 * xwpi))
+            printf("%s: %.2f words per translated instruction, the translator's totals %.2f: FAIL\n", name, wpi, xwpi), failed++;
+        if ((double)lines + 2 < secs / m.stats_interval) printf("%s: %llu stats lines in %.1f s: FAIL\n", name, (unsigned long long)lines, secs), failed++;
     }
     if (tot.flush_full) printf("%s: full flushes for room: FAIL\n", name), failed++;
     if (tot.block_flushes > (uint64_t)flushes_asked) /* (one asked for just before the end may not have run) */
@@ -207,10 +224,61 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     return failed;
 }
 
+/* Hot code that runs only chained and through branch caches never reaches the dispatcher's lookups: what marks its
+   segment as in use (the second chance) are the light paths into it, a branch-cache miss resolved without the
+   dispatcher (hv_ijc_resolve) and the return into code an exception stopped (hv_resume). Without them a tenured segment
+   of such code went before one of code the dispatcher sees at every exit. */
+static int light_marks(void) {
+    setenv("HV_JIT_CAP", "32", 1); /* segments, and room for the whole program */
+    if (hv_machine_init(&m, 32 << 20) != 0) return printf("light marks: machine init failed: FAIL\n"), 1;
+    hv_machine_add_ram(&m, (uint64_t)(uintptr_t)codecache_programs_begin, codecache_programs_finish - codecache_programs_begin,
+                       (void *)codecache_programs_begin, 1);
+    uint8_t *stack = aligned_alloc(16384, 65536);
+    hv_machine_add_ram(&m, (uint64_t)(uintptr_t)stack, 65536, stack, 0);
+    m.stop_pc = (uint64_t)(uintptr_t)prog.end;
+    HvCpu *cpu = aligned_alloc(16384, (sizeof(HvCpu) + 16383) & ~(size_t)16383);
+    memset(cpu, 0, sizeof *cpu);
+    hv_cpu_reset_index(cpu, &m, 0);
+    seed_cpu(cpu, 1, (uint64_t)(uintptr_t)stack + 16384);
+    cpu->x[20] = 0; /* no TLBIs: at EL0, where the branch caches take these low (user) addresses */
+    cpu->x[21] = 1;
+    cpu->el = 0;
+    cpu->spsel = 0;
+    cpu->cpacr_el1 = 3u << 20;
+    cpu->pc = (uint64_t)(uintptr_t)prog.start;
+    int failed = 0, r = hv_run(cpu);
+    if (r != HV_EXIT_HALT || m.cc.nseg < 2) {
+        printf("light marks: run ended %d, %u segments: FAIL\n", r, m.cc.nseg);
+        failed++;
+    }
+    uint64_t va = (uint64_t)(uintptr_t)prog.start;
+    uint32_t flags = hv_block_flags(cpu);
+    for (int way = 0; way < 2 && !failed; way++) {
+        memset(m.cc.used, 0, sizeof m.cc.used);
+        cpu->pc = va;
+        uintptr_t code = way ? hv_resume(cpu) : (uintptr_t)hv_ijc_resolve(cpu, va, flags);
+        const char *what = way ? "a return from an exception (hv_resume)" : "a light branch-cache fill (hv_ijc_resolve)";
+        if (!code) {
+            printf("light marks: %s found no code: FAIL\n", what);
+            failed++;
+            break;
+        }
+        uint32_t s = (uint32_t)((((code & ~(uintptr_t)3) - (uintptr_t)m.jit.base) >> 2) >> m.cc.seg_shift);
+        int marked = s < m.cc.nseg && m.cc.used[s];
+        printf("light marks: %s into segment %u: %s\n", what, s, marked ? "marked in use" : "not marked: FAIL");
+        failed += !marked;
+    }
+    free(cpu);
+    hv_machine_free(&m);
+    free(stack);
+    return failed;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setenv("HV_JIT_POISON", "1", 1); /* read once, at the first machine */
     int failed = 0;
+    failed += light_marks();
     /* Each about 300 times round the cache (at least 100), at most a minute. */
     failed += run("1 cpu, 2 MB", 2, 1, 0, 100, 300, 60);
     failed += run("3 cpus, 2 MB, code changes, full flushes, stats", 2, 3, RUN_CHANGES | RUN_STATS, 100, 300, 60);

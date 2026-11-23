@@ -98,7 +98,7 @@ typedef struct {
     uint32_t nrel;
     DRel drel[MAX_DRELS];
     uint32_t ndrel;
-    int rec_bad;        /* a record's distance did not fit (cannot happen: see put_slow_record) */
+    int rec_bad;        /* a record's distance or PC did not fit (cannot happen: see put_slow_record) */
     uint32_t nhot, ncold; /* the finished block's parts in words, ncold with the pool */
     uint64_t pool[MAX_LITS];
     uint32_t npool;
@@ -129,6 +129,7 @@ typedef struct {
     int overflow;
     uint8_t cold_kind;                  /* what the cold words written now are for (HV_COLD_*) */
     uint32_t cold_words[HV_COLD_KINDS];
+    uint32_t words_inline, words_ool;   /* the block's code by part, for the stats at its publish */
 } Emit;
 
 static __thread Emit E; /* each CPU translates on its own thread, outside the translation lock */
@@ -2123,8 +2124,9 @@ int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t a
         hv_translate_discard_slots(m);
     }
     int r = translate_emit(m, b, code, avail, 1, 0);
-    /* -2: a slow path's record could not say how far its retry or join is. That cannot happen (put_slow_record),
-       but if it did, every access through the helper is slow and right, where failing would flush for ever. */
+    /* -2: a slow path's record could not say how far its retry or join is, or hold its PC (one that is not a
+       sign-extended 48-bit value). Neither happens for code a 48-bit address space runs (put_slow_record), but if it
+       did, every access through the helper is slow and right, where failing would flush for ever. */
     if (r == -2) {
         hv_translate_discard_slots(m);
         r = translate_emit(m, b, code, avail, 1, 1);
@@ -2202,13 +2204,8 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     if (!e->nogroup && e->ngrp && emit_group_copies(e, code, b->va, i) != 0) return -1;
     cold_for(e, HV_COLD_OTHER);
     emit_ool(e);
-    if (m->stats_interval) {
-        m->stats.words_inline += inline_words;
-        m->stats.words_ool += e->n - (e->flat ? inline_words : 0);
-        m->stats.words_pool += e->npool * 2;
-        _Static_assert(sizeof m->stats.words_cold / sizeof m->stats.words_cold[0] == HV_COLD_KINDS, "HvStats.words_cold");
-        for (int k = 0; k < HV_COLD_KINDS; k++) m->stats.words_cold[k] += e->cold_words[k];
-    }
+    e->words_inline = inline_words;
+    e->words_ool = e->n - (e->flat ? inline_words : 0);
 
     /* Pool after the cold code, 8-byte aligned; both parts start 8-byte aligned. */
     if (e->n & 1) put(e, 0xd503201f);
@@ -2232,6 +2229,16 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
 
 uint32_t hv_translate_last_words(void) { return E.flat ? E.pool_at : E.nhot; } /* hot words (no pool) of this thread's last block */
 uint32_t hv_translate_last_size(void) { return E.flat ? E.nhot : E.nhot + E.ncold; }
+
+void hv_translate_count_last(HvStats *st, const HvBlock *b) {
+    st->translated_insns += b->ninsns;
+    st->translated_words += hv_translate_last_size();
+    st->words_inline += E.words_inline;
+    st->words_ool += E.words_ool;
+    st->words_pool += E.npool * 2;
+    _Static_assert(sizeof st->words_cold / sizeof st->words_cold[0] == HV_COLD_KINDS, "HvStats.words_cold");
+    for (int k = 0; k < HV_COLD_KINDS; k++) st->words_cold[k] += E.cold_words[k];
+}
 
 HvXlateCounts hv_xlate_counts;
 

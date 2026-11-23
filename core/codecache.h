@@ -69,14 +69,23 @@ typedef struct HvCodeCache {
     uint64_t evictions, evict_tenured, evict_blocks, evict_unchained, evict_ticks;
     uint64_t waits, wait_ticks, stale, check_bad;
     uint64_t ijc_scans, ijc_scan_ticks, ijc_dropped, ijc_resets; /* catching up: branch caches scanned, or reset */
+    uint64_t ijc_passes, ijc_behind; /* passes over the tables (one a scan), and catch-ups more than one epoch behind */
     uint64_t second_chances;
 } HvCodeCache;
 
-/* A block of the segment its tag names was found by a lookup or chained to (the dispatcher, never translated code):
-   the segment is in use (an eviction gives a tenured one in use a second chance). */
+/* A block of the segment its tag names was found by a lookup, chained to or entered through a light path (never by
+   translated code itself): the segment is in use (an eviction gives a tenured one in use a second chance). A load and
+   at most a byte store: no libc, so the light paths may call it with the guest's q-registers live. */
 static inline void hv_cc_touch(HvCodeCache *cc, uint32_t stag) {
     uint8_t *u = &cc->used[(stag >> 24) & (HV_CC_MAX_SEGS - 1)];
     if (!__atomic_load_n(u, __ATOMIC_RELAXED)) __atomic_store_n(u, 1, __ATOMIC_RELAXED);
+}
+
+/* The same by the code's host address (base: the region's executable start), where the block is not at hand: the
+   return into code an exception interrupted (hv_resume), the way hot code that only runs chained is seen. */
+static inline void hv_cc_touch_code(HvCodeCache *cc, const void *base, uintptr_t code) {
+    uintptr_t s = ((code - (uintptr_t)base) >> 2) >> cc->seg_shift;
+    if (s < cc->nseg) hv_cc_touch(cc, (uint32_t)s << 24);
 }
 
 int hv_cc_init(struct HvMachine *m);

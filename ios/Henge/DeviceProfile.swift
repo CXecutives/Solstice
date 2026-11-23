@@ -47,6 +47,9 @@ struct DeviceProfile: Equatable {
 
     /// What Settings > Advanced > Code Cache offers, in MB.
     static let codeCacheChoices = [384, 512, 768, 1024, 1536]
+    /// The least the JIT region falls back to, in MB, when the size above cannot be had at launch: halved down to this
+    /// (henge_ios_jit_prewarm). A small cache empties often; none and the Mac does not start.
+    static let minCodeCacheMB = 128
     /// The code cache the signing allows: above 1 GB only with a memory limit of 5.5 GB and extended-virtual-addressing
     /// (generated code only runs below 0x7000000000, and without that entitlement the largest hole there is about
     /// 1080 MiB); at most 512 MB under a 3.5 GB limit (4-6 GB devices without the increased limit, where 1 GB and its

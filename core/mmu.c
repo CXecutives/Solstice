@@ -1117,6 +1117,7 @@ static void *ijc_resolve(HvCpu *cpu, uint64_t va, uint32_t flags) {
     }
     /* Cached only while the TLB still maps it, inside ijc_seq (see hv_ijc_fill_checked). */
     if (!ijc_fill_checked(cpu, b)) return 0;
+    hv_cc_touch(&m->cc, b->stag); /* entered without the dispatcher: its segment is in use all the same */
     return hv_block_code(m, b);
 }
 

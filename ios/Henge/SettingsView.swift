@@ -96,7 +96,7 @@ private struct DiagnosticsSettings: View {
             LabeledContent("Increased Memory Limit", value: Entitlements.increasedMemory ? "On" : "Off")
             LabeledContent("Memory Limit", value: ByteText.string(UInt64(Entitlements.memoryLimitAtLaunch)))
             LabeledContent("Available Now", value: ByteText.string(UInt64(henge_available_memory())))
-            LabeledContent("Code Region", value: "\(JITBootstrap.jitBytes >> 20) MB")
+            LabeledContent("Code Region", value: "\(JITBootstrap.regionBytes >> 20) MB")
             ShareLink(item: HengeLog.logFileURL) { Label("Share Log", systemImage: "square.and.arrow.up") }
             Toggle("Stream Log to a Computer", isOn: $streamOn)
             if streamOn {

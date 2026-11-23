@@ -7,6 +7,7 @@
  */
 
 #include "henge-ios-jit.h"
+#include "jit_region.h"
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -349,17 +350,33 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes);
 
 static HengeDualMapping henge_prewarmed;
 static bool henge_prewarm_done;
+static bool g_no_debugger;
 
-HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes)
+/* One size for hv_jit_claim_halving: the region into ctx. */
+static int henge_ios_jit_claim(size_t bytes, void *ctx)
+{
+    HengeDualMapping *out = ctx;
+    *out = henge_ios_jit_allocate_real(bytes);
+    return out->rw_addr ? 1 : g_no_debugger ? -1 : 0;
+}
+
+HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes, size_t min_bytes)
 {
     if (henge_prewarm_done) {
         return henge_prewarmed.rw_addr != NULL;
     }
     henge_prewarm_done = true;
-    henge_prewarmed = henge_ios_jit_allocate_real(bytes);
-    fprintf(stderr, "[solstice-jit] prewarm %s: %zu bytes\n",
-            henge_prewarmed.rw_addr ? "OK" : "FAILED", bytes);
-    return henge_prewarmed.rw_addr != NULL;
+    /* A smaller region when the one asked for cannot be had (no hole that large under 0x7000000000, say): the cache
+       empties more often, where without one the Mac does not start. Everything after reads the size obtained
+       (henge_ios_jit_get_mapping, henge_ios_jit_region_bytes). */
+    size_t got = hv_jit_claim_halving(bytes, min_bytes, henge_ios_jit_claim, &henge_prewarmed);
+    fprintf(stderr, "[solstice-jit] prewarm %s: %zu bytes (asked for %zu)\n", got ? "OK" : "FAILED", got, bytes);
+    return got != 0;
+}
+
+HENGE_EXPORT size_t henge_ios_jit_region_bytes(void)
+{
+    return henge_prewarmed.rw_addr ? henge_prewarmed.size : 0;
 }
 
 /* The held region, for the machine (henge-vm.c). */
@@ -381,6 +398,7 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
     uint64_t probe = henge_brk_probe();
     g_expecting_jit_trap = false;
     if (probe == 0) {
+        g_no_debugger = true; /* no size can be had: no smaller one is asked for */
         HENGE_LOG("#%llu: StikDebug is NOT servicing traps -- probe returned 0, which "
                  "is our own SIGTRAP handler stepping over an unanswered brk.",
                  (unsigned long long)n);
@@ -546,7 +564,8 @@ bool henge_ios_jit_is_available(void)
 #else /* !iOS: keep the symbols so host builds and tests link */
 
 void henge_ios_jit_install_trap_handler(void) {}
-bool henge_ios_jit_prewarm(size_t bytes) { (void)bytes; return false; }
+bool henge_ios_jit_prewarm(size_t bytes, size_t min_bytes) { (void)bytes; (void)min_bytes; return false; }
+size_t henge_ios_jit_region_bytes(void) { return 0; }
 void henge_ios_jit_release(HengeDualMapping *m) { (void)m; }
 void henge_ios_jit_detach(void) {}
 bool henge_ios_jit_is_available(void) { return false; }

@@ -65,6 +65,9 @@ uintptr_t hv_resume(HvCpu *cpu) {
         if (code) code |= 1;
     }
     if (code) {
+        /* Mostly the return into what an interrupt stopped: hot code that only runs chained and through branch caches
+           is seen here (a sample per interrupt), or a tenured segment of it would get no second chance. */
+        hv_cc_touch_code(&m->cc, m->jit.base, code);
         cpu->exit_reason = HV_EXIT_BRANCH;
         if (stats) p->own.stats.fast_resumes++;
     } else if (stats) {

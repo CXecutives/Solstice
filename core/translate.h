@@ -43,6 +43,9 @@ int hv_translate_place(HvMachine *m, HvBlock *b);
 uint32_t hv_translate_last_words(void);
 /* Every word this thread's last block took: hot part, cold part and literal pool. */
 uint32_t hv_translate_last_size(void);
+/* Its guest instructions and words (by part) into the CPU's own stats, at its publish: a translation dropped (another
+   CPU's was first, its segment went meanwhile) or tried again is not counted. */
+void hv_translate_count_last(HvStats *st, const HvBlock *b);
 /* This thread's last translation: its chainable exits' slots, and giving them back when it is dropped. */
 uint32_t hv_translate_nsites(void);
 uint32_t hv_translate_site_slot(uint32_t k);

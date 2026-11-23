@@ -50,6 +50,8 @@ struct DeviceProfileTests {
             }
         }
 
+        // The fallback when a region cannot be had is under every size asked for, so halving has somewhere to go.
+        check(DeviceProfile.codeCacheChoices.allSatisfy { $0 > DeviceProfile.minCodeCacheMB }, "the least region is under every choice")
         // A Mac's memory and CPUs: Settings offers only what boots, and suggests one of those.
         for row in DeviceProfile.rows {
             let p = DeviceProfile(physicalMB: row.belowMB == .max ? 64_000 : row.belowMB - 1, performanceCores: 2,

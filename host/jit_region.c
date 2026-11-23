@@ -27,6 +27,17 @@ static int open_split(HvJitRegion *region, size_t bytes) {
     return 0;
 }
 
+size_t hv_jit_claim_halving(size_t want, size_t min_bytes, int (*claim)(size_t bytes, void *ctx), void *ctx) {
+    for (size_t bytes = want; bytes;) {
+        int r = claim(bytes, ctx);
+        if (r > 0) return bytes;
+        size_t next = bytes / 2 & ~(size_t)16383;
+        if (r < 0 || next < min_bytes) break;
+        bytes = next;
+    }
+    return 0;
+}
+
 int hv_jit_region_open(HvJitRegion *region, size_t bytes) {
     memset(region, 0, sizeof *region);
     if (getenv("HV_JIT_SPLIT")) return open_split(region, bytes);
