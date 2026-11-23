@@ -16,6 +16,7 @@
 #include "henge-ios-jit.h"
 #include "net_slirp.h"
 #include "dns_proxy.h"
+#include "audio_mac.h"
 #include "vm.h"
 #include "install.h"
 #include "snapshot.h"
@@ -417,6 +418,12 @@ uint64_t henge_vm_net_frames(int sent) {
     uint64_t result = state == 1 ? (sent ? hv_net_tx_frames : hv_net_rx_frames) : (sent ? stopped_tx : stopped_rx);
     pthread_rwlock_unlock(&api_lock);
     return result;
+}
+/* No lock: the player's own queue orders these against a Mac starting or stopping (audio_mac.c). */
+void henge_vm_audio_interrupted(int state) {
+    if (state == 1) hv_audio_interrupted();
+    else if (state == 3) hv_audio_route_changed();
+    else hv_audio_resume(state == 2);
 }
 int henge_vm_cpus_on(void) {
     if (!lock_running()) return 0;

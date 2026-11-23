@@ -144,6 +144,18 @@ typedef struct HvStats {
 } HvStats;
 #define HV_STATS_COUNTERS (offsetof(HvStats, small_at) / sizeof(uint64_t))
 
+/* The interrupt-storm detector's state (hv_storm_irq). Tiny tables: the top few are what a log needs. */
+#define HV_STORM_SLOTS 8
+typedef struct HvStormSlot { uint32_t id, n; } HvStormSlot;
+typedef struct HvStorm {
+    uint64_t t0, wfi0;           /* the window's start: host time, and the CPU's WFI count then */
+    uint32_t acks;               /* interrupts acknowledged in the window */
+    uint8_t armed, logged;       /* the last window was hot (record now); this episode was logged */
+    uint32_t episodes;           /* storms logged */
+    uint64_t began;              /* host time the episode's first hot window ended */
+    HvStormSlot irq[HV_STORM_SLOTS], msr[HV_STORM_SLOTS]; /* while armed: interrupt ids, MSRs written */
+} HvStorm;
+
 #define HV_MAX_CPUS 8
 #define HV_WHINT_MANY (1ull << 63) /* whint: more than three; else up to three TLB codes + 1, 16 bits each */
 
@@ -204,9 +216,12 @@ typedef struct HvPerCpu {
     /* WFI sleeps on this; device threads, the GIC and other CPUs signal it. */
     pthread_mutex_t wake_mu;
     pthread_cond_t wake_cv;
-    int wake_pending;
-    uint32_t poll_req;           /* CPU 0: woken (hv_cpu_wake) or the kicker's poll: poll the devices at the next tick */
+    int wake_pending;            /* set by every wake (atomic); a wait that finds it set ends at once */
+    uint32_t poll_req;           /* CPU 0: device work signalled (hv_machine_wake) or the kicker's poll: poll at the next tick */
     uint64_t wfi_until;          /* parked in WFI: when the sleep ends at the latest (0: not asleep on a timeout) */
+    uint64_t guest_due;          /* host time its guest timer next fires (0: none), apart from CPU 0's device deadlines in
+                                    timer_due: the light paths refuse a fast resume only for this (light.c) */
+    HvStorm storm;               /* the interrupt-storm detector (hv_storm_irq): its own thread only */
     /* Work other CPUs ask of this one (only the owner may touch its TLB and
        branch cache while it runs). Posting bumps req_seq; the owner does the
        work at its next dispatcher entry and publishes ack_seq. */
@@ -342,6 +357,7 @@ typedef struct HvMachine {
     pthread_cond_t kick_cv;
     uint64_t kick_at;
     int kick_poked, kicker_on;
+    uint32_t dev_unsignalled; /* HV_UNSIG_* bits: device work only a poll finds (hv_machine_unsignalled) */
     /* The host counter when the machine started: every CPU's CNTVOFF, so the guest's virtual counter (its
        mach_absolute_time) starts near 0 as on a Mac or under Virtualization.framework. With the host's own
        count (days of uptime) macOS 12 took the user as idle for that long and put itself to sleep while
@@ -486,7 +502,7 @@ void hv_machine_kick_all(HvMachine *m);
 /* Publish a terminal reason, then wake all CPUs, including CPU_OFF waits.
    A later host stop must not overwrite the guest's shutdown/panic reason. */
 void hv_machine_halt(HvMachine *m, enum HvHaltReason reason);
-/* Wake one CPU out of WFI (and make it leave its block). */
+/* Wake one CPU out of WFI (and make it leave its block). No device poll: device work goes through hv_machine_wake. */
 void hv_cpu_wake(HvCpu *cpu);
 /* Make it leave its block at the next checked exit, without waking it from WFI. */
 void hv_cpu_kick(HvCpu *cpu);
@@ -494,6 +510,33 @@ void hv_cpu_kick(HvCpu *cpu);
 /* From any thread: device work is waiting for the CPU thread's tick. Makes a
    running block leave and ends a WFI sleep. */
 void hv_machine_wake(HvMachine *m);
+
+/* Device work no thread signals, which only a poll finds (HV_UNSIG_* bits, set and cleared by the device): while any
+   is set, the kicker has CPU 0 poll every HV_POLL_BUSY while it runs. With none, CPU 0 polls when a device signals
+   (hv_machine_wake), at its device deadlines (the display's refresh) and every HV_DEV_SAFETY. */
+enum { HV_UNSIG_PVG_CHAN = 1u << 0 /* a display channel waits for another channel's stamp (pvg_lite.c) */ };
+void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on);
+
+/* Interrupt storms (an idle CPU taken out of WFI by an interrupt tens of thousands of times a second): each CPU counts
+   its acknowledged interrupts in windows of HV_STORM_WINDOW; a window faster than HV_STORM_RATE a second in which
+   WFI came as often as 3 in 4 interrupts is hot. After one hot window the next records which interrupts and which
+   system register writes, and logs them once; the episode ends with the first window that is not hot. */
+#define HV_STORM_WINDOW 8192u
+#define HV_STORM_RATE 10000u
+void hv_storm_irq(HvCpu *cpu, uint32_t intid);
+/* Counts id in a storm table; once it is full, the rest count in the last slot as id ~0. */
+static inline void hv_storm_count(HvStormSlot *t, uint32_t id) {
+    unsigned i = 0;
+    while (i < HV_STORM_SLOTS - 1 && t[i].n && t[i].id != id) i++;
+    if (!t[i].n) t[i].id = id;
+    else if (t[i].id != id) t[i].id = ~0u;
+    t[i].n++;
+}
+/* An MSR through the helper (reg: its encoding; 0x10000 | field for MSR immediate), recorded while a storm is. */
+static inline void hv_storm_msr(HvCpu *cpu, uint32_t reg) {
+    HvPerCpu *p = cpu->pc_state;
+    if (p && __builtin_expect(p->storm.armed, 0)) hv_storm_count(p->storm.msr, reg);
+}
 
 /* Deadlines, in host ticks (24 MHz). Translated code checks no timer, so a running CPU leaves its block only when asked:
    the kicker asks the CPU that is due, when it is due (its timer_due: the next timer event, and for CPU 0 the devices'

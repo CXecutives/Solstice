@@ -127,6 +127,7 @@ int hv_disk_zero(HvDisk *d, uint64_t off, uint64_t len) {
         struct fpunchhole ph = {.fp_flags = 0, .reserved = 0, .fp_offset = (off_t)first, .fp_length = (off_t)(last - first)};
         if (fcntl(d->fd, F_PUNCHHOLE, &ph) == 0) {
             __atomic_fetch_add(&d->writes, 1, __ATOMIC_RELEASE);
+            __atomic_fetch_add(&d->punched, last - first, __ATOMIC_RELAXED);
             return write_zeros(d, off, first - at) || write_zeros(d, last - d->offset, end - last) ? -1 : 0;
         }
         /* Not here (another file system): zeros from now on. */

@@ -746,12 +746,20 @@ void hv_pvg_lite_mapper_done(HvPvgLite *p, uint64_t index) {
     if (p->m->ncpus == 1) hv_machine_wake(p->m);
 }
 
-/* Device work no doorbell took care of: a channel that had to wait for another one's work. */
+/* A channel waiting for another one's stamp is retried at that one's doorbell and at polls: until then, work no
+   thread signals, for which the kicker polls (hv_machine_unsignalled). */
+static void note_chans(HvPvgLite *p) {
+    hv_machine_unsignalled(p->m, HV_UNSIG_PVG_CHAN, p->chan_pending != 0);
+}
+
 /* The next refresh (host time), for CPU 0's deadline: the kicker and WFI wake it then, so the refreshes keep their
-   grid whatever else polls the devices. 0 before the guest named its display page. */
+   grid whatever else polls the devices. 0 before the guest named its display page, and while it masks event 8
+   (hv_vblank_deadline: looked at at every tick of CPU 0, so the refreshes resume as soon as it unmasks). */
 uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
     if (!p || !p->display_pa || !p->vblank_period) return 0;
-    return hv_vblank_next(&p->vclock);
+    const uint8_t *d = hv_pvg_lite_display_page(p);
+    if (!d) return 0;
+    return hv_vblank_deadline(&p->vclock, (__atomic_load_n((const uint32_t *)(d + 0x104), __ATOMIC_ACQUIRE) & 8) != 0);
 }
 
 /* The display's refresh: event 8 while the guest asks for it in its mask (+104), and the refresh's time at +68.
@@ -759,9 +767,12 @@ uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
    that is ldr x8, [page, #0x68]; str x8, [x1]). Left 0, WindowServer times its frames from 0: it logs "Timer delayed
    by <uptime>s" in bursts, its display timer re-arms at once, and the Mac spends minutes at a time switching threads
    (on an iPhone, 20-48K interrupts and 40-80K process switches a second where a calm Mac has 3-7K). Without event 8
-   a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ). HV_PVG_VBLANK=0: neither, as before. */
+   a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ), or the present cap's while the app
+   caps presents below it (hv_vblank_period: the guest then draws only frames that are shown). HV_PVG_VBLANK=0:
+   neither, as before. While the guest masks event 8 the refreshes are no deadline of CPU 0's, and their times are
+   written at the polls that come anyway (on the grid; the guest is not listening then). */
 static void vblank(HvPvgLite *p) {
-    uint64_t period = p->vblank_period;
+    uint64_t period = hv_vblank_period(p->vblank_period, hv_pvg_present_hz(), 24000000);
     if (!period || !p->display_pa) return;
     uint8_t *d = hv_phys_ptr(p->m, p->display_pa, 0x4000);
     if (!d) return;
@@ -786,6 +797,7 @@ void hv_pvg_lite_poll(HvPvgLite *p) {
             if (chans & (1u << ch)) do_channel(p, ch);
         if (__atomic_load_n(&p->status, __ATOMIC_ACQUIRE)) hv_gicv3_pend(p->gic, p->gfx_irq);
     }
+    note_chans(p);
 }
 
 static uint64_t gfx_read(void *opaque, uint64_t off, unsigned size) {
@@ -826,6 +838,7 @@ static void gfx_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
             for (uint32_t ch = 1; ch < MAX_CHANNELS; ch++)
                 if (chans & (1u << ch)) do_channel(p, ch);
         }
+        note_chans(p);
         if (__atomic_load_n(&p->status, __ATOMIC_ACQUIRE)) hv_gicv3_pend(p->gic, p->gfx_irq);
     } else if (p->log && off != 0x1020) {
         fprintf(stderr, "hengevm: pvg-lite: write +%llx = %llx\n", (unsigned long long)off, (unsigned long long)v);
@@ -910,6 +923,7 @@ int hv_pvg_lite_set_state(HvPvgLite *p, const void *in, size_t len) {
     memcpy(p->regs, s->regs, sizeof s->regs);
     memcpy(p->io_regs, s->io_regs, sizeof s->io_regs);
     p->root_rp = s->root_rp, p->status = s->status, p->chan_pending = s->chan_pending;
+    note_chans(p);
     p->draining = s->draining, p->stamps_pending = s->stamps_pending;
     p->root_pending = s->root_pending, p->iosfc_pending = s->iosfc_pending, p->old_driver = s->old_driver;
     p->display_pa = s->display_pa, p->swaps = s->swaps;
