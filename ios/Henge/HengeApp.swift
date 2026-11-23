@@ -83,6 +83,10 @@ struct RootView: View {
             Text("The last two times, Solstice ended while a Mac was running. Until the next update it starts Macs with Henge's standard engine settings. Settings, Performance turns this off.")
         }
         .sheet(isPresented: $jit.showSetup) { JITSetupFlow() }
+        // Swiped away in the app switcher while a Mac ran: a quit, not a crash, for SafeMode.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+            SafeMode.macLive(false)
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             machines.collectImports()
