@@ -106,10 +106,34 @@ static int failed_start(void) {
     return -1;
 }
 
+/* The power profile (henge_vm_set_power_profile). Read where a machine starts or runs on, after state is 1, and set
+   before state is read there: either that sees the new level or the setter sees a running Mac and applies it. */
+static _Atomic int power_level;
+static int started_wfi_spin; /* HV_WFI_SPIN as the running machine started with it (knobs_init) */
+/* With api_lock held and a machine there, or none running (the present cap is the display's, not a machine's). */
+static void apply_power_profile(int running) {
+    int saving = atomic_load(&power_level) > 0;
+    const char *hz = getenv("HV_SAVING_HZ");
+    hv_pvg_set_present_hz(saving && hz ? atoi(hz) : 0);
+    if (running) hv_knob[HV_K_WFI_SPIN] = saving ? 0 : started_wfi_spin; /* read live by every WFI (dispatch.c) */
+}
+
+void henge_vm_set_power_profile(int level) {
+    if (atomic_exchange(&power_level, level) == level) return;
+    if (lock_running()) {
+        apply_power_profile(1);
+        pthread_rwlock_unlock(&api_lock);
+    } else {
+        apply_power_profile(0); /* a paused Mac gets the rest when it runs on (henge_vm_continue) */
+    }
+}
+
 static int started(char *err, size_t errlen) {
     stopped_blocks = stopped_tx = stopped_rx = 0;
     exit_reason = exit_outcome = 0;
     state = 1;
+    started_wfi_spin = hv_knob[HV_K_WFI_SPIN];
+    apply_power_profile(1);
     if (hv_vm_start(1, on_exit) != 0) {
         snprintf(err, errlen, "There are not enough resources to start the Mac's CPU threads.");
         return failed_start();
@@ -189,6 +213,7 @@ int henge_vm_continue(void) {
         return -1;
     }
     state = 1;
+    apply_power_profile(1); /* the level may have changed while it was paused */
     int r = hv_vm_continue();
     if (r != 0) {
         /* No threads for its CPUs: it cannot run on. Release it, as a stop would. */

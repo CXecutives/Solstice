@@ -63,6 +63,10 @@ void hv_pvg_lite_set_mode(uint32_t width, uint32_t height);
 /* The display's one mode. A scaled resolution chosen in macOS draws smaller surfaces for the same mode. */
 void hv_pvg_lite_mode(uint32_t *width, uint32_t *height);
 void hv_pvg_lite_set_size_mm(uint32_t width_mm, uint32_t height_mm);
+/* At most hz frames a second go to the screen (0: the mode's rate; at least 10), changed live: the presenter reads it
+   for every frame (hv_present_wait). Only the host's presents: macOS is still told the mode's rate and refreshed at it. */
+void hv_pvg_set_present_hz(int hz);
+int hv_pvg_present_hz(void);
 
 /* Instant resume (host/snapshot.c). State blobs: called with out NULL they return the size needed. */
 size_t hv_pvg_lite_state(HvPvgLite *p, void *out, size_t cap);

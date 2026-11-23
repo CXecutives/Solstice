@@ -176,6 +176,12 @@ void hv_pvg_lite_set_mode(uint32_t width, uint32_t height) {
     display_h = height;
 }
 
+static _Atomic int present_cap_hz;
+void hv_pvg_set_present_hz(int hz) {
+    atomic_store_explicit(&present_cap_hz, hz <= 0 ? 0 : hz < 10 ? 10 : hz, memory_order_relaxed);
+}
+int hv_pvg_present_hz(void) { return atomic_load_explicit(&present_cap_hz, memory_order_relaxed); }
+
 void hv_pvg_lite_mode(uint32_t *width, uint32_t *height) {
     *width = display_w;
     *height = display_h;
