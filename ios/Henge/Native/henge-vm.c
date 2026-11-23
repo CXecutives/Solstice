@@ -53,7 +53,7 @@ static void release_machine(void) {
     if (installer_session) {
         hv_install_detach();
         installer_session = 0;
-        fprintf(stderr, "henge: the restore tools let go of the installer's USB port\n");
+        fprintf(stderr, "solstice: the restore tools let go of the installer's USB port\n");
     }
     hv_vm_destroy();
 }
@@ -90,7 +90,7 @@ static int drop_spent_save(void) {
     int spent = save_armed && hv_vm_disk_writes() != save_writes;
     if (spent) {
         int gone = unlink(save_path) == 0;
-        fprintf(stderr, "henge: the Mac wrote its disk: the saved Mac is out of date%s\n", gone ? " and deleted" : "");
+        fprintf(stderr, "solstice: the Mac wrote its disk: the saved Mac is out of date%s\n", gone ? " and deleted" : "");
         save_path[0] = 0;
         save_armed = 0;
     }
@@ -140,7 +140,7 @@ static void on_exit(int reason) {
        released like any other, so a device can start in this launch without quitting Henge. */
     release_machine();
     state = 2;
-    fprintf(stderr, "henge: the machine stopped (%s, halt reason %d); CPU threads ended, disks flushed, machine released\n",
+    fprintf(stderr, "solstice: the machine stopped (%s, halt reason %d); CPU threads ended, disks flushed, machine released\n",
             exit_description(), halt);
     pthread_rwlock_unlock(&api_lock);
 }
@@ -150,7 +150,7 @@ static int begin_start(char *err, size_t errlen) {
     pthread_rwlock_wrlock(&api_lock);
     if ((state != 0 && state != 2) || installer_session) {
         snprintf(err, errlen, "%s", installer_session
-                 ? "The installer is still attached. Quit Henge and open it again before starting a Mac."
+                 ? "The installer is still attached. Quit Solstice and open it again before starting a Mac."
                  : "The previous Mac is still running or finishing its shutdown.");
         pthread_rwlock_unlock(&api_lock);
         return -1;
@@ -242,7 +242,7 @@ int henge_vm_pause(char *err, size_t errlen) {
     }
     state = 4;
     pthread_rwlock_unlock(&api_lock);
-    fprintf(stderr, "henge: the Mac is paused\n");
+    fprintf(stderr, "solstice: the Mac is paused\n");
     return 0;
 }
 
@@ -250,7 +250,7 @@ int henge_vm_trim(void) {
     pthread_rwlock_rdlock(&api_lock);
     int r = state == 4 ? hv_vm_trim() : -1;
     pthread_rwlock_unlock(&api_lock);
-    if (r == 0) fprintf(stderr, "henge: paused: the translated code is dropped and the engine's tables given back\n");
+    if (r == 0) fprintf(stderr, "solstice: paused: the translated code is dropped and the engine's tables given back\n");
     return r;
 }
 
@@ -271,7 +271,7 @@ int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen)
     int r = hv_snapshot_save(path, ident, err, errlen);
     if (r == 0) set_save(path); /* the Mac as it is now; spent once it runs on and writes its disk */
     pthread_rwlock_unlock(&api_lock);
-    fprintf(stderr, "henge: %s\n", r ? err : "the paused Mac is saved");
+    fprintf(stderr, "solstice: %s\n", r ? err : "the paused Mac is saved");
     return r;
 }
 
@@ -299,7 +299,7 @@ int henge_vm_continue(void) {
         state = 2;
     }
     pthread_rwlock_unlock(&api_lock);
-    fprintf(stderr, "henge: the Mac runs on%s\n", r ? " -- no, its CPU threads could not start" : "");
+    fprintf(stderr, "solstice: the Mac runs on%s\n", r ? " -- no, its CPU threads could not start" : "");
     return r;
 }
 
@@ -323,7 +323,7 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
     set_save(NULL);
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
-        snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
+        snprintf(err, errlen, "Solstice has no JIT region. Turn on JIT first.");
         return failed_start();
     }
     HvVmConfig c = {.rom = rom, .disk = disk, .aux = aux, .ecid = ecid, .seed = seed, .ram_mb = ram_mb, .ncpus = cpus, .log = 1,
@@ -331,7 +331,7 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
                     .product_name = identity_name[0] ? identity_name : NULL,
                     .model_id = identity_model[0] ? identity_model : NULL,
                     .jit_rx = jit->rx_addr, .jit_rw = jit->rw_addr, .jit_bytes = jit->size};
-    fprintf(stderr, "henge: booting with %d CPUs, %llu MB RAM, a %zu MB JIT region\n", cpus, (unsigned long long)ram_mb,
+    fprintf(stderr, "solstice: booting with %d CPUs, %llu MB RAM, a %zu MB JIT region\n", cpus, (unsigned long long)ram_mb,
             jit->size >> 20);
     stats_env();
     if (hv_vm_create(&c, err, errlen) != 0) return failed_start();
@@ -340,7 +340,7 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
         if (restored != 0) {
             /* Refused or unreadable: the Mac starts from cold instead, and its disk then moves past the file. */
             unlink(resume);
-            fprintf(stderr, "henge: resume failed: %s\n", err);
+            fprintf(stderr, "solstice: resume failed: %s\n", err);
             return failed_start();
         }
         /* Kept until the Mac writes its disk (drop_spent_save): a kill before that resumes it again. */
@@ -361,7 +361,7 @@ static void on_install_progress(int step, double p, void *user) {
     static int last = -1, lastpct = -1;
     int pct = (int)(p * 100);
     if (step != last || pct / 10 != lastpct / 10) {
-        fprintf(stderr, "henge: install step %d %d%%\n", step, pct);
+        fprintf(stderr, "solstice: install step %d %d%%\n", step, pct);
         last = step, lastpct = pct;
     }
 }
@@ -371,12 +371,12 @@ int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_
     if (begin_start(err, errlen)) return -1;
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
-        snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
+        snprintf(err, errlen, "Solstice has no JIT region. Turn on JIT first.");
         return failed_start();
     }
     HvVmConfig c = {.rom = rom, .disk = disk, .aux = aux, .ecid = ecid, .ram_mb = ram_mb, .ncpus = cpus, .log = 1,
                     .installer = 1, .no_sound = 1, .jit_rx = jit->rx_addr, .jit_rw = jit->rw_addr, .jit_bytes = jit->size};
-    fprintf(stderr, "henge: installing %s with %d CPUs, %llu MB RAM\n", ipsw, cpus, (unsigned long long)ram_mb);
+    fprintf(stderr, "solstice: installing %s with %d CPUs, %llu MB RAM\n", ipsw, cpus, (unsigned long long)ram_mb);
     stats_env();
     if (hv_vm_create(&c, err, errlen) != 0) return failed_start();
     install_step = 0;
@@ -460,7 +460,7 @@ void henge_vm_stop(void) {
             exit_reason = HV_EXIT_HALT;
             exit_outcome = HENGE_VM_OUTCOME_HOST_STOP;
             state = 2;
-            fprintf(stderr, "henge: the paused Mac was stopped and released\n");
+            fprintf(stderr, "solstice: the paused Mac was stopped and released\n");
         }
         pthread_rwlock_unlock(&api_lock);
         return;

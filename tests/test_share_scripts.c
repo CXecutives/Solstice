@@ -1,4 +1,4 @@
-// The scripts share.c serves to macOS (/.henge/lighten and /.henge/unlighten): sh parses them, the LaunchDaemon that
+// The scripts share.c serves to macOS (brand.h's URL prefix, lighten and unlighten): sh parses them, the LaunchDaemon that
 // sets kern.ticket_lock_spins at boot is a valid property list installed root:wheel 0644 and started at once, and
 // unlighten takes it all back.
 #include "../host/share.c"
@@ -66,17 +66,17 @@ static void *long_poll(void *req) {
 
 static void test_server(void) {
     /* Only requests made to 10.0.2.4 itself (DNS rebinding sends the attacker's own name). */
-    check("Host 10.0.2.4: served", status_is(exchange("GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 200));
-    check("Host 10.0.2.4:80 (spaces after): served", status_is(exchange("GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4:80  \r\n\r\n", 0), 200));
-    check("another Host: refused", status_is(exchange("GET /.henge/token HTTP/1.1\r\nHost: rebind.example\r\n\r\n", 0), 421));
+    check("Host 10.0.2.4: served", status_is(exchange("GET " SOLSTICE_URL_PREFIX "token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 200));
+    check("Host 10.0.2.4:80 (spaces after): served", status_is(exchange("GET " SOLSTICE_URL_PREFIX "token HTTP/1.1\r\nHost: 10.0.2.4:80  \r\n\r\n", 0), 200));
+    check("another Host: refused", status_is(exchange("GET " SOLSTICE_URL_PREFIX "token HTTP/1.1\r\nHost: rebind.example\r\n\r\n", 0), 421));
     check("a Host that only starts right: refused", status_is(exchange("GET / HTTP/1.1\r\nHost: 10.0.2.40\r\n\r\n", 0), 421));
-    check("no Host: refused", status_is(exchange("GET /.henge/token HTTP/1.1\r\n\r\n", 0), 421));
+    check("no Host: refused", status_is(exchange("GET " SOLSTICE_URL_PREFIX "token HTTP/1.1\r\n\r\n", 0), 421));
     check("two Hosts: refused", status_is(exchange("GET / HTTP/1.1\r\nHost: 10.0.2.4\r\nHost: rebind.example\r\n\r\n", 0), 421));
-    check("an absolute target's host counts", status_is(exchange("GET http://rebind.example/.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 421));
+    check("an absolute target's host counts", status_is(exchange("GET http://rebind.example" SOLSTICE_URL_PREFIX "token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 421));
 
-    /* The clipboard only with the key, which /.henge/token gives. */
+    /* The clipboard only with the key, which the token address gives. */
     hv_share_set_clipboard("from the device");
-    const char *t = exchange("GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0);
+    const char *t = exchange("GET " SOLSTICE_URL_PREFIX "token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0);
     const char *body = strstr(t, "\r\n\r\n");
     char key[80] = "";
     if (body) snprintf(key, sizeof key, "%s", body + 4);
@@ -87,22 +87,27 @@ static void test_server(void) {
     keyless_hold_seconds = 1;
     double t0 = seconds();
     check("clipboard without the key: refused",
-          status_is(exchange("GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 403));
+          status_is(exchange("GET " SOLSTICE_URL_PREFIX "clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 403));
     check("clipboard without the key: held first", seconds() - t0 >= 0.9);
     t0 = seconds();
     check("clipboard with a wrong key: refused",
-          status_is(exchange("PUT /.henge/clipboard HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: 0123\r\nContent-Length: 1\r\n\r\nx", 0), 403));
+          status_is(exchange("PUT " SOLSTICE_URL_PREFIX "clipboard HTTP/1.1\r\nHost: 10.0.2.4\r\n" SOLSTICE_HEADER_TOKEN ": 0123\r\nContent-Length: 1\r\n\r\nx", 0), 403));
     check("clipboard GET with a wrong key: refused",
-          status_is(exchange("GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: 0123\r\n\r\n", 0), 403));
+          status_is(exchange("GET " SOLSTICE_URL_PREFIX "clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\n" SOLSTICE_HEADER_TOKEN ": 0123\r\n\r\n", 0), 403));
     check("a wrong key: refused at once", seconds() - t0 < 0.5);
+    /* A helper from before the rename asks at the old address: held like a key-less one, then refused. */
+    t0 = seconds();
+    check("the old address: refused",
+          status_is(exchange("GET " SOLSTICE_OLD_URL_PREFIX "clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 403));
+    check("the old address: held first", seconds() - t0 >= 0.9);
     char req[512];
-    snprintf(req, sizeof req, "GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\n\r\n", key);
+    snprintf(req, sizeof req, "GET " SOLSTICE_URL_PREFIX "clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\n" SOLSTICE_HEADER_TOKEN ": %s\r\n\r\n", key);
     const char *r = exchange(req, 0);
     check("clipboard with the key: the device's", status_is(r, 200) && strstr(r, "\r\n\r\nfrom the device"));
     /* The same, byte by byte, and two requests in one write: the read-ahead buffer keeps them apart. */
     check("a request in one-byte pieces", status_is(exchange(req, 1), 200));
-    snprintf(req, sizeof req, "PUT /.henge/clipboard HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\nContent-Length: 9\r\n\r\nfrom gues"
-                              "GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", key);
+    snprintf(req, sizeof req, "PUT " SOLSTICE_URL_PREFIX "clipboard HTTP/1.1\r\nHost: 10.0.2.4\r\n" SOLSTICE_HEADER_TOKEN ": %s\r\nContent-Length: 9\r\n\r\nfrom gues"
+                              "GET " SOLSTICE_URL_PREFIX "token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", key);
     r = exchange(req, 0);
     const char *second = strstr(r + 1, "HTTP/1.1 ");
     check("two requests in one write: both answered", status_is(r, 204) && second && status_is(second, 200) && strstr(second, key));
@@ -124,12 +129,12 @@ static void test_server(void) {
     check("pasted text: not the helper's yet", !hv_share_clipboard_taken());
     char seq_header[64];
     snprintf(seq_header, sizeof seq_header, "X-Henge-Seq: %lu\r\n", device_seq);
-    snprintf(req, sizeof req, "GET /.henge/clipboard?since=%lu HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\n\r\n", device_seq + 1000, key);
+    snprintf(req, sizeof req, "GET " SOLSTICE_URL_PREFIX "clipboard?since=%lu HTTP/1.1\r\nHost: 10.0.2.4\r\n" SOLSTICE_HEADER_TOKEN ": %s\r\n\r\n", device_seq + 1000, key);
     r = exchange(req, 0);
     check("a since beyond the newest (an earlier run's): answered at once with the newest", status_is(r, 204) && strstr(r, seq_header));
     check("... and is no acknowledgement", !hv_share_clipboard_taken());
     static char poll_req[512];
-    snprintf(poll_req, sizeof poll_req, "GET /.henge/clipboard?since=%lu HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\n\r\n", device_seq, key);
+    snprintf(poll_req, sizeof poll_req, "GET " SOLSTICE_URL_PREFIX "clipboard?since=%lu HTTP/1.1\r\nHost: 10.0.2.4\r\n" SOLSTICE_HEADER_TOKEN ": %s\r\n\r\n", device_seq, key);
     pthread_t poller;
     pthread_create(&poller, NULL, long_poll, poll_req);
     int taken = 0;
@@ -178,7 +183,7 @@ static void test_idle(void) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
     setsockopt(idle[0], SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
     check("one more connects", connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0);
-    static const char req[] = "GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\nConnection: close\r\n\r\n";
+    static const char req[] = "GET " SOLSTICE_URL_PREFIX "token HTTP/1.1\r\nHost: 10.0.2.4\r\nConnection: close\r\n\r\n";
     send_all(fd, req, sizeof req - 1);
     char out[512];
     ssize_t n = recv(fd, out, sizeof out - 1, 0);
@@ -198,9 +203,21 @@ int main(void) {
     check("lighten: sh parses it", sh_parses("lighten", lighten_script));
     check("unlighten: sh parses it", sh_parses("unlighten", unlighten_script));
     /* Set Up brings only what nobody sees; how macOS looks and behaves is the optional lighten's business. */
-    check("Set Up runs tune", strstr(install_script, "/.henge/tune | sh") != NULL);
-    check("Set Up does not run lighten", strstr(install_script, "/.henge/lighten") == NULL);
-    check("lighten starts with tune", strstr(lighten_script, "/.henge/tune | sh") != NULL);
+    check("Set Up runs tune", strstr(install_script, SOLSTICE_URL_PREFIX "tune | sh") != NULL);
+    check("Set Up does not run lighten", strstr(install_script, SOLSTICE_URL_PREFIX "lighten") == NULL);
+    check("lighten starts with tune", strstr(lighten_script, SOLSTICE_URL_PREFIX "tune | sh") != NULL);
+    check("install_script: sh parses it", sh_parses("install", install_script));
+    /* Set Up removes what the versions before the rename put into the Mac, then installs the new pieces. */
+    check("Set Up stops the old helper", strstr(install_script, "launchctl bootout \"gui/$(id -u)/" SOLSTICE_OLD_AGENT_LABEL "\"") != NULL);
+    check("Set Up removes the old launch agent", strstr(install_script, SOLSTICE_OLD_AGENT_LABEL ".plist\"") != NULL);
+    check("Set Up removes the old helper", strstr(install_script, "/" SOLSTICE_OLD_AGENT_BINARY "\"") != NULL);
+    check("Set Up unmounts and removes the old folder",
+          strstr(install_script, "umount \"$HOME/" SOLSTICE_OLD_SHARE_NAME "\"") != NULL &&
+          strstr(install_script, "rmdir \"$HOME/" SOLSTICE_OLD_SHARE_NAME "\"") != NULL);
+    check("Set Up installs the new helper", strstr(install_script, "<string>" SOLSTICE_AGENT_LABEL "</string>") != NULL);
+    check("tune removes the old ticket-spins daemon", strstr(tune_script, "sudo rm -f /Library/LaunchDaemons/" SOLSTICE_OLD_SPINS_LABEL ".plist") != NULL);
+    check("the new names are not the old ones", strcmp(SOLSTICE_URL_PREFIX, SOLSTICE_OLD_URL_PREFIX) != 0 &&
+          strcmp(SOLSTICE_AGENT_LABEL, SOLSTICE_OLD_AGENT_LABEL) != 0 && strcmp(SOLSTICE_SPINS_LABEL, SOLSTICE_OLD_SPINS_LABEL) != 0);
     static const char *const visible[] = {"Animation", "animation", "launchanim", "screensaver", "Widgets", "Siri",
                                           "Assistant", "Suggestions", "CrashReporter", "mdutil", "tmutil",
                                           "Desktop Pictures", "killall", "AutomaticCheckEnabled", "commerce", "show-recents"};

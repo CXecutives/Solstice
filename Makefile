@@ -59,16 +59,16 @@ IDR_SRC = $(wildcard third_party/idevicerestore/src/*.c)
 RESTORE_OBJ = $(patsubst third_party/%.c,$(RB)/%.o,$(IRECV_SRC) $(MUXD_SRC) $(IDR_SRC))
 
 # The helper that runs inside macOS on a virtual Mac (share.c serves it to the guest).
-$(B)/henge-agent: tools/henge-agent.m
+$(B)/solstice-agent: tools/henge-agent.m host/brand.h
 	@mkdir -p $(B)
-	env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -fobjc-arc -Wall -Wextra -O2 -framework AppKit $< -o $@
+	env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -fobjc-arc -Wall -Wextra -O2 -Ihost -framework AppKit $< -o $@
 	codesign -f -s - $@
 
 # Compressed in the app: tools that sign an IPA would try to sign a bare Mach-O too.
-$(B)/henge-agent.gz: $(B)/henge-agent
+$(B)/solstice-agent.gz: $(B)/solstice-agent
 	gzip -9 -n -c $< > $@
 
-$(B)/share.o: host/share.c host/share.h
+$(B)/share.o: host/share.c host/share.h host/brand.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(B)/hengevm: host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libhengerestore.a

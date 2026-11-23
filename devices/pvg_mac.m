@@ -1,4 +1,5 @@
 #include "pvg.h"
+#include "brand.h"
 
 #include <sys/resource.h>
 #import <AppKit/AppKit.h>
@@ -486,7 +487,7 @@ int hv_pvg_attach(HvVmapple *b, const char *screenshot) {
         if (!pgdev) return -1;
 
         PGDisplayDescriptor *dd = [PGDisplayDescriptor new];
-        dd.name = @"HengeVM display";
+        dd.name = @SOLSTICE_DEVICE_DISPLAY;
         dd.sizeInMillimeters = NSMakeSize(400., 300.);
         dd.queue = dispatch_get_main_queue();
         dd.newFrameEventHandler = ^{
@@ -577,7 +578,7 @@ static void key(uint16_t mac, int down) {
     } else {
         [NSCursor unhide];
     }
-    self.window.title = on ? @"HengeVM — press Control+Option to release the mouse" : @"HengeVM — click to use the mouse";
+    self.window.title = on ? @SOLSTICE_NAME " — press Control+Option to release the mouse" : @SOLSTICE_NAME " — click to use the mouse";
 }
 
 - (void)keyDown:(NSEvent *)e {
@@ -698,7 +699,7 @@ void hv_pvg_window_run(void) {
         static HVWindowDelegate *delegate;
         delegate = [HVWindowDelegate new];
         w.delegate = delegate;
-        w.title = @"HengeVM — click to use the mouse";
+        w.title = @SOLSTICE_NAME " — click to use the mouse";
         [w center];
         [w makeKeyAndOrderFront:nil];
         [w makeFirstResponder:v];

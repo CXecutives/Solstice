@@ -1,4 +1,5 @@
 #include "virtio_input.h"
+#include "brand.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +30,7 @@ static void answer(HvVirtioInput *d) {
     int kbd = d->kind == HV_VINPUT_KEYBOARD;
     switch (select) {
     case CFG_ID_NAME: {
-        const char *name = kbd ? "HengeVM Keyboard" : "HengeVM Mouse";
+        const char *name = kbd ? SOLSTICE_DEVICE_KEYBOARD : SOLSTICE_DEVICE_POINTER;
         size = (uint32_t)strlen(name);
         memcpy(data, name, size);
         break;
