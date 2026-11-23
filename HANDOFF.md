@@ -34,27 +34,31 @@ Das Repo ist öffentlich; die Geschichte wurde vorher von privaten Angaben berei
 - **Eigene App-Kennung** im Schluss-Build (`io.github.cxecutives.solstice`): der Mac wird danach einmal neu installiert.
 - Herkunftszeile unter Einstellungen → Info und in der README.
 
-## Stand des Umbaus (23.11.2026, abends)
-**In `main` (alle Engine-Tests normal / wie ausgeliefert + LTO / mit UB-Fallen, Swift-Tests und App-Build liefen im Sammellauf):**
-S Schlank+Struktur · E1 MMU · E2 Code-Cache/Übersetzer/Messung · E3 Wecken/Timer/Bildtakt · E4 Datenwege · E5 Grafik
-(Replay in `devices/pvg_metal/*.m`, eigener Skalierer) · D Bildschirmgrößen · I Steuerung · L Lebenszyklus, dazu die
-Behebungen aus den Prüfungen von E3/E4.
+## Stand des Umbaus (23.11.2026, spät)
+**In `main`, Build 1 = `out/Solstice.ipa` (1.0.71, Build 1071, Kennung noch `com.henge.app`):** Welle 1 (S, E1–E5), Welle 2
+(D Bildschirmgrößen, I Steuerung, L Lebenszyklus, U Einstellungen, K Knopf-Tabelle `core/knobs.def`, R sichtbare Namen
+`host/brand.h`), dazu die Behebungen aus sechs Prüfungen (Datenwege, Wecken/MMU, Bild, App, Code-Cache).
+Geprüft: alle Engine-Tests normal, wie ausgeliefert + LTO und mit UB-Fallen, Swift-Tests, App-Build mit SIMD-Sperre,
+Namens- und Knopf-Sperre. **Noch auf keinem Gerät gelaufen.**
 
-**Unterwegs (je ein Zweig `solstice/<name>`, danach in `main`):**
-- `picture-fixes`: 12 Prüfer-Funde im Bildweg. Nr. 1 ist der iPad-Air-4-Fehler (Bild tot nach „GPU Address Fault“): ein
-  Puffer, dessen GPU-Adresse der Gast kennt, wird bei einem Remap ersetzt und freigegeben; dazu Erholung nach einem
-  GPU-Fehler und ein Ring der letzten Remaps im Log.
-- `app-fixes`: 10 Funde (Speicherstand nie bei bloßem Startfehler löschen, Stop während des Starts, hängende Taste,
-  Reihenfolge beim Einfügen, abgebrochene Berührung ≠ Klick, Force Off blockiert nicht mehr, ENOSPC endgültig …).
-- `codecache-fixes`: 7 Funde (heißer Code behält seine Marke auch über den leichten Pfad, Rücksprung-Vorhersage,
-  ein Durchlauf pro Epoche, Statistik, kleinere JIT-Region als Rückfall).
-- `settings` (U), `knobs` (K, `core/knobs.def`), `rename` (R, sichtbar überall „Solstice“, `host/brand.h`).
+**Was Build 1 am Gerät zeigen soll (Log lesen):**
+- Zähler gegen die Tabelle oben: Wieder-Übersetzungen, TLB-Nachfüllungen, Sprung-Cache-Füllungen, Geräte-Abfragen, Kicker.
+- iPad Air 4: kein totes Bild mehr; bei einem GPU-Fehler die Zeilen `pvg-metal: N remaps so far … told yes|no` und
+  `GPU context lost: drawing on a new command queue`.
+- Fortsetzen (Start in Sekunden), Shut Down über den Ein/Aus-Knopf, Rechtsklick, deutsche Tastatur, Ton nach Unterbrechung,
+  schärferes Bild, Set Up räumt die alten Namen weg, Schlüsselbund-Übernahme der Kopplung.
 
-**Danach:** Build 1 (mit iPad-Fix und Umbenennung; im Mac einmal „Set Up“ neu) → Zähler mit der Tabelle oben vergleichen ·
-Bildschirmfotos aller Ansichten aus dem Simulator (Schein-Engine) für die Durchsicht des Aussehens · Texte in einen Katalog
-(`Strings.swift`) · `-Werror`, `MAP.md`, `tools/WHERE.md` · drei Schluss-Prüfungen · eigene App-Kennung · Schluss-Build,
-frische Installation auf iPhone 16 Pro und iPad Air 4, Alltagstest.
+**Unterwegs:** `solstice/screens` – Bildschirmfotos aller Ansichten aus dem Simulator (Schein-Engine), `tools/screens.sh`.
 
-**Offen / nur am Gerät zu klären:** SHA-256 der Restore-Datei festschreiben (`Installer.swift`); Ein/Aus-Knopf (PL061)
-fährt macOS wirklich herunter?; Rechtsklick per Zwei-Finger-Klick; ISO-Tastatur (`^`/`<`); Schlüsselbund nach erneutem
-Signieren; Ursache des Leerlauf-Sturms (Detektor loggt sie).
+**Danach:** Durchsicht des Aussehens anhand der Fotos · Texte in einen Katalog (`Strings.swift`) · Bildschirmgröße in den
+Kopf des Speicherstands (heute verwirft eine geänderte Größe den Stand still) · `-Werror`, `MAP.md`, `tools/WHERE.md` ·
+drei Schluss-Prüfungen (Kern, App, Sicherheit) · eigene App-Kennung + Programmname · Schluss-Build, frische Installation
+auf iPhone 16 Pro und iPad Air 4, Alltagstest.
+
+**Offen / nur am Gerät zu klären:** Ein/Aus-Knopf (PL061) fährt macOS wirklich herunter?; Zwei-Finger-Rechtsklick;
+ISO-Tastatur (`^`/`<`); Schlüsselbund nach erneutem Signieren; ob eine neue Befehlswarteschlange die GPU-Sperre von iOS
+aufhebt; Ursache des Leerlauf-Sturms (Detektor loggt sie).
+
+**CI:** Alle macOS-Jobs auf dem `xcode-27`-Image. GitHub hat für macOS-arm64 Kapazitätsengpässe: Jobs warten bis 30 min
+und werden nach 15 min ohne Runner verworfen („not acquired“) – dann denselben Lauf neu starten. Mehrere Zweige zusammen in
+einem Lauf prüfen statt einzeln.
