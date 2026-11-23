@@ -178,20 +178,16 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     if (!cc->evict_tenured || !tot.cc_tenured) printf("%s: nothing tenured, or no tenured segment evicted: FAIL\n", name), failed++;
     if (!cc->evict_unchained) printf("%s: no chained exit undone: FAIL\n", name), failed++;
     if (rate0 != 0 || rate * secs < 0.9 * (double)tot.blocks || rate * secs > 1.1 * (double)tot.blocks)
-        printf("%s: blocks/s since the mark %.0f (first read %.0f), %.0f entered in %.1f s: FAIL
-", name, rate, rate0,
+        printf("%s: blocks/s since the mark %.0f (first read %.0f), %.0f entered in %.1f s: FAIL\n", name, rate, rate0,
                (double)tot.blocks, secs), failed++;
     if (opts & RUN_STATS) {
         /* Every guest instruction takes some words: the count must be the blocks' own code (it was the region's
            extent, which goes back down as segments are reused). And a line every 2 s, whichever CPUs run. */
         double wpi = (double)tot.translated_words / ((double)tot.translated_insns + 1e-9);
         uint64_t lines = hv_stats_lines - lines0;
-        printf("%s: %llu stats lines, %.1f words per translated instruction
-", name, (unsigned long long)lines, wpi);
-        if (wpi < 2) printf("%s: %.2f words per translated instruction: FAIL
-", name, wpi), failed++;
-        if ((double)lines + 2 < secs / 2) printf("%s: %llu stats lines in %.1f s: FAIL
-", name, (unsigned long long)lines, secs), failed++;
+        printf("%s: %llu stats lines, %.1f words per translated instruction\n", name, (unsigned long long)lines, wpi);
+        if (wpi < 2) printf("%s: %.2f words per translated instruction: FAIL\n", name, wpi), failed++;
+        if ((double)lines + 2 < secs / 2) printf("%s: %llu stats lines in %.1f s: FAIL\n", name, (unsigned long long)lines, secs), failed++;
     }
     if (tot.flush_full) printf("%s: full flushes for room: FAIL\n", name), failed++;
     if (tot.block_flushes > (uint64_t)flushes_asked) /* (one asked for just before the end may not have run) */
