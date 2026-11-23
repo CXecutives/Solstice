@@ -1,37 +1,43 @@
 import Foundation
 
-/// Engine settings, without a rebuild. Defaults below, then the Advanced settings,
-/// then Documents/solstice-env.txt (HV_ variables only, EnvOverrides) overrides them all.
-/// Applied at launch and again before each Mac starts, so changes need no relaunch.
+/// Engine settings, without a rebuild. The engine's own defaults are in core/knobs.def (KNOBS.md); the app ships these
+/// over them, then the Advanced settings, then Documents/solstice-env.txt (HV_ variables only, EnvOverrides) overrides
+/// them all. Applied at launch and again before each Mac starts, so changes need no relaunch.
 enum EngineTuning {
 
     /// What upstream Henge starts its engine with. Safe mode (SafeMode, HV_SAFE) runs with exactly these.
-    static let upstream: [String: String] = [
+    /// Each is set every time, also where it equals the engine's default: it replaces what an earlier apply set
+    /// (a refresh rate or disk flush from the Advanced settings).
+    static let upstream: [EngineKnob: String] = [
         // 60, not 120: every frame macOS draws is emulated and replayed, so 120 Hz
         // halves the CPU left for apps for animation few will notice. Settings offers 120 only on a 120 Hz panel.
-        "HV_HZ": "60",         // the refresh rate macOS is told its display has (DeviceProfile.defaultRefresh)
-        "HV_WFI_SPIN": "0",    // microseconds an idle CPU watches for work before sleeping
-        "HV_FLUSH": "2",       // disk flush: F_BARRIERFSYNC, ordered but without a full fsync
+        .hz: "60",             // the refresh rate macOS is told its display has (DeviceProfile.defaultRefresh)
+        .wfiSpin: "0",         // microseconds an idle CPU watches for work before sleeping
+        .flush: "2",           // disk flush: F_BARRIERFSYNC, ordered but without a full fsync
         // The memory balloon, asking for nothing: there for MemoryRelief when iOS runs short (KeepAlive.swift; #214).
-        "HV_BALLOON": "0",
-        "HV_STATS": "10",      // seconds between engine stats lines in the log; 0 = off
+        .balloon: "0",
+        .stats: "10",          // seconds between engine stats lines in the log; 0 = off
     ]
 
     /// Solstice's own engine defaults, over upstream's: every one of them in this table and nowhere else.
-    static let solstice: [String: String] = [
-        "HV_STATS": "30",      // (HV_STATS_DEEP=1: costly diagnostics too)
+    static let solstice: [EngineKnob: String] = [
+        .stats: "30",          // (HV_STATS_DEEP=1: costly diagnostics too)
         // A CPU waiting for others' TLB acknowledgements sleeps after 64 spins instead of spinning on (#218:
         // 76% of a core down to 4-9% on an iPhone); TLB range invalidations of up to 256 pages in one pass.
-        "HV_SYNC_WAIT": "1",
-        "HV_RANGE_DROP": "256",
+        .syncWait: "1",
+        .rangeDrop: "256",
         // Grouped memory accesses (v2: plain copies in the cold part, so the hot code grows by the checks only).
-        "HV_GROUPS": "1",
+        .groups: "1",
         // Hot or in Low Power Mode (PowerPolicy): at most this many frames a second go to the screen. macOS still
         // draws at HV_HZ (its clock follows that rate); the screen, its compositing and the panel do half the work.
-        "HV_SAVING_HZ": "30",
+        .savingHz: "30",
     ]
 
-    static var defaults: [String: String] { upstream.merging(solstice) { $1 } }
+    static var defaults: [String: String] { named(upstream.merging(solstice) { $1 }) }
+
+    private static func named(_ table: [EngineKnob: String]) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: table.map { ($0.key.rawValue, $0.value) })
+    }
 
     static func apply() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -45,24 +51,26 @@ enum EngineTuning {
             }
         }
         // HV_SAFE=1 or 0 in solstice-env.txt decides it by hand.
-        let safe = overrides["HV_SAFE"].map { $0 != "0" } ?? SafeMode.active
-        var env = safe ? upstream : defaults
+        let safe = overrides[EngineKnob.safe.rawValue].map { $0 != "0" } ?? SafeMode.active
+        var env = safe ? named(upstream) : defaults
         let d = UserDefaults.standard
         // A rate the panel cannot show (120 chosen before, or on another device) stays at the default.
         let hz = d.integer(forKey: SettingKey.refreshRate.rawValue)
-        if hz != Device.defaultRefresh, Device.refreshChoices.contains(hz) { env["HV_HZ"] = String(hz) }
-        if d.object(forKey: SettingKey.fastFlush.rawValue) as? Bool == false { env["HV_FLUSH"] = "0" }
+        if hz != Device.defaultRefresh, Device.refreshChoices.contains(hz) { env[EngineKnob.hz.rawValue] = String(hz) }
+        if d.object(forKey: SettingKey.fastFlush.rawValue) as? Bool == false { env[EngineKnob.flush.rawValue] = "0" }
         // GPU command trace: on while Documents/trace-on exists (it is checked every frame, so it can be toggled live).
-        env["HV_PVG_TRACE_FILE"] = docs.appendingPathComponent("trace-on").path
-        env["HV_SAFE"] = safe ? "1" : nil
+        env[EngineKnob.pvgTraceFile.rawValue] = docs.appendingPathComponent("trace-on").path
+        let safeKey = EngineKnob.safe.rawValue
+        env[safeKey] = safe ? "1" : nil
         env.merge(overrides) { $1 }
         // A value of Solstice's from an earlier apply goes when safe mode leaves it out.
-        for k in solstice.keys where env[k] == nil { unsetenv(k) }
-        if env["HV_SAFE"] == nil { unsetenv("HV_SAFE") }
+        for k in solstice.keys where env[k.rawValue] == nil { unsetenv(k.rawValue) }
+        if env[safeKey] == nil { unsetenv(safeKey) }
         for (k, v) in env.sorted(by: { $0.key < $1.key }) {
             setenv(k, v, 1)
             HengeLog.log("tuning", "\(k)=\(v)")
         }
+        henge_vm_knobs_load() // the engine parses them now: anything wrong is in the log at once
         if safe { HengeLog.log("tuning", "safe mode: the upstream engine defaults, none of Solstice's") }
     }
 }

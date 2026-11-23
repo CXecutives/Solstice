@@ -3,8 +3,7 @@
 /* One exec: {task, resources, buffers}, {ref, flags} per resource, {offset, length} per buffer. */
 /* Commits without waiting: the next batch can be encoded while the GPU does this one. */
 - (void)commit:(id<MTLCommandBuffer>)cb channel:(uint32_t)ch stamp:(uint32_t)stamp complete:(BOOL)complete {
-    static int sync = -1; /* HV_PVG_SYNC: wait for the GPU after every batch */
-    if (sync < 0) sync = getenv("HV_PVG_SYNC") != NULL;
+    int sync = hv_knob.pvg_sync; /* HV_PVG_SYNC: wait for the GPU after every batch */
     HvPvgLite *l = lite;
     atomic_fetch_add(&inflight, 1);
     dispatch_group_enter(completions);
@@ -90,9 +89,7 @@
         if (!o) continue;
         if (o->mapped) refresh_pages(self, task, o);
         if (o->surface && [self syncSurface:o->surface blit:&blit commandBuffer:cb]) surfaces_blitted = YES;
-        static int tally = -1;
-        if (tally < 0) tally = getenv("HV_PVG_TALLY") != NULL;
-        if (tally && (o->entry[0] & 0xff) == OBJ_MAPPED_TEXTURE) {
+        if (hv_knob.pvg_tally && (o->entry[0] & 0xff) == OBJ_MAPPED_TEXTURE) {
             static uint32_t seen[256];
             uint32_t f = res[i * 2 + 1] & 0xff, key = res[i * 2] & 0xff;
             if (seen[key] != f + 1) {

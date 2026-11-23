@@ -73,6 +73,7 @@ static int cursor_scale(void) {
 #include <unistd.h>
 
 #include "pvg_lite.h"
+#include "knobs.h"
 #include "pvg_vblank_clock.h"
 #include "metallib.h"
 
@@ -372,7 +373,7 @@ static _Atomic int hv_half_mode = -1;
 static int hv_half_mode_get(void) {
     int m = atomic_load(&hv_half_mode);
     if (m < 0) {
-        const char *e = getenv("HV_PVG_HALF");
+        const char *e = hv_knob.pvg_half;
         m = e && !strcmp(e, "linear") ? 1 : 0;
         atomic_store(&hv_half_mode, m);
     }

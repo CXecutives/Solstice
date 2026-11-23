@@ -21,12 +21,10 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->pipe_lock = OS_UNFAIR_LOCK_INIT;
         r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->cursor_queue = dispatch_queue_create("hengevm.cursor", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
-        const char *hz = getenv("HV_HZ");
-        int rate = hz && atoi(hz) >= 30 && atoi(hz) <= 120 ? atoi(hz) : 60;
-        r->present_every = 1.0 / rate;
+        r->present_every = 1.0 / hv_knob.hz;
         r->overlay_matched = -1;
         /* Screenshots of the drawable (the GPU test) want the pointer in it. */
-        r->overlay_never = getenv("HV_PVG_GPU_TEST") != NULL;
+        r->overlay_never = hv_knob.pvg_gpu_test;
         r->screen_lock = OS_UNFAIR_LOCK_INIT;
         r->walk_epoch = 1;
         r->mapped_textures = [NSMutableDictionary new];
@@ -35,14 +33,14 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->planar_uses = [NSMutableDictionary new];
         r->planar_hashes = [NSMutableDictionary new];
         r->complaints = [NSMutableSet new];
-        r->shot = getenv("HV_PVG_SHOT");
+        r->shot = hv_knob.pvg_shot;
         [r openArchive];
 #if !TARGET_OS_IPHONE
-        if (getenv("HV_PVG_GPU_TEST")) r->layer = [CAMetalLayer layer];
+        if (hv_knob.pvg_gpu_test) r->layer = [CAMetalLayer layer];
 #endif
 #if !TARGET_OS_IPHONE
         if (r->shot) {
-            double every = getenv("HV_PVG_SHOT_SECS") ? atof(getenv("HV_PVG_SHOT_SECS")) : 5;
+            double every = hv_knob.pvg_shot_secs;
             dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, r->worker);
             dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(every * NSEC_PER_SEC)), (uint64_t)(every * NSEC_PER_SEC), NSEC_PER_SEC / 10);
             HvReplay *__weak weak = r;
@@ -159,7 +157,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                         os_unfair_lock_lock(&r->screen_lock);
                         r->cursor_shown = args[1] & 1;
                         os_unfair_lock_unlock(&r->screen_lock);
-                        if (getenv("HV_PVG_CURSOR_LOG")) fprintf(stderr, "pvgcursor show %u\n", args[1]);
+                        if (hv_knob.pvg_cursor_log) fprintf(stderr, "pvgcursor show %u\n", args[1]);
                         [r drawCursor];
                     }
                 }

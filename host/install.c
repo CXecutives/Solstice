@@ -9,6 +9,7 @@
    the restore OS asks for its keys itself (the host just fetches the URL). */
 
 #include "install.h"
+#include "knobs.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -36,7 +37,7 @@ static void *mux_thread(void *arg) {
     (void)arg;
     char *argv[] = {"usbmuxd", "-f", "-p", "-P", "NONE", "-S", g_mux, "-C", g_cache, NULL};
     int argc = 9;
-    if (getenv("HV_INSTALL_LOG")) {
+    if (hv_knob.install_log) {
         static char *v[] = {"usbmuxd", "-f", "-v", "-v", "-p", "-P", "NONE", "-S", NULL, "-C", NULL, NULL};
         v[8] = g_mux, v[10] = g_cache;
         usbmuxd_main(11, v);
@@ -58,7 +59,7 @@ static void *restore_thread(void *arg) {
         return NULL;
     }
     int flags = FLAG_ERASE;
-    if (getenv("HV_INSTALL_LOG")) flags |= FLAG_DEBUG;
+    if (hv_knob.install_log) flags |= FLAG_DEBUG;
     idevicerestore_set_flags(c, flags);
     idevicerestore_set_ipsw(c, g_ipsw);
     idevicerestore_set_cache_path(c, g_cache);

@@ -18,6 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "../core/machine.h"
+#include "knobs.h"
 #include "vm.h"
 
 extern void (*hv_prof_register)(void);
@@ -124,7 +125,7 @@ static void dump(void) {
 
 static void *sampler(void *unused) {
     (void)unused;
-    int secs = getenv("HV_PROF_IOS_SECS") ? atoi(getenv("HV_PROF_IOS_SECS")) : 30;
+    int secs = hv_knob.prof_ios_secs;
     uint64_t ticks = 0;
     for (;;) {
         usleep(1000);
@@ -154,8 +155,8 @@ static void *sampler(void *unused) {
 void hv_prof_ios_start(void) {
     static int started;
     if (started++) return;
-    if (!getenv("HV_PROF_IOS")) return;
-    words_on = atoi(getenv("HV_PROF_IOS")) >= 2;
+    if (hv_knob.prof_ios < 0) return;
+    words_on = hv_knob.prof_ios >= 2;
     Dl_info info;
     if (dladdr((void *)hv_prof_ios_start, &info)) image_base = (uintptr_t)info.dli_fbase;
     hv_prof_register = reg;

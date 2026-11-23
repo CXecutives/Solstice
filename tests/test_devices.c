@@ -1,5 +1,6 @@
 #define __ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES 0 /* no check() macro from AudioToolbox's headers */
 #include "harness.h"
+#include "knobs.h"
 
 #include <fcntl.h>
 #include <mach/mach_time.h>
@@ -1139,6 +1140,7 @@ int main(void) {
     setenv("HV_RAM_FILE", ram_path, 1);
     setenv("HV_RAM_NO_LEDGER", "1", 1);
     setenv("HV_RAM_NO_PREFAULT", "1", 1);
+    hv_knobs_load(); /* after the machine: the board reads them */
     static const uint8_t mac[6] = {2, 0, 0, 0x12, 0x34, 0x56};
     if (hv_vmapple_reserve_ram(&board, RAM_SIZE) != 0 || hv_vmapple_create(&board, &m, &cpu, &root, &aux, &cfg, mac) != 0) return 1;
     hv_vmapple_reset_cpu(&board);

@@ -41,7 +41,7 @@ permissions:
   contents: read
 
 jobs:
-  # No "Henge" in what a person can see (python3 only, so a free Linux runner, no macOS slot).
+  # No "Henge" in what a person can see, no setting around core/knobs.def (python3 only: a free Linux runner, no macOS slot).
   brand:
     name: Brand gate
     runs-on: ubuntu-latest
@@ -49,6 +49,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: python3 tools/brand_gate.py
+      # Every HV_ setting through core/knobs.def (no getenv("HV_ elsewhere, no name it lacks), and what is generated
+      # (tools/regen.sh) as checked in.
+      - name: Settings table and generated files
+        run: |
+          python3 tools/knobs.py --check
+          bash tools/regen.sh
+          git diff --exit-code
 
   engine:
     name: Engine tests

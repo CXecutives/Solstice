@@ -14,7 +14,7 @@ endif
 B ?= build
 
 CORE = $(B)/classify.o $(B)/operands.o $(B)/translate.o $(B)/dispatch.o $(B)/mmu.o $(B)/memop.o \
-       $(B)/exception.o $(B)/sysreg.o $(B)/machine.o $(B)/codecache.o $(B)/light.o $(B)/stats.o
+       $(B)/exception.o $(B)/sysreg.o $(B)/machine.o $(B)/codecache.o $(B)/light.o $(B)/stats.o $(B)/knobs.o
 HOST = $(B)/jit_region.o $(B)/enter.o $(B)/disk.o
 DEV = $(B)/pvg_lite.o $(B)/pvg_metal.o $(B)/gicv3.o $(B)/timer.o $(B)/pl011.o $(B)/pl031.o $(B)/cfg.o $(B)/bdif.o $(B)/pcie.o \
       $(B)/virtio.o $(B)/virtio_blk.o $(B)/virtio_net.o $(B)/virtio_input.o $(B)/virtio_snd.o $(B)/virtio_usb.o $(B)/virtio_balloon.o $(B)/xhci.o $(B)/vmapple.o $(B)/aes.o $(B)/pl061.o $(B)/metallib.o
@@ -23,7 +23,7 @@ METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -frame
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
         $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
-        $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue
+        $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue $(B)/test_knobs
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 
@@ -79,9 +79,9 @@ $(B)/hengevm: host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/
 # No SIMD where translated code calls C with the guest's SIMD registers live: hv_tlb_refill, hv_ijc_resolve (mmu.c),
 # the light paths (light.c) and the exception entry and return they take (exception.c). tools/simd_gate.py checks it.
 NOSIMD = mmu exception light
-$(patsubst %,$(B)/%.o,$(NOSIMD)): $(B)/%.o: core/%.c core/*.h host/*.h | $(B)
+$(patsubst %,$(B)/%.o,$(NOSIMD)): $(B)/%.o: core/%.c core/*.h core/knobs.def host/*.h | $(B)
 	$(CC) $(CFLAGS) -mgeneral-regs-only -c $< -o $@
-$(B)/%.o: core/%.c core/*.h host/*.h | $(B)
+$(B)/%.o: core/%.c core/*.h core/knobs.def host/*.h | $(B)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(B)/%.o: host/%.c host/*.h core/*.h devices/*.h | $(B)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -92,7 +92,7 @@ $(B)/%.o: devices/%.c devices/*.h core/*.h host/*.h | $(B)
 
 $(B)/test_classify: tests/test_classify.c tests/classify_cases.s $(B)/classify.o
 	$(CC) $(CFLAGS) $^ -o $@
-$(B)/test_jit_region: tests/test_jit_region.c $(B)/jit_region.o
+$(B)/test_jit_region: tests/test_jit_region.c $(B)/jit_region.o $(B)/knobs.o
 	$(CC) $(CFLAGS) $^ -o $@
 $(B)/test_pvg_vblank_clock: tests/test_pvg_vblank_clock.c devices/pvg_vblank_clock.h | $(B)
 	$(CC) $(CFLAGS) tests/test_pvg_vblank_clock.c -o $@
@@ -103,11 +103,15 @@ $(B)/test_mmu: tests/test_mmu.c tests/mmu_programs.S $(ENGINE)
 	$(CC) $(CFLAGS) tests/test_mmu.c tests/mmu_programs.S $(ENGINE) -o $@
 
 # The scripts share.c serves to macOS: parsed by sh, the LaunchDaemon checked by plutil.
-$(B)/test_share_scripts: tests/test_share_scripts.c host/share.c host/share.h | $(B)
-	$(CC) $(CFLAGS) tests/test_share_scripts.c -o $@
+$(B)/test_share_scripts: tests/test_share_scripts.c host/share.c host/share.h $(B)/knobs.o | $(B)
+	$(CC) $(CFLAGS) tests/test_share_scripts.c $(B)/knobs.o -o $@
 
 $(B)/test_shutdown: tests/test_shutdown.c $(ENGINE)
 	$(CC) $(CFLAGS) $^ -o $@
+
+# The settings table (core/knobs.def): parsing, ranges, unknown names, a machine reading them again.
+$(B)/test_knobs: tests/test_knobs.c core/knobs.def $(ENGINE)
+	$(CC) $(CFLAGS) tests/test_knobs.c $(ENGINE) -o $@
 
 # Native app lifecycle with real devices and networking; no restore assets.
 $(B)/test_dns_lifecycle: tests/test_dns_lifecycle.c $(B)/dns_proxy.o

@@ -1,4 +1,5 @@
 #include "mmu.h"
+#include "knobs.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -619,8 +620,8 @@ static void write_guard(HvCpu *cpu, HvRam *ram, uint64_t pg, uint32_t code, HvTl
 /* HV_KVA_HIST (measuring, for a kernel fastmem window): which kernel VAs get TLB fills, per GB from the bottom of xnu's
    kernel VA space, and how many distinct 16 KB pages. hv_kva_hist_dump writes it out. */
 #define KVA_GBS 2048 /* buckets: 2048 of 1 GB from 0xfffffe0000000000 by default; HV_KVA_BASE (hex) and HV_KVA_SHIFT move and widen them */
-static uint64_t KVA_BASE = 0xfffffe0000000000ull;
-static int kva_shift = 30;
+static uint64_t KVA_BASE;
+static int kva_shift;
 static uint64_t kva_fills[KVA_GBS], kva_pages_n[KVA_GBS], kva_below, kva_above;
 static uint8_t *kva_seen; /* one bit per page */
 static int kva_on = -1;
@@ -628,9 +629,9 @@ static int kva_on = -1;
    translated code with the guest's q0-q31 still live, so it must not call into libc (getenv, calloc). */
 void hv_kva_init(void) {
     if (kva_on >= 0) return;
-    kva_on = getenv("HV_KVA_HIST") != NULL;
-    if (getenv("HV_KVA_BASE")) KVA_BASE = strtoull(getenv("HV_KVA_BASE"), NULL, 16);
-    if (getenv("HV_KVA_SHIFT")) kva_shift = atoi(getenv("HV_KVA_SHIFT"));
+    kva_on = hv_knob.kva_hist;
+    KVA_BASE = hv_knob.kva_base;
+    kva_shift = hv_knob.kva_shift;
     if (kva_on) kva_seen = calloc((size_t)KVA_GBS << (kva_shift - HV_TLB_PAGE_BITS - 3), 1);
     if (!kva_seen) kva_on = 0;
 }
@@ -738,7 +739,7 @@ uint32_t hv_mmu_access(HvCpu *cpu, uint64_t va, HvAccess acc, int el, uint64_t *
    WALK_LOG walks (a process switch counts as every page). Without the knob, only "no walk at all" passes. */
 static int walks_elsewhere(HvCpu *target, uint32_t s1, uint32_t s2, uint64_t va, uint64_t npages) {
     if (s1 == s2 && !(s1 & 1)) return 1;
-    if (!hv_knob[HV_K_WALKLOG]) return 0;
+    if (!hv_knob.walk_log) return 0;
     HvPerCpu *p = target->pc_state;
     uint32_t k1 = s1 >> 1, k2 = (s2 + 1) >> 1; /* walks k1 .. k2 - 1 */
     if (k2 - k1 > WALK_LOG) return 0;
@@ -1399,9 +1400,7 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
     HvPerCpu *p = cpu->pc_state;
     HvMachine *m = cpu->m;
     if (old == now) return; /* the same address space: a TLB tagged by ASID would keep everything too */
-    static int no_stash = -1; /* HV_NO_STASH: a switch just drops the user entries */
-    if (no_stash < 0) no_stash = getenv("HV_NO_STASH") != NULL;
-    if (!p || current_asid(cpu) < 0 || m->watch_va || m->watch_pa || no_stash) {
+    if (!p || current_asid(cpu) < 0 || m->watch_va || m->watch_pa || hv_knob.no_stash) { /* HV_NO_STASH: a switch just drops the user entries */
         hv_tlb_flush_user(cpu);
         return;
     }

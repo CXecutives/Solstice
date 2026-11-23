@@ -125,20 +125,14 @@ static MTLPixelFormat copy_format(size_t bpe) {
     }
 }
 
-/* Debugging, read once: HV_PVG_HOST_DUMP=prefix, the host surface as it is just before the guest's pixels go over it
+/* Debugging: HV_PVG_HOST_DUMP=prefix, the host surface as it is just before the guest's pixels go over it
    (the first few multi-plane surfaces, with its layout in a .txt beside it: did the GPU draw something here that this
    copy throws away?); HV_PVG_SURFACE_DUMP=prefix, the guest's bytes copied. */
 static const char *host_dump_prefix(void) {
-    static const char *p;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ p = getenv("HV_PVG_HOST_DUMP"); });
-    return p;
+    return hv_knob.pvg_host_dump;
 }
 static const char *surface_dump_prefix(void) {
-    static const char *p;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ p = getenv("HV_PVG_SURFACE_DUMP"); });
-    return p;
+    return hv_knob.pvg_surface_dump;
 }
 
 static void dump_host_surface(HvObject *s) {
@@ -330,7 +324,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
        macOS 14's driver writes a compact one: u32 allocation at 0x10, width and height << 8 at 0x14 and 0x18, u32 row
        at 0x1c, bytes per pixel at 0x20 (BGRA 1920x1080: 007ec000 00078080 00043880 00001e00 00000004); one plane. */
     BOOL compact = hv_pvg_lite_old_driver(lite) != 0;
-    if (getenv("HV_PVG_DESC_DUMP")) {
+    if (hv_knob.pvg_desc_dump) {
         fprintf(stderr, "surface-desc %llu:", mapping);
         for (int i = 0; i < 0x200; i += 4) fprintf(stderr, "%s%08x", i % 32 ? " " : "\n  ", *(const uint32_t *)(desc + i));
         fprintf(stderr, "\n");
@@ -392,9 +386,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
            first) by WindowServer came back from the guest's pages as never drawn, alpha 0: a blank page. A copy
            is still made for a view that cannot sit on the pages (newIOSurface). HV_PVG_PLANAR_COPY=1 (testing):
            the copy for every one, as before. */
-        static int copy_all = -1;
-        if (copy_all < 0) copy_all = getenv("HV_PVG_PLANAR_COPY") != NULL;
-        if (copy_all || !surface->mapping_in_buffer) [self newIOSurface:surface mapping:mapping];
+        if (hv_knob.pvg_planar_copy || !surface->mapping_in_buffer) [self newIOSurface:surface mapping:mapping];
     }
     if (hv_pvg_trace_on()) fprintf(stderr, "trace: surface %llu: %llux%llu, row %llu, %llu KB, fourcc %c%c%c%c planes %u\n", mapping, (unsigned long long)sw, (unsigned long long)sh, row, alloc >> 10, desc[7], desc[6], desc[5], desc[4], planes);
         return surface;
@@ -454,9 +446,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
        made over plane 0 left plane 1 empty, so chroma read back as zero (all green) and alpha as zero (blank pages). */
     uint16_t plane;
     memcpy(&plane, h.d + (h.tag == 0x39 ? 0x28 : 0x20), 2);
-    static int plane0 = -1; /* HV_PVG_PLANE0 (testing): every view on plane 0, as before this was read */
-    if (plane0 < 0) plane0 = getenv("HV_PVG_PLANE0") != NULL;
-    if (plane0) plane = 0;
+    if (hv_knob.pvg_plane0) plane = 0; /* HV_PVG_PLANE0 (testing): every view on plane 0, as before this was read */
     if (surface->planar_desc && !surface->iosurface) {
         if (plane >= surface->plane_count) {
             [self complain:[NSString stringWithFormat:@"surface %llu: texture on plane %u of %u; using plane 0", h.mapping, plane, surface->plane_count]];

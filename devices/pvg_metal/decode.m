@@ -66,7 +66,7 @@ typedef struct {
     if (pre_tile_w) d.tileWidth = pre_tile_w, d.tileHeight = pre_tile_h;
     {   /* HV_PVG_PASSDUMP=N: the first N render pass records, raw and as read (for a guest driver whose layout differs) */
         static int left = -1;
-        if (left < 0) left = getenv("HV_PVG_PASSDUMP") ? atoi(getenv("HV_PVG_PASSDUMP")) : 0;
+        if (left < 0) left = hv_knob.pvg_passdump;
         if (left > 0) {
             left--;
             fprintf(stderr, "passdump: size 0x%x samples %lu imageblock %lu threadgroup %lu tile %lux%lu layers %lu rt %lux%lu\n", r.size,

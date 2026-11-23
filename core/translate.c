@@ -1,4 +1,5 @@
 #include "translate.h"
+#include "knobs.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -253,7 +254,7 @@ static int put_mov_imm(Emit *e, int reg, uint64_t value, int max) {
    (nearly all addresses, user and kernel) can be built in the register instead, in as many words: HV_MOVIMM=1
    (off: no measured gain on the Mac mix, 2026-11-08). */
 static void put_lit(Emit *e, int reg, uint64_t value) {
-    if (hv_knob[HV_K_MOVIMM] && put_mov_imm(e, reg, value, 3)) return;
+    if (hv_knob.movimm && put_mov_imm(e, reg, value, 3)) return;
     e->pool[e->npool] = value;
     e->fix[e->nfix++] = (LitFix){e->n, FIX_LDR, e->npool++, (uint8_t)(e->in_cold && !e->flat)};
     put(e, 0x58000000u | reg);
@@ -390,9 +391,7 @@ static void put_exit(Emit *e, uint64_t target) {
    that way, so any loop of chained blocks still has a checked edge, and a CPU
    asked to leave reaches one soon. */
 static int check_exits_always(void) {
-    static int v = -1; /* HV_EXIT_CHECKS: check on every exit (debugging) */
-    if (v < 0) v = getenv("HV_EXIT_CHECKS") != NULL;
-    return v;
+    return hv_knob.exit_checks; /* HV_EXIT_CHECKS: check on every exit (debugging) */
 }
 
 /* A direct branch to another page can chain too, if a check that the target
@@ -402,10 +401,8 @@ static int check_exits_always(void) {
    it to must be in that physical page (chain() in dispatch.c). The addend is
    looked up now, in the translating CPU's page tables; 0 if it cannot be. */
 static uint64_t cross_addend(Emit *e, uint64_t target) {
-    static int off = -1; /* HV_NO_XCHAIN: exits to other pages always look the target up */
-    if (off < 0) off = getenv("HV_NO_XCHAIN") != NULL;
     HvCpu *cpu = hv_self;
-    if (off || !cpu || e->no_ijc || !e->m->chain) return 0;
+    if (hv_knob.no_xchain || /* HV_NO_XCHAIN: exits to other pages always look the target up */ !cpu || e->no_ijc || !e->m->chain) return 0;
     /* This CPU's TLB first: an entry there is the mapping now. */
     int table = !(e->flags & HV_BLOCK_EL1) ? 0 : (e->flags & HV_BLOCK_PAN) ? 2 : 1;
     const HvTlbEntry *te = hv_tlb_ent(cpu, (target >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), table);
@@ -421,9 +418,7 @@ static uint64_t cross_addend(Emit *e, uint64_t target) {
 }
 
 static int use_xjump(void) {
-    static int v = -1; /* HV_INLINE_XJUMP: each direct branch to another page has its own cache lookup */
-    if (v < 0) v = getenv("HV_INLINE_XJUMP") == NULL;
-    return v;
+    return !hv_knob.inline_xjump; /* HV_INLINE_XJUMP: each direct branch to another page has its own cache lookup */
 }
 
 static void put_branch_exit(Emit *e, uint64_t target, int plain) {
@@ -696,7 +691,7 @@ static void translate_copy(Emit *e, uint32_t insn) {
     spill(e, regs, n);
     /* All copied forms only write Rd but for MOVK and BFM (BFI, BFXIL), so what is in Rd alone
        needs no loading first. */
-    int rd_read = (insn & 0x7f800000) == 0x72800000 || (insn & 0x7f800000) == 0x33000000 || hv_knob[HV_K_TEST3];
+    int rd_read = (insn & 0x7f800000) == 0x72800000 || (insn & 0x7f800000) == 0x33000000 || hv_knob.k3;
     for (int k = 0; k < n; k++) {
         int read = 0;
         for (int f = 0; f < 4; f++)
@@ -798,7 +793,7 @@ static void translate_pac(Emit *e, uint32_t insn) {
 /* HV_SUPERBLOCKS=1: a conditional branch does not end its block; the block goes
    on with the instruction after it (the taken side leaves out of line). */
 static int superblocks(void) {
-    return hv_knob[HV_K_SUPERBLOCKS];
+    return hv_knob.superblocks;
 }
 
 /* The block may go on past a conditional branch at pc: the next instruction is
@@ -830,7 +825,7 @@ static int go_on(Emit *e, uint64_t pc) {
        eor  x6, x6, x30
        str  x6, [x7, #entry & 0xfff]                                    */
 static int use_ras(const Emit *e) {
-    return !hv_knob[HV_K_NO_RAS] && !e->no_ijc; /* HV_NO_RAS: every return through the indirect-branch cache */
+    return !hv_knob.no_ras && !e->no_ijc; /* HV_NO_RAS: every return through the indirect-branch cache */
 }
 
 static void put_call(Emit *e, uint64_t ret) {
@@ -874,7 +869,7 @@ static void put_return(Emit *e) {
    leave: the branch's condition again, and out to the dispatcher at whichever PC it picks. bare: the branch
    instruction with no offset, x15 free. */
 static int hoist_check(Emit *e, uint64_t target, uint64_t pc) {
-    return hv_knob[HV_K_HOIST] && target <= pc && !check_exits_always() && !e->no_ijc;
+    return hv_knob.hoist_check && target <= pc && !check_exits_always() && !e->no_ijc;
 }
 
 static void put_exit_to(Emit *e, uint64_t va) { /* to the dispatcher at va, guest x0/x1 kept */
@@ -1046,9 +1041,8 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
         put_helper(e, pc, insn, HV_OP_UNDEF);
         return;
     }
-    static int c_excl = -1; /* HV_C_EXCL: keep every exclusive on the C path (debugging) */
-    if (c_excl < 0) c_excl = getenv("HV_C_EXCL") != NULL;
-    if (op.kind == HV_MEM_EXCL && op.bytes == 1u << op.size && !e->slow_mem && !c_excl) {
+    /* HV_C_EXCL: keep every exclusive on the C path (debugging) */
+    if (op.kind == HV_MEM_EXCL && op.bytes == 1u << op.size && !e->slow_mem && !hv_knob.c_excl) {
         translate_excl(e, insn, pc);
         return;
     }
@@ -1075,7 +1069,7 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
     if (rmw) used |= 1u << op.rs;
     if (casp) used |= 1u << (op.rs + 1) | 1u << op.rt | 1u << ((op.rt + 1) & 31);
     /* Guest x6, x7 and x15 live in the HvCpu: their host registers are as free as ever. */
-    if (!hv_knob[HV_K_TEST3]) used &= ~(1u << 6 | 1u << 7 | 1u << 15);
+    if (!hv_knob.k3) used &= ~(1u << 6 | 1u << 7 | 1u << 15);
     uint8_t s[3];
     pick3(&used, s);
     int A = s[0], T = s[1], U = s[2];
@@ -1112,7 +1106,7 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
         /* A miss: the light refill for the whole range, then the check again; if that cannot help (another page, a
            fault, a device), the instructions' plain copy (Group). Was the copy at once, so a cold TLB ran the copy. */
         put_ool(e, (Ool){.kind = OOL_GROUP, .grp = (uint8_t)(grp - e->grp), .nrestore = 3, .restore = {A, T, U}, .addr = (uint8_t)ch,
-                         .refill = 1, .recheck = hv_knob[HV_K_RECHECK] && len <= HV_TLB_ADJ + 1, .write = grp->store,
+                         .refill = 1, .recheck = hv_knob.recheck && len <= HV_TLB_ADJ + 1, .write = grp->store,
                          .table = (uint8_t)g_el, .bytes = (uint16_t)len, .tag_off = gtlb + (grp->store ? 8 : 0), .retry = retry});
         put(e, LDR_X(U, T, gtlb + 24));
         put(e, STR_X(U, 28, HV_CPU_GADDEND + 8 * grp->slot));
@@ -1186,7 +1180,7 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
     put_ool(e, (Ool){.kind = OOL_SLOW, .pc = pc, .insn = insn, .nrestore = 3, .restore = {A, T, U},
                      /* The exact recheck of an access in a page's last 15 bytes is the thunk's now, so it costs no code
                         (HV_RECHECK=0: such an access takes the refill, which sends it to the helper). */
-                     .recheck = hv_knob[HV_K_RECHECK] && !(op.align && op.bytes > 1) && op.bytes <= HV_TLB_ADJ + 1, .addr = (uint8_t)addr,
+                     .recheck = hv_knob.recheck && !(op.align && op.bytes > 1) && op.bytes <= HV_TLB_ADJ + 1, .addr = (uint8_t)addr,
                      .refill = (uint8_t)(op.bytes <= 64 && !e->slow_mem), .write = op.store, .table = (uint8_t)el_idx,
                      .align = (uint8_t)(op.align && op.bytes > 1), .bytes = (uint16_t)op.bytes,
                      .tag_off = tlb + (op.store ? 8 : 0), .retry = retry});
@@ -1220,7 +1214,7 @@ static void translate_mem(Emit *e, uint32_t insn, uint64_t pc) {
     }
     if (rs_stolen) put(e, LDR_X(rs, 28, slot_of(op.rs)));
     /* Only RMW forms have an Rs; elsewhere bits 20..16 are immediate bits. */
-    int plain_load = op.load && !rmw && !hv_knob[HV_K_TEST3]; /* it only overwrites them */
+    int plain_load = op.load && !rmw && !hv_knob.k3; /* it only overwrites them */
     if (rt_stolen && !plain_load && !(rmw && rs_stolen && rt == rs)) put(e, LDR_X(rt, 28, slot_of(op.rt)));
     if (rt2_stolen && rt2 != rt && !plain_load) put(e, LDR_X(rt2, 28, slot_of(op.rt2)));
 
@@ -1883,9 +1877,7 @@ static int translate_one(Emit *e, uint32_t insn, uint64_t pc) {
            helper leaves itself when one may cover the page this block runs from
            (see hv_helper). IC IALLU leaves. */
         if (crn == 7 && ((crm != 1 && crm != 5) || (op1 == 3 && crm == 5 && op2 == 1))) return 0;
-        static int tlbi_leaves = -1; /* HV_TLBI_LEAVES: every TLBI ends its block, as before */
-        if (tlbi_leaves < 0) tlbi_leaves = getenv("HV_TLBI_LEAVES") != NULL;
-        if (crn == 8 && !e->no_ijc && !tlbi_leaves) return 0;
+        if (crn == 8 && !e->no_ijc && !hv_knob.tlbi_leaves) return 0; /* HV_TLBI_LEAVES: every TLBI ends its block, as before */
         put_exit(e, pc + 4);
         return 1;
     }
@@ -2119,7 +2111,7 @@ int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t a
     /* HV_GROUPS=1: group accesses. Their plain copies sit in the cold part, and a cold TLB refills for the whole
        range before falling back to them: the hot part grows by the group checks only (upstream's v1 had the
        copies in the hot part and measured +15% code, no gain). A try that fails gives its exits' slots back. */
-    if (hv_knob[HV_K_GROUPS]) {
+    if (hv_knob.groups) {
         if (translate_emit(m, b, code, avail, 0, 0) == 0) return 0;
         hv_translate_discard_slots(m);
     }
@@ -2159,10 +2151,10 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     e->rec_bad = 0;
     e->w = e->hot;
     e->in_cold = 0;
-    e->flat = hv_knob[HV_K_TEST2];
+    e->flat = hv_knob.k2;
     e->overflow = 0;
     e->flags = b->flags;
-    e->slow_mem = m->slow_mem || hv_knob[HV_K_PREDSTAT] || all_slow; /* HV_PREDSTAT (measuring): every access through hv_mem_emulate */
+    e->slow_mem = m->slow_mem || hv_knob.predstat || all_slow; /* HV_PREDSTAT (measuring): every access through hv_mem_emulate */
     e->page = b->va & ~((1ull << HV_TLB_PAGE_BITS) - 1);
     e->no_ijc = !m->chain;
     e->m = m;
@@ -2314,10 +2306,9 @@ static int chunk_take(HvMachine *m, int kind, uint32_t hot, uint32_t cold, uint3
 
 int hv_translate_place(HvMachine *m, HvBlock *b) {
     Emit *e = &E;
-    uint32_t pad = hv_knob[HV_K_TEST1] & ~1u; /* HV_K1: words of nothing after each block's hot part, to see what density is worth */
     uint32_t *dst, *cold, *tramp;
     int kind = hv_cc_kind(m, b->va, b->pa, b->flags); /* dropped by an eviction and wanted again: tenured */
-    if (chunk_take(m, kind, e->nhot + pad, e->ncold, &dst, &cold, &tramp, &b->stag) != 0) return -1;
+    if (chunk_take(m, kind, e->nhot, e->ncold, &dst, &cold, &tramp, &b->stag) != 0) return -1;
     for (uint32_t k = 0; k < e->nrel; k++) {
         uint32_t at = e->rel[k].at, target = e->rel[k].target;
         if (e->rel[k].from_cold) patch_branch(&e->cold[at], (dst + target) - (cold + at));

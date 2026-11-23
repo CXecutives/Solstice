@@ -1,4 +1,5 @@
 #include "xhci.h"
+#include "knobs.h"
 #include "brand.h"
 
 #include <stdio.h>
@@ -183,9 +184,7 @@ static const struct HvXhciDev devs[HV_XHCI_DEVICES] = {
 };
 
 static int xlog(void) {
-    static int on = -1;
-    if (on < 0) on = getenv("HV_XHCI_LOG") != NULL;
-    return on;
+    return hv_knob.xhci_log;
 }
 
 /* ---- guest memory ---- */

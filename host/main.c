@@ -1,4 +1,5 @@
 #include "share.h"
+#include "knobs.h"
 #include "net_slirp.h"
 #include <time.h>
 /* hengevm: boots the virtual Mac on the macOS host.
@@ -176,7 +177,7 @@ static void prof_sample(thread_act_t th) {
 static thread_act_t prof_threads[HV_MAX_CPUS];
 static _Atomic int prof_nthreads;
 void hv_prof_register_thread(void) {
-    if (getenv("HV_PROF_ALL")) prof_threads[atomic_fetch_add(&prof_nthreads, 1)] = mach_thread_self();
+    if (hv_knob.prof_all) prof_threads[atomic_fetch_add(&prof_nthreads, 1)] = mach_thread_self();
 }
 
 static void *prof_thread(void *unused) {
@@ -227,7 +228,7 @@ static void prof_dump(const char *path) {
             qsort(prof_pcs, PROF_PCS, sizeof prof_pcs[0], prof_cmp_pc);
             HvMachine *pm = hv_vm_machine();
             for (uint32_t i = 0; i < PROF_PCS; i++) {
-                if (!prof_pcs[i].n || (prof_pcs[i].n < 8 && !(getenv("HV_PROF_PCS") && atoi(getenv("HV_PROF_PCS")) > 1))) continue;
+                if (!prof_pcs[i].n || (prof_pcs[i].n < 8 && !(hv_knob.prof_pcs > 1))) continue;
                 fprintf(f, "p %u %llx %08x\n", prof_pcs[i].n, (unsigned long long)(uintptr_t)prof_pcs[i].pc, *prof_pcs[i].pc);
             }
             /* a window of code around the hottest instructions, kept inside the region */
@@ -315,7 +316,7 @@ static void type_text(const char *t) {
 /* Debugging: HV_CLICKS="seconds:x,y;seconds:x,y" clicks on a timetable, to drive a guest's UI without a window. */
 static void *click_thread(void *unused) {
     (void)unused;
-    const char *p = getenv("HV_CLICKS");
+    const char *p = hv_knob.clicks;
     time_t start = time(NULL);
     while (p && *p) {
         int when, x, y, n = 0;
@@ -438,7 +439,7 @@ static void sha_hook(HvCpu *c) {
                     sha_blocks(watch_want, now, 256);
                     watch_state = c->x[0];
                     static int switched;
-                    if (getenv("HV_HOOK_SWITCH") && !switched++) { /* the page is about to be compared: from now on watch memcmp instead */
+                    if (hv_knob.hook_switch && !switched++) { /* the page is about to be compared: from now on watch memcmp instead */
                         HvMachine *mm = hv_vm_machine();
                         mm->stop_hook = memcmp_hook;
                         mm->stop_pc = c->pc - 0x2274914ull; /* bcmp */
@@ -525,7 +526,7 @@ static void both_hook(HvCpu *c) {
         uint8_t h[32];
         CC_SHA256(both_data, 0x4000, h);
         fprintf(stderr, "  bytes hashed: %d differ from the file's page (per 4K %d %d %d %d); same as RAM now: %d; sha256 %02x%02x%02x%02x; compare b %02x%02x%02x%02x\n", diff_good, part[0], part[1], part[2], part[3], same_now, h[0], h[1], h[2], h[3], y[0], y[1], y[2], y[3]);
-        const char *out = getenv("HV_HOOK_OUT");
+        const char *out = hv_knob.hook_out;
         if (out) {
             FILE *f = fopen(out, "wb");
             if (f) fwrite(both_data, 1, 0x4000, f), fclose(f);
@@ -538,7 +539,7 @@ static void both_hook(HvCpu *c) {
    "click x y", "move x y", "key code" (Linux), "hidkey usage", "hiddown usage", "hidup usage", "shiftkey code", "type words", "wait seconds". */
 static void *input_thread(void *unused) {
     (void)unused;
-    FILE *f = fopen(getenv("HV_INPUT_FILE"), "a+");
+    FILE *f = fopen(hv_knob.input_file, "a+");
     if (!f) return NULL;
     long at = 0;
     for (;;) {
@@ -750,14 +751,14 @@ static void *input_thread(void *unused) {
             fprintf(stderr, "hengevm: sha at pa %llx, va %llx (walks to pa %llx, fsc %u); page file %zu bytes\n", (unsigned long long)pa, (unsigned long long)va, (unsigned long long)wc.pa, (unsigned)wc.fsc, got);
             if (at && !wc.fsc && wc.pa == pa && got == sizeof hook_page && c0->vbar_el1 >> 40 == 0xfffffe) {
                 HvMachine *hm = hv_vm_machine();
-                if (getenv("HV_HOOK_BOTH")) {
+                if (hv_knob.hook_both) {
                     both_sha_pc = va;
                     hm->stop_hook = both_hook;
                     hm->stop_pc = va;
                     hm->stop_pc2 = va - 0x2274914ull;
                 } else {
-                hm->stop_hook = getenv("HV_HOOK_BCMP") ? memcmp_hook : sha_hook;
-                hm->stop_pc = getenv("HV_HOOK_BCMP") ? va - 0x2274914ull : va;
+                hm->stop_hook = hv_knob.hook_bcmp ? memcmp_hook : sha_hook;
+                hm->stop_pc = hv_knob.hook_bcmp ? va - 0x2274914ull : va;
                 }
                 hm->flush_pending = 1;
             }
@@ -862,7 +863,7 @@ static void *input_thread(void *unused) {
 /* Debugging: HV_WATCH=seconds says what each CPU is at, and how many frames the guest has shown. */
 static void *watch_thread(void *unused) {
     (void)unused;
-    int secs = atoi(getenv("HV_WATCH"));
+    int secs = hv_knob.watch;
     time_t start = time(NULL);
     {
         HvVmapple *bd = hv_vm_board();
@@ -897,7 +898,7 @@ static void *watch_thread(void *unused) {
 /* Debugging: HV_TYPE_AT=seconds types "abc" then, to check input end to end without a window. */
 static void *type_thread(void *unused) {
     (void)unused;
-    sleep((unsigned)atoi(getenv("HV_TYPE_AT")));
+    sleep((unsigned)hv_knob.type_at);
     for (int i = 0; i < 60; i++) { /* shake it: macOS enlarges the pointer, so new glyphs get sent */
         hv_virtio_input_send(board.mouse, HV_EV_REL, HV_REL_X, i & 1 ? 120 : -120);
         hv_virtio_input_send(board.mouse, HV_EV_SYN, 0, 0);
@@ -909,7 +910,7 @@ static void *type_thread(void *unused) {
         hv_virtio_input_send(board.mouse, HV_EV_SYN, 0, 0);
         usleep(20000);
     }
-    if (getenv("HV_TYPE_NO_KEYS")) { /* out into the open, for a screenshot */
+    if (hv_knob.type_no_keys) { /* out into the open, for a screenshot */
         for (int i = 0; i < 60; i++) {
             hv_virtio_input_send(board.mouse, HV_EV_REL, HV_REL_X, 12);
             hv_virtio_input_send(board.mouse, HV_EV_REL, HV_REL_Y, 8);
@@ -996,14 +997,14 @@ static void *cpu_thread(void *unused) {
         fprintf(stderr, "hengevm: %s %llu bytes at %llx to %s\n", p ? "wrote" : "cannot dump", (unsigned long long)a->dump_len,
                 (unsigned long long)a->dump_pa, a->dump_path);
     }
-    if (getenv("HV_RAM_GREP")) { /* debugging: text lines in guest RAM with any of these words (the kernel's log buffer) */
+    if (hv_knob.ram_grep) { /* debugging: text lines in guest RAM with any of these words (the kernel's log buffer) */
         HvVmapple *bd = hv_vm_board();
         char words[512];
-        snprintf(words, sizeof words, "%s", getenv("HV_RAM_GREP"));
+        snprintf(words, sizeof words, "%s", hv_knob.ram_grep);
         const char *w[16];
         int nw = 0;
         for (char *t = strtok(words, ","); t && nw < 16; t = strtok(NULL, ",")) w[nw++] = t;
-        FILE *out = fopen(getenv("HV_RAM_GREP_OUT") ? getenv("HV_RAM_GREP_OUT") : "/dev/stderr", "w");
+        FILE *out = fopen(hv_knob.ram_grep_out, "w");
         uint64_t hits = 0;
         for (uint64_t i = 0; i < bd->ram_size && out && hits < 20000;) {
             /* a run of printable bytes ending in a newline or NUL */
@@ -1022,10 +1023,10 @@ static void *cpu_thread(void *unused) {
         if (out) fclose(out);
         fprintf(stderr, "hengevm: RAM grep: %llu lines\n", (unsigned long long)hits);
     }
-    if (getenv("HV_BOOT_DISPLAY_DUMP")) { /* debugging: the boot framebuffer, raw BGRA, for the iOS view */
+    if (hv_knob.boot_display_dump) { /* debugging: the boot framebuffer, raw BGRA, for the iOS view */
         HvBootDisplay bd;
         if (hv_vm_boot_display(&bd) == 0) {
-            FILE *f = fopen(getenv("HV_BOOT_DISPLAY_DUMP"), "wb");
+            FILE *f = fopen(hv_knob.boot_display_dump, "wb");
             if (f) fwrite(bd.pixels, 1, (size_t)bd.stride * bd.height, f), fclose(f);
             fprintf(stderr, "hengevm: boot display %ux%u stride %u written\n", bd.width, bd.height, bd.stride);
         } else {
@@ -1050,7 +1051,7 @@ static void install_progress(int step, double p, void *user) {
     last_step = step, last_pct = pct;
     if (step == HV_INSTALL_DONE) fprintf(stderr, "hengevm: install: done\n");
     else if (step == HV_INSTALL_FAILED) fprintf(stderr, "hengevm: install: failed\n");
-    if ((step == HV_INSTALL_DONE || step == HV_INSTALL_FAILED) && getenv("HV_INSTALL_STOP_AT_END")) {
+    if ((step == HV_INSTALL_DONE || step == HV_INSTALL_FAILED) && hv_knob.install_stop_at_end) {
         sleep(3); /* debugging: stop the machine once the restore has a result (the exit dumps then run) */
         hv_vm_stop();
     }
@@ -1132,18 +1133,19 @@ int main(int argc, char **argv) {
     }
     if (!rom || !disk_path || !aux_path) usage();
     setvbuf(stderr, NULL, _IONBF, 0);
+    hv_knobs_load(); /* after --phone's HV_JIT_SPLIT; each machine loads them again */
 
     HvVmConfig vc = {.rom = rom, .disk = disk_path, .aux = aux_path, .aux_offset = aux_offset, .ecid = ecid, .seed = seed,
-                     .ram_mb = ram_mb, .ncpus = ncpus, .log = log, .no_net = getenv("HV_NO_NET") != NULL,
+                     .ram_mb = ram_mb, .ncpus = ncpus, .log = log, .no_net = hv_knob.no_net,
                      .installer = install_ipsw != NULL, .serial = serial, .model = model, .soc_name = soc_name,
                      .product_name = product_name, .model_id = model_id};
-    if (getenv("HV_JIT_MB")) vc.jit_bytes = (size_t)atoi(getenv("HV_JIT_MB")) << 20; /* debugging: a small region flushes often */
+    vc.jit_bytes = (size_t)hv_knob.jit_mb << 20; /* debugging: a small region flushes often */
     hv_prof_register = hv_prof_register_thread;
     char err[256];
     if (share_folder) {
         char sock[256];
         snprintf(sock, sizeof sock, "%s.sock", share_folder);
-        if (hv_share_start(share_folder, sock, getenv("HV_AGENT")) == 0) hv_net_set_share_socket(sock);
+        if (hv_share_start(share_folder, sock, hv_knob.agent) == 0) hv_net_set_share_socket(sock);
     }
     if (hv_vm_create(&vc, err, sizeof err) != 0) {
         fprintf(stderr, "hengevm: %s\n", err);
@@ -1194,24 +1196,24 @@ int main(int argc, char **argv) {
     pthread_attr_setstacksize(&attr, 8u << 20);
     pthread_create(&t, &attr, cpu_thread, NULL);
     if (profile) pthread_create(&t, NULL, profile_thread, NULL);
-    if (getenv("HV_CLICKS")) {
+    if (hv_knob.clicks) {
         pthread_t cl;
         pthread_create(&cl, NULL, click_thread, NULL);
     }
-    if (getenv("HV_PROF_PCS")) prof_pcs = calloc(PROF_PCS, sizeof *prof_pcs);
-    if (getenv("HV_PROF_ALL")) {
+    if (hv_knob.prof_pcs >= 0) prof_pcs = calloc(PROF_PCS, sizeof *prof_pcs);
+    if (hv_knob.prof_all) {
         pthread_t pr;
         pthread_create(&pr, NULL, prof_thread, NULL);
     }
-    if (getenv("HV_INPUT_FILE")) {
+    if (hv_knob.input_file) {
         pthread_t in;
         pthread_create(&in, NULL, input_thread, NULL);
     }
-    if (getenv("HV_WATCH")) {
+    if (hv_knob.watch >= 0) {
         pthread_t wa;
         pthread_create(&wa, NULL, watch_thread, NULL);
     }
-    if (getenv("HV_TYPE_AT")) {
+    if (hv_knob.type_at >= 0) {
         pthread_t ty;
         pthread_create(&ty, NULL, type_thread, NULL);
     }

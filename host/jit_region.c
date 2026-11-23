@@ -1,4 +1,5 @@
 #include "jit_region.h"
+#include "knobs.h"
 
 #include <TargetConditionals.h>
 #include <libkern/OSCacheControl.h>
@@ -40,7 +41,7 @@ size_t hv_jit_claim_halving(size_t want, size_t min_bytes, int (*claim)(size_t b
 
 int hv_jit_region_open(HvJitRegion *region, size_t bytes) {
     memset(region, 0, sizeof *region);
-    if (getenv("HV_JIT_SPLIT")) return open_split(region, bytes);
+    if (hv_knob.jit_split) return open_split(region, bytes);
 #if TARGET_OS_OSX
     void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
     if (p == MAP_FAILED) return -1;

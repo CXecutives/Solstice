@@ -6,3 +6,4 @@ cd "$(dirname "$0")/.."
 py=python3
 command -v python3 > /dev/null 2>&1 || py="py -3"
 $py tools/map.py # MAP.md: every source file with its purpose
+$py tools/knobs.py # from core/knobs.def: ios/Henge/EngineKnobs.generated.swift, KNOBS.md

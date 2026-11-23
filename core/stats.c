@@ -1,5 +1,6 @@
 /* The engine's measurements: the stats line, the --profile summary, and rates read by the app (stats.h). */
 #include "stats.h"
+#include "knobs.h"
 
 #include <dlfcn.h>
 #include <mach/mach.h>
@@ -42,8 +43,7 @@ static void print_profile(HvMachine *m) {
             outside++;
             Dl_info di;
             const char *name = dladdr(pc, &di) && di.dli_sname ? di.dli_sname : "?";
-            static const char *detail;
-            if (!detail) detail = getenv("HV_PROF_FN") ? getenv("HV_PROF_FN") : "run";
+            const char *detail = hv_knob.prof_fn;
             if (!strcmp(name, detail)) { /* per-offset detail for one function (HV_PROF_FN, default the dispatcher loop) */
                 uint32_t off = (uint32_t)((uint8_t *)pc - (uint8_t *)di.dli_saddr);
                 int r = 0;
@@ -76,7 +76,7 @@ static void print_profile(HvMachine *m) {
         fprintf(stderr, " %s %.1f%%", fn[best].name, 100.0 * fn[best].n / total);
         fn[best].n = 0;
     }
-    fprintf(stderr, "\n  %s+:", getenv("HV_PROF_FN") ? getenv("HV_PROF_FN") : "run");
+    fprintf(stderr, "\n  %s+:", hv_knob.prof_fn);
     for (int k = 0; k < 12; k++) {
         int best = -1;
         for (int i = 0; i < nrun; i++)

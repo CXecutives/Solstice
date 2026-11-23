@@ -9,6 +9,7 @@
 
    Locks are accepted but not enforced: macOS only writes to a server that offers them, and there is one client. */
 #include "share.h"
+#include "knobs.h"
 
 #include "brand.h"
 
@@ -1080,7 +1081,7 @@ static void *connection(void *arg) {
             }
             break;
         }
-        if (getenv("HV_SHARE_LOG")) fprintf(stderr, "share: %s %s (host %s)\n", r->method, r->path, r->host);
+        if (hv_knob.share_log) fprintf(stderr, "share: %s %s (host %s)\n", r->method, r->path, r->host);
         if (!host_ok(r)) {
             r->close = 1;
             respond_empty(c, r, 421, "Misdirected Request");

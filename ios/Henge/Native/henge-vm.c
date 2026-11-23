@@ -1,4 +1,5 @@
 #include "pvg_lite.h"
+#include "knobs.h"
 #include "share.h"
 #include "net_slirp.h"
 #include <sys/mman.h>
@@ -169,13 +170,12 @@ static int failed_start(void) {
 /* The power profile (henge_vm_set_power_profile). Read where a machine starts or runs on, after state is 1, and set
    before state is read there: either that sees the new level or the setter sees a running Mac and applies it. */
 static _Atomic int power_level;
-static int started_wfi_spin; /* HV_WFI_SPIN as the running machine started with it (knobs_init) */
+static int started_wfi_spin; /* HV_WFI_SPIN as the running machine started with it (hv_knobs_load) */
 /* With api_lock held and a machine there, or none running (the present cap is the display's, not a machine's). */
 static void apply_power_profile(int running) {
     int level = atomic_load(&power_level);
-    const char *hz = getenv("HV_SAVING_HZ");
-    hv_pvg_set_present_hz(level >= 2 && hz ? atoi(hz) : 0); /* only when hot: Low Power Mode keeps every frame */
-    if (running) hv_knob[HV_K_WFI_SPIN] = level >= 1 ? 0 : started_wfi_spin; /* read live by every WFI (dispatch.c) */
+    hv_pvg_set_present_hz(level >= 2 ? hv_knob.saving_hz : 0); /* only when hot: Low Power Mode keeps every frame */
+    if (running) hv_knob.wfi_spin = level >= 1 ? 0 : started_wfi_spin; /* read live by every WFI (dispatch.c) */
 }
 
 void henge_vm_set_power_profile(int level) {
@@ -192,7 +192,7 @@ static int started(char *err, size_t errlen) {
     stopped_blocks = stopped_tx = stopped_rx = 0;
     exit_reason = exit_outcome = 0;
     state = 1;
-    started_wfi_spin = hv_knob[HV_K_WFI_SPIN];
+    started_wfi_spin = hv_knob.wfi_spin;
     apply_power_profile(1);
     if (hv_vm_start(1, on_exit) != 0) {
         snprintf(err, errlen, "There are not enough resources to start the Mac's CPU threads.");
@@ -305,14 +305,18 @@ int henge_vm_continue(void) {
 
 /* HV_STATS: the disk's line too, as often (its worker reads HV_BLK_STATS as it starts: before hv_vm_create). */
 static void stats_env(void) {
-    const char *s = getenv("HV_STATS");
-    if (s && atoi(s) > 0) setenv("HV_BLK_STATS", s, 0);
+    hv_knobs_load();
+    if (hv_knob.stats > 0) {
+        char s[16];
+        snprintf(s, sizeof s, "%d", hv_knob.stats);
+        setenv("HV_BLK_STATS", s, 0);
+    }
 }
 
 /* The engine's stats lines, for a boot and an install alike (a restore's engine and disk time are measured too). */
 static void stats_on(void) {
-    if (getenv("HV_STATS")) hv_vm_machine()->stats_interval = atoi(getenv("HV_STATS"));
-    if (getenv("HV_STATS_DEEP")) hv_vm_machine()->stats_deep = atoi(getenv("HV_STATS_DEEP"));
+    hv_vm_machine()->stats_interval = hv_knob.stats;
+    hv_vm_machine()->stats_deep = hv_knob.stats_deep;
 }
 
 static int boot_or_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
@@ -369,6 +373,7 @@ static void on_install_progress(int step, double p, void *user) {
 int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_t ecid, const char *ipsw,
                      const char *workdir, uint64_t ram_mb, int cpus, char *err, size_t errlen) {
     if (begin_start(err, errlen)) return -1;
+    hv_knobs_load(); /* the installer's HV_WRITE_CACHE (Installer.swift) */
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
         snprintf(err, errlen, "Solstice has no JIT region. Turn on JIT first.");
@@ -488,6 +493,8 @@ uint64_t henge_vm_dns(int which) {
     hv_dns_proxy_stats(&n[0], &n[1], &n[2]);
     return which >= 0 && which < 3 ? n[which] : 0;
 }
+
+void henge_vm_knobs_load(void) { hv_knobs_load(); }
 
 int henge_vm_knob(const char *name, int value) {
     if (!lock_running()) return 0;

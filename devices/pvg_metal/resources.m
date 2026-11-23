@@ -93,7 +93,7 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
     o->vpage = h.vpage;
     o->guest_backed = YES;
     heap_bytes += h.length;
-    if (getenv("HV_PVG_HEAP_LOG")) fprintf(stderr, "hengevm: pvg-metal: heap %llu KB at page %u, flags %x, now %llu MB of heaps\n", h.length >> 10, h.vpage, h.flags, heap_bytes >> 20);
+    if (hv_knob.pvg_heap_log) fprintf(stderr, "hengevm: pvg-metal: heap %llu KB at page %u, flags %x, now %llu MB of heaps\n", h.length >> 10, h.vpage, h.flags, heap_bytes >> 20);
 }
 
 /* A buffer in a heap: {heap, offset, length}. */

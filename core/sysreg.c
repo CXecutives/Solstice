@@ -1,4 +1,5 @@
 #include "sysreg.h"
+#include "knobs.h"
 
 #include <mach/mach_time.h>
 #include <stdio.h>
@@ -406,11 +407,11 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
            a PC already seen within 20 us of a TTBR0 change, i.e. the same instruction in xnu's switch path. */
         static _Thread_local uint32_t nth;
         int late = 0;
-        if (crm == 7 && hv_knob[HV_K_SWITCHFLUSH] >= 3 && since_switch >= 480 && since_switch < 4800) {
+        if (crm == 7 && hv_knob.switch_flush >= 3 && since_switch >= 480 && since_switch < 4800) {
             for (int i = 0; i < 4; i++)
                 if (__atomic_load_n(&cpu->m->switch_flush_pc[i], __ATOMIC_RELAXED) == pc) late = 1;
         }
-        if (crm == 7 && hv_knob[HV_K_SWITCHFLUSH] >= 3 && since_switch < 480) {
+        if (crm == 7 && hv_knob.switch_flush >= 3 && since_switch < 480) {
             int known = 0;
             for (int i = 0; i < 4 && !known; i++) {
                 uint64_t have = __atomic_load_n(&cpu->m->switch_flush_pc[i], __ATOMIC_RELAXED), zero = 0;
@@ -418,8 +419,8 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
                 else if (!have && __atomic_compare_exchange_n(&cpu->m->switch_flush_pc[i], &zero, pc, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) known = 1;
             }
         }
-        if (crm == 7 && hv_knob[HV_K_SWITCHFLUSH] && (since_switch < 480 || late) &&
-            (hv_knob[HV_K_SWITCHFLUSH] < 2 || (nth++ & 127) || !hv_tlb_check_all(cpu))) {
+        if (crm == 7 && hv_knob.switch_flush && (since_switch < 480 || late) &&
+            (hv_knob.switch_flush < 2 || (nth++ & 127) || !hv_tlb_check_all(cpu))) {
             if (cpu->m->stats_interval) HV_ST(cpu).flush_skipped++, HV_ST(cpu).flush_skipped_late += (uint64_t)late;
             return;
         }
@@ -445,9 +446,7 @@ void hv_tlbi_apply(HvCpu *cpu, uint32_t op1, uint32_t crn, uint32_t crm, uint32_
    dropping them there meant translating them all again and every CPU's branch cache starting
    over. HV_IC_IVAU: as before. */
 int hv_ic_ivau_drops(void) {
-    static int v = -1;
-    if (v < 0) v = getenv("HV_IC_IVAU") != NULL;
-    return v;
+    return hv_knob.ic_ivau;
 }
 
 int hv_sysreg_sys(HvCpu *cpu, uint32_t insn, uint64_t pc) {
@@ -470,10 +469,8 @@ int hv_sysreg_sys(HvCpu *cpu, uint32_t insn, uint64_t pc) {
         /* Translations are never out of date: CPU writes to code pages and device
            DMA drop them as they happen. Dropping them all here cost a full round of
            translating everything again, many times a boot. HV_IC_FLUSH: as before. */
-        static int flush = -1;
-        if (flush < 0) flush = getenv("HV_IC_FLUSH") != NULL;
         cpu->m->stats.flush_ic++;
-        if (flush) cpu->m->flush_pending = 1;
+        if (hv_knob.ic_flush) cpu->m->flush_pending = 1;
         return 0;
     }
     if (crn == 7 && crm == 8 && op1 == 0 && op2 <= 3) { /* AT S1E1R, S1E1W, S1E0R, S1E0W */
@@ -508,7 +505,7 @@ int hv_sysreg_sys(HvCpu *cpu, uint32_t insn, uint64_t pc) {
                 npages = (((xt >> 39) & 31) + 1) << (5 * ((xt >> 44) & 3) + 1);
                 va = (uint64_t)((int64_t)((xt & 0x1fffffffffull) << (64 - 37)) >> (64 - 37 - 14));
                 /* HV_RANGE_DROP=N: ranges up to N pages are done from here too, in one pass (hv_tlbi_drop_remote_range) */
-                if (npages > (hv_knob[HV_K_RANGEDROP] > 32 ? (uint64_t)hv_knob[HV_K_RANGEDROP] : 32)) npages = 0;
+                if (npages > (hv_knob.range_drop > 32 ? (uint64_t)hv_knob.range_drop : 32)) npages = 0;
             } else if (by_va) {
                 npages = 1;
             }
@@ -520,7 +517,7 @@ int hv_sysreg_sys(HvCpu *cpu, uint32_t insn, uint64_t pc) {
                    A drop that raced a page walk or cache fill of c's (they are
                    short) is tried again a few times first. */
                 int done = npages > 0, why = !npages ? (by_range ? 1 : 2) : 0;
-                if (done && npages > 1 && hv_knob[HV_K_RANGEDROP] > 0) {
+                if (done && npages > 1 && hv_knob.range_drop > 0) {
                     int r = 0;
                     for (int t = 0; t < 4 && (r = hv_tlbi_drop_remote_range(c, va, npages, asid)) == 0; t++)
                         for (int s = 0; s < 64; s++) __asm__ volatile("yield");

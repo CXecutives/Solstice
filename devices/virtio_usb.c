@@ -1,4 +1,5 @@
 #include "virtio_usb.h"
+#include "knobs.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -150,7 +151,7 @@ HvVirtioUsb *hv_virtio_usb_create(HvMachine *m, HvPcie *bus) {
     d->vio.pci.config[0x2e] = 0x01, d->vio.pci.config[0x2f] = 0x1a;
     d->vio.dev = d;
     d->vio.notify = notify;
-    d->log = getenv("HV_VUSB_LOG") != NULL;
+    d->log = hv_knob.vusb_log;
     pthread_mutex_init(&d->mu, NULL);
     pthread_cond_init(&d->cv, NULL);
     int slot = hv_pcie_attach(bus, &d->vio.pci);

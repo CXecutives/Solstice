@@ -15,7 +15,7 @@
 }
 
 - (id)makeFunction:(uint64_t)at task:(uint32_t)task {
-    if (getenv("HV_PVG_FAIL_LIBS")) { /* testing: every library refused, as an OS that cannot load them does */
+    if (hv_knob.pvg_fail_libs) { /* testing: every library refused, as an OS that cannot load them does */
         [self complain:@"library: refused (HV_PVG_FAIL_LIBS)"];
         return nil;
     }
@@ -34,12 +34,8 @@
        from then on. Stage 3 (the version metadata too) only when asked for: HV_PVG_RELABEL=3. HV_PVG_NO_RELABEL:
        never. */
     static int start_stage = -1; /* 0: as sent; 1, 2, 3: relabelled */
-    static int no_relabel = -1;
-    if (no_relabel < 0) no_relabel = getenv("HV_PVG_NO_RELABEL") != NULL;
-    if (start_stage < 0) { /* HV_PVG_RELABEL=N (testing): every library relabelled at stage N from the start */
-        const char *f = getenv("HV_PVG_RELABEL");
-        start_stage = f && atoi(f) >= 1 && atoi(f) <= 3 ? atoi(f) : 0;
-    }
+    int no_relabel = hv_knob.pvg_no_relabel;
+    if (start_stage < 0) start_stage = hv_knob.pvg_relabel; /* HV_PVG_RELABEL=N (testing): every library relabelled at stage N from the start */
     NSError *err = nil, *first_err = nil;
     id<MTLLibrary> library = nil;
     int last_stage = no_relabel ? 0 : start_stage >= 3 ? 3 : 2, loaded_at = -1;
@@ -56,7 +52,7 @@
         library = [device newLibraryWithData:data error:&err];
         if (library) loaded_at = stage;
         if (!library && !first_err) first_err = err;
-        if (library && (stage != start_stage || (stage && first_err == nil && !getenv("HV_PVG_RELABEL_QUIET")))) {
+        if (library && (stage != start_stage || (stage && first_err == nil && !hv_knob.pvg_relabel_quiet))) {
             [self complain:[NSString stringWithFormat:@"library: loaded relabelled for iOS 17 (stage %d; as sent: %@)", stage,
                                                       first_err.localizedDescription ?: @"not tried"]];
             start_stage = stage;
@@ -72,8 +68,9 @@
            HV_SHADER_DUMP=0, the first 48 that had to be relabelled (Documents/shaders, as sent): what an OS that
            refuses them was sent, for relabelling to be checked against on a Mac. */
         static int relabelled_kept = 0;
-        const char *tf = getenv("HV_PVG_TRACE_FILE"), *sd = getenv("HV_SHADER_DUMP");
-        int keep = sd ? atoi(sd) != 0 : loaded_at > 0 && relabelled_kept < 48;
+        const char *tf = hv_knob.pvg_trace_file;
+        int sd = hv_knob.shader_dump >= 0;
+        int keep = sd ? hv_knob.shader_dump != 0 : loaded_at > 0 && relabelled_kept < 48;
         if (keep && !sd) relabelled_kept++;
         if (tf && keep && (sd || hv_pvg_trace_on())) { /* only while tracing (or asked): not on every launch */
             NSString *dir = [[[NSString stringWithUTF8String:tf] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"shaders"];
@@ -127,8 +124,7 @@
    merged: re-serializing a loaded archive loses its content, and which file a pipeline came from is not known.
    HV_PVG_ARCHIVE=0: none (for A/B); HV_PVG_ARCHIVE=reset: start again. HV_PVG_ARCHIVE_MB: the cap (default 768). */
 static unsigned long long archive_cap(void) {
-    const char *mb = getenv("HV_PVG_ARCHIVE_MB");
-    return (mb && atoi(mb) > 0 ? (unsigned long long)atoi(mb) : 768ull) << 20;
+    return (unsigned long long)hv_knob.pvg_archive_mb << 20;
 }
 
 enum { ARCHIVE_FILES = 256, ARCHIVE_ROOM = 32 }; /* saved files at most; left free for a session at its start */
@@ -155,7 +151,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
 }
 
 - (void)openArchive {
-    const char *opt = getenv("HV_PVG_ARCHIVE");
+    const char *opt = hv_knob.pvg_archive;
     if (opt && !strcmp(opt, "0")) {
         fprintf(stderr, "hengevm: pvg-metal: saved pipelines off (HV_PVG_ARCHIVE=0)\n");
         return;
@@ -394,7 +390,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     if (tag == 0xe || tag == 0x33) { /* render or tile pipeline: {tag, size, ref, length, data} */
         id descriptor = [self pipelineDescriptor:tag data:all task:task];
         if (!descriptor) return nil;
-        if (tag == 0xe && getenv("HV_SHADER_DUMP") && atoi(getenv("HV_SHADER_DUMP"))) { /* m4 fork: blend state as this iOS read it */
+        if (tag == 0xe && hv_knob.shader_dump > 0) { /* m4 fork: blend state as this iOS read it */
             MTLRenderPipelineDescriptor *rp = descriptor;
             for (int i = 0; i < 4; i++) {
                 MTLRenderPipelineColorAttachmentDescriptor *c = rp.colorAttachments[i];

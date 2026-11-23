@@ -10,6 +10,7 @@
    FUZZ_SEQS=n sequences (default 20000), FUZZ_SECONDS=s at most (default 50),
    FUZZ_SEED=s, FUZZ_ONLY=k: only configuration k. */
 #include "harness.h"
+#include "knobs.h"
 
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -830,24 +831,24 @@ typedef struct {
 } Conf;
 static Conf confs[] = {
     {"default", 0, 0, -1, 0, 0, 0, 0},
-    {"groups", 0, 0, HV_K_GROUPS, 1, 0, 0, 0},
+    {"groups", 0, 0, HV_KNOB_groups, 1, 0, 0, 0},
     {"el0, mmu", 0, 2, -1, 0, 0, 0, 0},
-    {"el1, mmu, groups", 0, 1, HV_K_GROUPS, 1, 0, 0, 0},
-    {"no recheck", 0, 0, HV_K_RECHECK, 0, 0, 0, 0},
-    {"spill all (K3), el0", 0, 2, HV_K_TEST3, 1, 0, 0, 0},
-    {"one part (K2)", 0, 0, HV_K_TEST2, 1, 0, 0, 0},
+    {"el1, mmu, groups", 0, 1, HV_KNOB_groups, 1, 0, 0, 0},
+    {"no recheck", 0, 0, HV_KNOB_recheck, 0, 0, 0, 0},
+    {"spill all (K3), el0", 0, 2, HV_KNOB_k3, 1, 0, 0, 0},
+    {"one part (K2)", 0, 0, HV_KNOB_k2, 1, 0, 0, 0},
     {"C path", 0, 0, -1, 0, 1, 0, 0},
-    {"tiny JIT region", 1, 0, HV_K_GROUPS, 1, 0, 0, 0},
-    {"slot-major TLB, el1 mmu", 0, 1, HV_K_TLBT, 0, 0, 0, 0},
-    {"movimm", 0, 0, HV_K_MOVIMM, 1, 0, 0, 0},
-    {"superblocks", 0, 2, HV_K_SUPERBLOCKS, 1, 0, 0, 0},
-    {"hoisted checks", 0, 0, HV_K_HOIST, 1, 0, 0, 0},
+    {"tiny JIT region", 1, 0, HV_KNOB_groups, 1, 0, 0, 0},
+    {"slot-major TLB, el1 mmu", 0, 1, HV_KNOB_tlbt, 0, 0, 0, 0},
+    {"movimm", 0, 0, HV_KNOB_movimm, 1, 0, 0, 0},
+    {"superblocks", 0, 2, HV_KNOB_superblocks, 1, 0, 0, 0},
+    {"hoisted checks", 0, 0, HV_KNOB_hoist_check, 1, 0, 0, 0},
     {"el0, mmu, kept across switches", 0, 3, -1, 0, 0, 0, 0},
 };
 #define NCONF ((int)(sizeof confs / sizeof confs[0]))
 
 static HvMachine m, tiny;
-static int base_knob[HV_K_COUNT];
+static HvKnobs base_knob;
 static volatile uint64_t progress;
 static volatile int cur_seq = -1, cur_conf;
 
@@ -903,8 +904,8 @@ static int one(int seq, uint64_t seed, Conf *c, int report) {
     init.nzcv = (seed & 15) << 28;
     if (run_native_twice(&p, &init, &native)) return 1; /* the program, not the JIT */
     HvMachine *mm = c->tiny ? &tiny : &m;
-    memcpy(hv_knob, base_knob, sizeof hv_knob);
-    if (c->knob >= 0) hv_knob[c->knob] = c->value;
+    hv_knob = base_knob;
+    if (c->knob >= 0) *hv_knob_int(c->knob) = c->value;
     hv_flush_blocks(mm);
     mm->slow_mem = c->slow;
     reset_mem();
@@ -932,7 +933,7 @@ static int one(int seq, uint64_t seed, Conf *c, int report) {
 /* What HV_HOIST_CHECK costs in code: the same n programs translated without and with it (each run checked against
    the native one as usual). Returns the runs that differed. */
 static int hoist_cost(uint64_t seed0, int n) {
-    static Conf off = {"hoist off", 0, 0, HV_K_HOIST, 0, 0, 0, 0}, on = {"hoist on", 0, 0, HV_K_HOIST, 1, 0, 0, 0};
+    static Conf off = {"hoist off", 0, 0, HV_KNOB_hoist_check, 0, 0, 0, 0}, on = {"hoist on", 0, 0, HV_KNOB_hoist_check, 1, 0, 0, 0};
     uint64_t hot[2] = {0, 0}, all[2] = {0, 0}, insns[2] = {0, 0};
     int bad = 0;
     for (int i = 0; i < n; i++)
@@ -990,7 +991,7 @@ int main(void) {
     add_regions(&tiny);
     m.stats_interval = 1000000; /* count (as the app does with HV_STATS) but never print */
     build_tables();
-    memcpy(base_knob, hv_knob, sizeof hv_knob);
+    base_knob = hv_knob;
     pthread_t wd;
     pthread_create(&wd, NULL, watchdog, NULL);
 
@@ -1021,7 +1022,7 @@ int main(void) {
         }
     }
     double dt = now_s() - t0;
-    memcpy(hv_knob, base_knob, sizeof hv_knob);
+    hv_knob = base_knob;
     for (int k = 0; k < NCONF; k++)
         if (confs[k].runs) printf("%-26s: %5u sequences, %u failures\n", confs[k].name, confs[k].runs, confs[k].fails);
     HvXlateCounts x = hv_xlate_counts;
@@ -1040,7 +1041,7 @@ int main(void) {
     printf("slow paths: %llu helper accesses, %llu refills, %llu chained\n", (unsigned long long)hv_stat_slow_mem(&m),
            (unsigned long long)tot.refills, (unsigned long long)tot.chained);
     if (only < 0) failed += hoist_cost(seed0, 300);
-    memcpy(hv_knob, base_knob, sizeof hv_knob);
+    hv_knob = base_knob;
     printf("%d sequences in %.1f s, %d failures (%d of them the native run's)\n", ran, dt, failed, native_bad);
     return failed != 0;
 }

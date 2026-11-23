@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include "../core/machine.h"
+#include "knobs.h"
 #include "disk.h"
 
 #include <fcntl.h>
@@ -37,8 +38,7 @@ int hv_disk_open(HvDisk *d, const char *path, uint64_t offset, int readonly) {
        gigabytes of dirty pages; reads stay cached, and the kernel keeps the two coherent. Off by default:
        on the Mac bench big writes took 2-3x as long that way (2 GB + sync 4-6 s -> 9-17 s) and everyday
        work was no faster. The phone's installer turns it on for the restore, which writes ~15 GB at once. */
-    const char *wc = getenv("HV_WRITE_CACHE");
-    if (!readonly && wc && !atoi(wc)) {
+    if (!readonly && !hv_knob.write_cache) {
         d->wfd = open(path, O_RDWR);
         if (d->wfd >= 0 && fcntl(d->wfd, F_NOCACHE, 1) == -1) {
             close(d->wfd);
@@ -145,7 +145,7 @@ int hv_disk_flush(HvDisk *d) {
     uint64_t writes = __atomic_load_n(&d->writes, __ATOMIC_ACQUIRE);
     if (writes == __atomic_load_n(&d->flushed, __ATOMIC_RELAXED)) return 0;
     int r;
-    switch (hv_knob[HV_K_FLUSH]) {
+    switch (hv_knob.flush) {
     case 1: return 0;
     case 2: r = fcntl(d->fd, F_BARRIERFSYNC) == -1 ? -1 : 0; break;
     default: r = fsync(d->fd); break;
