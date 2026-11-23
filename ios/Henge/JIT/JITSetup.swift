@@ -175,7 +175,7 @@ final class JITCoordinator: ObservableObject {
                 continueAfterPairing = false
                 prepareBuiltIn(thenEnable: true)
             } else {
-                enable()
+                enable(backFromVPN: true) // not into LocalDevVPN again: that bounced for ever when the tunnel did not show
             }
             return
         }
@@ -222,7 +222,8 @@ final class JITCoordinator: ObservableObject {
         enable()
     }
 
-    func enable() {
+    /// backFromVPN: LocalDevVPN was just opened for this, so go on with whatever connection there is.
+    func enable(backFromVPN: Bool = false) {
         guard !JITBootstrap.ready else { return }
         // Turn On JIT while JIT is already being turned on (at launch, by itself) started a second helper, which attached
         // once the first let go and then stayed: with a debugger on, every trap stops Henge until it answers, and the
@@ -267,7 +268,7 @@ final class JITCoordinator: ObservableObject {
                 return
             }
             // The helper reaches the device through LocalDevVPN: connect it first (it comes back by itself).
-            if LocalDevVPN.isInstalled, !LocalDevVPN.isConnected, !awaitingVPN {
+            if LocalDevVPN.isInstalled, !LocalDevVPN.isConnected, !awaitingVPN, !backFromVPN {
                 log("Turn On JIT: LocalDevVPN is not connected; opening it to connect")
                 awaitingVPN = true
                 LocalDevVPN.open()

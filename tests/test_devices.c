@@ -795,6 +795,11 @@ int main(void) {
     puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();
     test_prefault();
+    /* xHCI: the Supported Protocol capability names as many ports (a count, bits 15:8) as HCSPARAMS1 has */
+    HvPciDev *usb = &board.usb->pci;
+    check("xhci MaxPorts", usb->bar_read(usb, 0, 4, 4) >> 24, HV_XHCI_PORTS);
+    check("xhci USB 2 protocol covers every port, from port 1",
+          usb->bar_read(usb, 0, 0x800 + 8, 4) & 0xffff, 1u | (uint32_t)HV_XHCI_PORTS << 8);
     /* MSI frame: valid type register, doorbell pends the INTID */
     check("msi type valid", rd32(VMAPPLE_GIC_MSI + 8) >> 31, 1);
     check("msi base", (rd32(VMAPPLE_GIC_MSI + 8) >> 16) & 0x1fff, VMAPPLE_MSI_BASE);

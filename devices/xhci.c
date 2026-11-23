@@ -840,7 +840,7 @@ static uint64_t bar_read(HvPciDev *d, int bar, uint64_t off, unsigned size) {
         if (size == 8 && i + 1 < 8) v |= (uint64_t)cap[i + 1] << 32;
         v >>= 8 * (off & 3);
     } else if (off >= XECP && off < XECP + 16) { /* Supported Protocol: USB 2.0 on every port */
-        static const uint32_t ext[4] = {2u | 0x0200u << 16, 0x20425355, 1u | ((1u << HV_XHCI_PORTS) - 1u) << 8, 0};
+        static const uint32_t ext[4] = {2u | 0x0200u << 16, 0x20425355, 1u | (uint32_t)HV_XHCI_PORTS << 8 /* port offset 1, port count */, 0};
         uint32_t i = (uint32_t)(off - XECP) / 4;
         v = ext[i];
         if (size == 8 && i + 1 < 4) v |= (uint64_t)ext[i + 1] << 32;

@@ -48,6 +48,9 @@ final class LogStream: ObservableObject {
     private var pending: [String] = []
     private var scheduled = false
     private var unsentDropped = 0
+    /// The counts, kept here and only copied to `sent`/`dropped` on the main thread (published values written from
+    /// this queue raced the main thread's copies and could go backwards).
+    private var sentTotal = 0, droppedTotal = 0
     /// True while there is no connection to send on: lines are held, and nothing is woken per
     /// line. `handle(.ready)` clears it and pumps.
     private var held = false
@@ -216,7 +219,7 @@ final class LogStream: ObservableObject {
         if canSend {
             if unsentDropped > 0 {
                 batch.append("---- \(unsentDropped) lines dropped: the computer was not listening ----")
-                dropped += unsentDropped
+                droppedTotal += unsentDropped
                 unsentDropped = 0
             }
             let n = min(pending.count, Self.batchLimit - batch.count)
@@ -241,7 +244,7 @@ final class LogStream: ObservableObject {
                     return
                 }
                 self.lock.lock()
-                self.sent += lines
+                self.sentTotal += lines
                 let more = !self.pending.isEmpty
                 self.lock.unlock()
                 self.publishCounts()
@@ -265,7 +268,7 @@ final class LogStream: ObservableObject {
 
     private func publishCounts() {
         lock.lock()
-        let sent = self.sent, dropped = self.dropped
+        let sent = sentTotal, dropped = droppedTotal
         lock.unlock()
         guard sent != publishedSent || dropped != publishedDropped else { return }
         publishedSent = sent
