@@ -26,6 +26,8 @@ final class SessionController: ObservableObject {
     @Published private(set) var stuck: LifecycleWatchdog.Stuck?
     /// Shut Down pressed the Mac's power button: macOS is shutting down (or asking first).
     @Published private(set) var shutdownAsked: Date?
+    /// Being started off the main thread (sizing its memory, booting or resuming): there is no power to press yet.
+    @Published private(set) var starting = false
 
     /// What the run loop asks of the view, and tells it.
     struct Hooks {
@@ -74,10 +76,12 @@ final class SessionController: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
         HardwareMouse.shared.start()
         let mac = self.mac
+        starting = true
         let ram = await offMain("size memory") { GuestMemory.prepare(mac, cpus: cpus) }
         HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB")
-        guard ram >= 1024 else {
-            error = "There is not room for this Mac's memory: it needs a few GB of free storage."
+        guard ram >= 1024, !Task.isCancelled else {
+            starting = false
+            if !Task.isCancelled { error = "There is not room for this Mac's memory: it needs a few GB of free storage." }
             return
         }
         JITBootstrap.releaseLingeringDebugger()
@@ -125,6 +129,14 @@ final class SessionController: ObservableObject {
                 rc = henge_vm_boot(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus), &buffer, buffer.count)
             }
             return (rc, String(cString: buffer))
+        }
+        starting = false
+        if Task.isCancelled { // the view went away while the Mac started: none runs on with nothing showing it
+            if rc == 0 {
+                HengeLog.log("session", "closed while starting: the Mac is turned off")
+                await offMain("stop") { henge_vm_stop() }
+            }
+            return
         }
         if rc != 0 {
             error = reason
