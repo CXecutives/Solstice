@@ -23,7 +23,7 @@ METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -frame
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
         $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
-        $(B)/test_pvg_lifecycle $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory
+        $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 
@@ -122,6 +122,11 @@ test-vm-lifecycle: $(B)/test_vm_lifecycle
 
 $(B)/test_pvg_lifecycle: tests/test_pvg_lifecycle.m $(ENGINE) $(DEV)
 	$(CC) $(CFLAGS) -fobjc-arc $^ $(METAL_LIBS) -o $@
+
+# The Metal replay's parts called directly: devices/pvg_metal.m is compiled into the test instead of linked.
+DEV_NO_METAL = $(filter-out $(B)/pvg_metal.o,$(DEV))
+$(B)/test_pvg_metal: tests/test_pvg_metal.m devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h $(ENGINE) $(DEV_NO_METAL)
+	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations tests/test_pvg_metal.m $(ENGINE) $(DEV_NO_METAL) $(METAL_LIBS) -o $@
 
 $(B)/hvsparse: tools/hvsparse_main.c host/hvsparse.c host/hvsparse.h | $(B)
 	$(CC) $(CFLAGS) tools/hvsparse_main.c host/hvsparse.c -o $@
