@@ -69,11 +69,12 @@ enum Device {
         let ram = mb >= 14_000 ? 6 : 3
         // iPhone 16 Pro (2 P + 4 E): 3. M-series iPads: 4, or one past the P cores with 16 GB.
         let cpus = pCores <= 2 ? 3 : mb >= 14_000 ? min(pCores + 1, 5) : 4
-        // 6-8 GB (iPhone 16 Pro): 768 MB of code cache beside a 3 GB Mac. 12-16 GB: 1.5 GB where the signing
-        // allows it, else 1 GB (JITBootstrap).
+        // 6-8 GB (iPhone 16 Pro): 1 GB of code cache beside a 3 GB Mac. With 768 MB the first device run re-translated
+        // 85% of its blocks (evicted code wanted again) while 3.7 GB of the app's 6.1 GB limit stayed free.
+        // 12-16 GB: 1.5 GB where the signing allows it, else 1 GB (JITBootstrap).
         let big = mb >= 9_000
         return MacProfile(ramGB: ram, cpus: cpus, uiScale: isPad ? nil : 0.8, performanceScreen: isPad,
-                          codeCacheMB: big ? 1536 : 768, headroomMB: big ? 1100...2100 : 600...1100)
+                          codeCacheMB: big ? 1536 : 1024, headroomMB: big ? 1100...2100 : 600...1100)
     }()
 
     /// How much memory to suggest for a new Mac.

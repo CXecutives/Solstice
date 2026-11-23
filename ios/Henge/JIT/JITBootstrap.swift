@@ -61,7 +61,7 @@ enum JITBootstrap {
     /// never asks for more). 1 GB takes about 1.5 s to prepare, and a first boot through Setup makes that much code; a full flush drops all of it.
     static let codeCacheKey = "henge.perf.codeCacheMB"
     /// What Settings > Performance > Code cache offers, in MB. Without a choice there, the device's (Device.profile:
-    /// 384 MB on 4 GB, 768 MB on 6-8 GB, 1.5 GB on 12-16 GB) within what the signing allows: at most 512 MB under a
+    /// 384 MB on 4 GB, 1 GB on 6-8 GB, 1.5 GB on 12-16 GB) within what the signing allows: at most 512 MB under a
     /// 3.5 GB memory limit (4-6 GB devices without the increased limit, where 1 GB and its records left a 2 GB Mac too
     /// little room in Setup, #70). A bigger cache fills and empties less often (macOS 27 filled 1 GB about once a
     /// minute) and costs more memory: its blocks' records come to about 0.5-0.7 times its size on top. Fixed for the
