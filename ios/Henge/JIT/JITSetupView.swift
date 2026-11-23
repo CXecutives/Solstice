@@ -4,12 +4,12 @@ import UniformTypeIdentifiers
 
 /// The JIT walkthrough: pick a way in, follow its numbered steps, end with JIT on.
 ///
-/// Three ways in. Pairing on this iPhone (iOS 27) and a pairing file made on a
+/// Two ways in. Pairing on this iPhone (iOS 27) and a pairing file made on a
 /// computer both lead to Built-in StikJIT and share the last two steps,
-/// LocalDevVPN and enabling. StikDebug has its own short page. Presented from
-/// onboarding, Settings › JIT, and whenever Start finds JIT not set up.
+/// LocalDevVPN and enabling. Presented from onboarding, Settings › JIT, and
+/// whenever Start finds JIT not set up.
 struct JITSetupFlow: View {
-    enum Step: Hashable { case pairOnDevice, importFile, connect, enable, stikDebug, trollStore, jailbreak }
+    enum Step: Hashable { case pairOnDevice, importFile, connect, enable }
 
     @ObservedObject private var jit = JITCoordinator.shared
     @ObservedObject private var pairing = OnDevicePairing.shared
@@ -22,15 +22,12 @@ struct JITSetupFlow: View {
     var body: some View {
         NavigationStack(path: $path) {
             choose
-                .hengeDestination(for: Step.self) { step in
+                .navigationDestination(for: Step.self) { step in
                     switch step {
                     case .pairOnDevice: pairOnDevice
                     case .importFile: importFile
                     case .connect: connect
                     case .enable: enable
-                    case .stikDebug: stikDebug
-                    case .trollStore: trollStore
-                    case .jailbreak: jailbreak
                     }
                 }
         }
@@ -46,7 +43,7 @@ struct JITSetupFlow: View {
             jit.refreshPairingStatus()
             pairing.reset()
             // A failed enable from the Library lands on the step that can fix it.
-            if jit.error != nil, jit.hasPairing, jit.resolvedMethod == .builtIn {
+            if jit.error != nil, jit.hasPairing {
                 path = [.enable]
             } else if !jit.hasPairing, HengeBuiltInJIT.isAvailable, OnDevicePairing.isSupported {
                 path = [.pairOnDevice] // first launch on iOS 27: straight to the one way that needs no computer
@@ -82,19 +79,6 @@ struct JITSetupFlow: View {
                         : "Import a pairing file made on a computer."),
                     done: jit.pairingSource == .imported,
                     enabled: builtIn == nil) { path.append(.importFile) }
-                way("Use StikDebug", symbol: "ant",
-                    detail: JITBootstrap.isStikDebugInstalled ? "StikDebug is installed."
-                        : "Enable JIT through the StikDebug app.",
-                    done: jit.method == .stikDebug) { path.append(.stikDebug) }
-                way("Use TrollStore", symbol: "sparkles",
-                    detail: JITBootstrap.isTrollStoreInstalled ? "TrollStore is installed."
-                        : "For a Henge installed through TrollStore.",
-                    done: jit.method == .trollStore) { path.append(.trollStore) }
-                way("Use a jailbreak", symbol: "lock.open",
-                    detail: JITBootstrap.debuggedAtLaunch ? "JIT was already on when Henge opened."
-                        : JITBootstrap.isJailbroken ? "A jailbreak was found. Turn on Allow JIT in Apps."
-                        : "Dopamine can give every app JIT with one setting.",
-                    done: jit.method == .jailbreak || JITBootstrap.debuggedAtLaunch) { path.append(.jailbreak) }
             }
             if jit.hasPairing && HengeBuiltInJIT.isAvailable {
                 Button { path.append(.connect) } label: {
@@ -334,90 +318,6 @@ struct JITSetupFlow: View {
                     .buttonStyle(PrimaryButtonStyle(enabled: !jit.busy))
                     .disabled(jit.busy)
             }
-        }
-    }
-
-    // MARK: StikDebug
-
-    private var stikDebug: some View {
-        page(symbol: "ant", title: "Use StikDebug",
-             subtitle: "StikDebug is a separate app that attaches to Henge. Henge sends it the JIT script "
-                     + "itself, so nothing needs configuring for Henge inside StikDebug.") {
-            VStack(alignment: .leading, spacing: 14) {
-                point(1, "Install [StikDebug](https://github.com/StikDebug/StikDebug/releases/latest).",
-                      done: JITBootstrap.isStikDebugInstalled)
-                point(2, "Import this \(device)'s pairing file into StikDebug.")
-                point(3, "Install and connect [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)).")
-                point(4, "Whenever you start a Mac, Henge opens StikDebug, which attaches and comes back.")
-            }
-            .padding(16).hengeCard()
-        } actions: {
-            Button("Use StikDebug") {
-                jit.method = .stikDebug
-                HengeLog.log("ui", "JIT method set to StikDebug")
-                close()
-            }
-            .buttonStyle(PrimaryButtonStyle())
-        }
-    }
-
-    // MARK: TrollStore
-
-    private var trollStore: some View {
-        page(symbol: "sparkles", title: "Use TrollStore",
-             subtitle: "TrollStore can enable JIT for apps it installed, with no pairing file, "
-                     + "VPN or computer.") {
-            VStack(alignment: .leading, spacing: 14) {
-                point(1, "Install Henge.ipa through TrollStore, on an iOS version TrollStore supports. It carries the "
-                       + "entitlements TrollStore keeps, so the same file works there and in a sideloader.",
-                      done: JITBootstrap.isInstalledWithTrollStore)
-                point(2, "In TrollStore's Settings, turn on URL Scheme. TrollStore ignores enable-jit requests without it.")
-                point(3, "Whenever a Mac starts, Henge asks TrollStore to enable JIT. TrollStore opens Henge, "
-                       + "attaches to it for a moment and lets go, which leaves it allowed to run code it wrote.")
-            }
-            .padding(16).hengeCard()
-            if !JITBootstrap.isTrollStoreInstalled {
-                Label("TrollStore was not found on this \(device). It installs on iOS 14.0 to 17.0.", systemImage: "info.circle")
-                    .font(.system(size: 13)).foregroundStyle(Theme.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } actions: {
-            Button("Use TrollStore") {
-                jit.method = .trollStore
-                HengeLog.log("ui", "JIT method set to TrollStore")
-                close()
-            }
-            .buttonStyle(PrimaryButtonStyle())
-        }
-    }
-
-    // MARK: Jailbreak
-
-    private var jailbreak: some View {
-        page(symbol: "lock.open", title: "Use a jailbreak",
-             subtitle: "On a device jailbroken with Dopamine, JIT is a setting: the jailbreak marks every app as "
-                     + "debugged when it opens, and a debugged app may run code it wrote. Henge needs nothing else.") {
-            VStack(alignment: .leading, spacing: 14) {
-                point(1, "Open Dopamine and go to its Settings.", done: JITBootstrap.isJailbroken)
-                point(2, "Turn on Allow JIT in Apps.")
-                point(3, "Close Henge completely and open it again. The setting applies to apps as they start.",
-                      done: JITBootstrap.debuggedAtLaunch)
-            }
-            .padding(16).hengeCard()
-            if JITBootstrap.debuggedAtLaunch {
-                Label("Henge was marked as debugged when it opened, so JIT is on.", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 13)).foregroundStyle(.green)
-            } else if !JITBootstrap.isJailbroken {
-                Label("No jailbreak was found on this \(device).", systemImage: "info.circle")
-                    .font(.system(size: 13)).foregroundStyle(Theme.textDim)
-            }
-        } actions: {
-            Button("Use the jailbreak") {
-                jit.method = .jailbreak
-                HengeLog.log("ui", "JIT method set to jailbreak")
-                close()
-            }
-            .buttonStyle(PrimaryButtonStyle())
         }
     }
 

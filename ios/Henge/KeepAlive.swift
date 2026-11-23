@@ -27,7 +27,7 @@ enum KeepAlive {
     /// Something iOS closing Henge would lose: a Mac running, starting, stopping or paused, or an install.
     private static var needed: Bool {
         let s = henge_vm_state()
-        return enabled && (s == 1 || s == 3 || s == 4 || Installer.shared.busy)
+        return enabled && (s == HENGE_VM_RUNNING || s == HENGE_VM_STARTING_OR_STOPPING || s == HENGE_VM_PAUSED || Installer.shared.busy)
     }
 
     /// Once, at launch: follow what Henge is doing, say in the log what iOS tells it about memory, and follow the heat.
@@ -175,7 +175,7 @@ enum MemoryRelief {
 
     /// Half the Mac's memory at most: macOS itself needs the rest to stay up. Said once for each change.
     private static func grow(_ mb: Int, _ why: String) {
-        guard henge_vm_state() == 1 else { return }
+        guard henge_vm_state() == HENGE_VM_RUNNING else { return }
         let held = henge_vm_balloon(-1)
         guard held >= 0 else { return } // no balloon in this Mac
         lastGrow = Date()
@@ -192,7 +192,7 @@ enum MemoryRelief {
     /// to ask for).
     private static var askedForBackground = false
     static func beforeBackgroundPause() -> Int? {
-        guard henge_vm_state() == 1 else { return nil }
+        guard henge_vm_state() == HENGE_VM_RUNNING else { return nil }
         let held = henge_vm_balloon(-1)
         guard held >= 0 else { return nil }
         let ram = Int(henge_vm_ram_mb()), most = max(ram / 2, 0)
@@ -208,7 +208,7 @@ enum MemoryRelief {
     static func afterBackground() {
         guard askedForBackground else { return }
         askedForBackground = false
-        guard henge_vm_state() == 1 || henge_vm_state() == 4 else { return }
+        guard henge_vm_state() == HENGE_VM_RUNNING || henge_vm_state() == HENGE_VM_PAUSED else { return }
         _ = henge_vm_balloon(targetMB)
         HengeLog.log("memory", "back in the foreground: the Mac keeps \(targetMB) MB handed over")
     }
@@ -219,8 +219,8 @@ enum MemoryRelief {
     /// way to tell), 256 MB goes back to the Mac each minute. A timer tick's worth of work: one host_statistics64.
     static func sample() {
         let state = henge_vm_state()
-        guard state == 1 || state == 4 else { targetMB = 0; return } // that Mac is gone
-        guard state == 1, !askedForBackground else { return }
+        guard state == HENGE_VM_RUNNING || state == HENGE_VM_PAUSED else { targetMB = 0; return } // that Mac is gone
+        guard state == HENGE_VM_RUNNING, !askedForBackground else { return }
         // A Mac brought back by Instant Resume keeps what its balloon held when saved: take that over, or it would
         // never get it back (easing only gives back what was asked for in this launch).
         if targetMB == 0 {

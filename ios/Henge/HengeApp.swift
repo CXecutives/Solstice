@@ -17,7 +17,6 @@ struct HengeApp: App {
         // Settings > Log stream: send the log to a computer on this network, if that is on.
         LogStream.shared.applySettings()
         HengeLog.logFootprint("app-launch")
-        JITBootstrap.noteLaunchState()
         HengeLog.log("app", "increased memory limit: \(Entitlements.increasedMemory ? "yes" : "no"); extended addressing: \(Entitlements.extendedAddressing ? "yes" : "no"); limit \(Entitlements.memoryLimitAtLaunch >> 20) MB")
         // Without the guard, a brk no debugger answers kills the app instead of failing.
         JITBootstrap.installTrapGuard()
@@ -91,7 +90,7 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             machines.collectImports()
             jit.enableAtLaunchIfAsked()
-            // StikDebug can launch Henge before it attaches. A task also runs
+            // The helper can attach a moment after Henge is active. A task also runs
             // on the first appearance, when there may be no phase change.
             for _ in 0..<100 {
                 guard !Task.isCancelled else { return }
@@ -99,7 +98,7 @@ struct RootView: View {
                     jit.objectWillChange.send()
                     return
                 }
-                if JITBootstrap.debuggedFlag || JITBootstrap.canGrantOwnJIT {
+                if JITBootstrap.debuggedFlag {
                     JITBootstrap.prewarm()
                     // Readiness lives outside the observable coordinator.
                     jit.objectWillChange.send()
@@ -117,21 +116,13 @@ struct RootView: View {
             guard !firstSetupOffered else { return }
             firstSetupOffered = true
             jit.refreshPairingStatus()
-            if !jit.hasPairing && !JITBootstrap.ready && !JITBootstrap.isInstalledWithTrollStore { jit.showSetup = true }
+            if !jit.hasPairing && !JITBootstrap.ready { jit.showSetup = true }
         }
         .task(id: jit.attachGeneration) { await autoStartLastMac() }
         .onChange(of: installer.justInstalled) { mac in
             guard let mac else { return }
             installer.justInstalled = nil
             Task { await startWhenFree(mac) }
-        }
-        .task { // testing only: HENGE_AUTOPILOT
-            await Autopilot.run { mac in
-                // A session still on screen (its Mac stopped) is closed first: the same value again would start nothing.
-                guard running != nil else { running = mac; return }
-                running = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { running = mac }
-            }
         }
     }
 }
@@ -159,28 +150,5 @@ extension RootView {
         }
         HengeLog.log("app", "auto-start: \(mac.name)")
         running = mac
-    }
-}
-
-/// Starting the last Mac by itself, with a guard against a Mac that keeps failing to come up.
-enum AutoStart {
-    static let key = "solstice.autoStartMac"
-    private static let failuresKey = "solstice.autoStartFailures"
-    static var enabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
-    /// Counts an attempt; false after two in a row that never reached a running Mac.
-    static func attempt() -> Bool {
-        let failures = UserDefaults.standard.integer(forKey: failuresKey)
-        guard failures < 2 else { return false }
-        UserDefaults.standard.set(failures + 1, forKey: failuresKey)
-        return true
-    }
-    /// A Mac got going (it ran for a while): start counting afresh.
-    static func succeeded() { UserDefaults.standard.set(0, forKey: failuresKey) }
-}
-
-extension View {
-    /// Husk's screens are written against an iOS 15 shim; Henge needs iOS 17, so this is the real thing.
-    func hengeDestination<D: Hashable, C: View>(for data: D.Type, @ViewBuilder destination: @escaping (D) -> C) -> some View {
-        navigationDestination(for: data, destination: destination)
     }
 }

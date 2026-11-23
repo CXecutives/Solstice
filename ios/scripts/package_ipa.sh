@@ -1,16 +1,12 @@
 #!/bin/zsh
-# Builds Henge for iOS and writes ~/Desktop/Henge.ipa (or ~/Desktop/Henge.tipa with --trollstore).
+# Builds Henge for iOS and writes ~/Desktop/Henge.ipa.
 # Unsigned build, then signed ad hoc inside out with the entitlements file named by the
-# HENGE_ENTITLEMENTS environment variable (default Henge/Henge.entitlements), as Husk's
+# HENGE_ENTITLEMENTS environment variable (default Henge/Henge.personal.entitlements), as Husk's
 # package_ipa.sh does: the sideloader (SideStore, AltStore, Impactor) re-signs it
 # with the user's own certificate and keeps the entitlements it can.
-# --trollstore strips the entitlements TrollStore bans under PPL/TXM.
 set -e
 IOS="$(cd "$(dirname "$0")/.." && pwd)"
-TROLLSTORE=false
-[ "$1" = "--trollstore" ] && TROLLSTORE=true
 OUT="${HENGE_IPA_OUT:-$HOME/Desktop/Henge.ipa}" # HENGE_IPA_OUT: somewhere else (a trial build that must not replace the one on the Desktop)
-[ "$TROLLSTORE" = true ] && OUT="$HOME/Desktop/Henge.tipa"
 [ -d "$IOS/deps/StikJIT.xcframework" ] || "$IOS/scripts/fetch_deps.sh"
 cd "$IOS"
 xcodegen generate >/dev/null
@@ -39,8 +35,6 @@ cp -R "$APP" "$STAGE/Payload/"
 ENT="$STAGE/entitlements.plist"
 # HENGE_ENTITLEMENTS picks another file, as for xcodebuild (Henge/Henge.personal.entitlements for a free team).
 cp "$IOS/${HENGE_ENTITLEMENTS:-Henge/Henge.personal.entitlements}" "$ENT"
-BANNED_KEYS=("com.apple.private.cs.debugger" "dynamic-codesigning" "com.apple.private.skip-library-validation")
-if [ "$TROLLSTORE" = true ]; then for k in "${BANNED_KEYS[@]}"; do plutil -remove "$k" "$ENT" 2>/dev/null || true; done; fi
 SAPP="$STAGE/Payload/Henge.app"
 plutil -insert HengeBuildCommit -string "$(git -C "$IOS/.." rev-parse --short=12 HEAD 2>/dev/null || echo unknown)" "$SAPP/Info.plist"
 plutil -insert HengeBuildDate -string "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SAPP/Info.plist"
