@@ -255,7 +255,7 @@ static void refresh_and_idle(void) {
     const uint64_t period = 24000000 / 60;
     double slack_kicker = overshoot_us(QOS_CLASS_USER_INTERACTIVE, HV_POLL_BUSY), slack_wfi = overshoot_us(QOS_CLASS_DEFAULT, period);
     /* What the host's timed waits allow: one refresh per wakeup at most, one wakeup per period plus how late it comes. */
-    double want_asleep = 1e6 / ((double)period / 24.0 + slack_wfi), want_polls = 1e6 / ((double)HV_POLL_BUSY / 24.0 + slack_kicker);
+    double want_asleep = 1e6 / ((double)period / 24.0 + slack_wfi);
     if (want_asleep > 60) want_asleep = 60;
     printf("refresh: this host's timed waits come back %.0f us late after 1 ms (kicker), %.0f us after 16.7 ms (CPU threads)\n",
            slack_kicker, slack_wfi);
@@ -301,8 +301,11 @@ static void refresh_and_idle(void) {
         } else if (phase == 1) {
             /* How often the kicker gets to run is the host's call (a busy CI VM gave 84/s against 181 it promised a
                moment before), so check what the engine decides: a poll at each kicker wakeup, not just at refreshes. */
-            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning, unsignalled work: devices polled at each kicker wakeup (%.0f/s, %.0f wakeups/s; %.0f allowed by this host)", p, k, want_polls);
-            check(msg, p >= 0.9 * k && p > r && kp > 0);
+            snprintf(msg, sizeof msg, "refresh, unsignalled work: a poll asked at each kicker wakeup but the refreshes' (%.0f/s of %.0f; %.0f polls/s)", kp, k, p);
+            /* The kicker wakes for CPU 0's refresh deadlines too, and asks for no poll then unless a poll period has
+               passed. How many of the polls it asks for CPU 0 gets to make is again the host's call (asked twice while
+               its thread stood still is one poll), so what is checked is the asking. */
+            check(msg, kp >= 0.9 * (k - r - 5) && kp > 0 && p > r);
         } else { /* asleep until each refresh deadline: one refresh per wakeup */
             snprintf(msg, sizeof msg, "refresh, cpu 0 asleep: a refresh at each deadline (%.1f/s; %.1f allowed by this host)", r, want_asleep);
             check(msg, r >= 0.85 * want_asleep - 1 && r <= 61.5);
