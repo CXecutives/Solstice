@@ -628,6 +628,20 @@ static void test_target_capped(void) {
     puts("zoomed target: drawables no bigger than the window");
 }
 
+/* Not a check: whether this GPU runs a pass whose depth-stencil state is set to nil (the CI's paravirtual one hung
+   one, kIOGPUCommandBufferCallbackErrorHang). On a queue of its own, last, so a hang touches no other test. */
+static void report_nil_depth_stencil(HvReplay *r) {
+    id<MTLCommandQueue> q = [r->device newCommandQueue];
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    id<MTLRenderCommandEncoder> re = small_pass(r, cb);
+    [re setDepthStencilState:nil];
+    [re endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    printf("a pass with a nil depth-stencil state: status %ld%s%s\n", (long)cb.status, cb.error ? ", " : "",
+           cb.error ? cb.error.localizedDescription.UTF8String : "");
+}
+
 int main(void) {
     alarm(120);
     @autoreleasepool {
@@ -648,6 +662,7 @@ int main(void) {
         dispatch_sync(r->worker, ^{ test_gpu_recovery(r); });
         test_scaler(r);
         test_target_capped();
+        report_nil_depth_stencil(r);
         hv_pvg_metal_destroy(m);
     }
     if (failures) printf("%d failures\n", failures);

@@ -356,9 +356,11 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         [e setTessellationFactorScale:f];
         break;
     }
-    case 104: {
-        id state = [self get:U32(0) task:task as:@protocol(MTLDepthStencilState)];
-        [e setDepthStencilState:state];
+    case 104: { /* ref 0: none, as the guest asks; a ref with no usable state behind it changes nothing (Metal's
+                   paravirtual GPU hung a pass on a nil state, kIOGPUCommandBufferCallbackErrorHang) */
+        uint32_t ref = U32(0);
+        id state = [self get:ref task:task as:@protocol(MTLDepthStencilState)];
+        if (state || !ref) [e setDepthStencilState:state];
         break;
     }
     case 107: [e setCullMode:(MTLCullMode)U32(0)]; break;
