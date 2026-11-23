@@ -276,9 +276,12 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     if (hv_disk_open(&disk, c->disk, 0, 0) != 0) return fail(err, errlen, "Cannot open the disk image.");
     if (hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, 0) != 0)
         return fail(err, errlen, "Cannot open the auxiliary storage.");
+    /* Guest RAM first: the one mapping that must be in one piece, before the engine's tables take address space. */
+    if (hv_vmapple_reserve_ram(&board, (c->ram_mb ? c->ram_mb : 2048) << 20) != 0)
+        return fail(err, errlen, "Cannot reserve the guest's RAM (not enough address space?).");
     size_t jit = c->jit_bytes ? c->jit_bytes : (size_t)768 << 20;
     int r = c->jit_rx ? hv_machine_init_jit(&m, c->jit_rx, c->jit_rw, jit) : hv_machine_init(&m, jit);
-    if (r != 0) return fail(err, errlen, "Cannot set up the JIT region.");
+    if (r != 0) return fail(err, errlen, "Cannot set up the JIT region and the engine's tables.");
     m.log = c->log;
     m.gen_checks = getenv("HV_JIT_POISON") != NULL;
     if (getenv("HV_SLOW_MEM")) m.slow_mem = 1; /* debugging: every load and store through the helper */
@@ -293,8 +296,8 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
         cfg.run_installer1 = a, cfg.run_installer2 = b2;
     }
     static const uint8_t mac[6] = {0x02, 0x48, 0x56, 0x4d, 0x00, 0x01};
-    if (hv_vmapple_create(&board, &m, cpus, (c->ram_mb ? c->ram_mb : 2048) << 20, &disk, &aux, &cfg, mac) != 0)
-        return fail(err, errlen, "Cannot build the machine (not enough memory for the guest's RAM?).");
+    if (hv_vmapple_create(&board, &m, cpus, &disk, &aux, &cfg, mac) != 0)
+        return fail(err, errlen, "Cannot build the machine (not enough memory for its CPUs' tables?).");
     if (hv_vmapple_load_rom(&board, c->rom) != 0) return fail(err, errlen, "Cannot read the ROM (AVPBooter.vmapple2.bin).");
     hv_vmapple_reset_cpu(&board);
     dt_fixup_on = !c->installer && hv_dt_fixup_start(board.ram, board.ram_size, VMAPPLE_MEM, c->product_name, c->model_id);
@@ -497,9 +500,6 @@ int hv_vm_finish_pause(void) {
 
 int hv_vm_pause_clean(void) { return hv_vm_paused() && pause_clean; }
 
-/* Where the guest's counter goes on from after a pause or a restore: as much later as the wall clock moved meanwhile, so
-   its clock is right at once (macOS then also checks it with the network) -- the counter on a host (an iPhone asleep)
-   stops for longer than the wall clock does. A jump of 10 minutes was seen to do no harm beyond what a Mac left alone
 int hv_vm_trim(void) {
     pthread_mutex_lock(&pause_mu);
     int paused = pause_state == 2; /* its CPU threads have ended (hv_vm_finish_pause) */
@@ -508,6 +508,9 @@ int hv_vm_trim(void) {
     return r;
 }
 
+/* Where the guest's counter goes on from after a pause or a restore: as much later as the wall clock moved meanwhile, so
+   its clock is right at once (macOS then also checks it with the network) -- the counter on a host (an iPhone asleep)
+   stops for longer than the wall clock does. A jump of 10 minutes was seen to do no harm beyond what a Mac left alone
    that long does (its display goes off for being idle: hv_vm_start nudges the pointer after it). HV_RESUME_CLOCK=
    continuous: no time passes for the guest at all (its clock is then behind until macOS sets it, which can be hours). */
 uint64_t hv_vm_resume_counter(uint64_t counter, int64_t wall_ns) {

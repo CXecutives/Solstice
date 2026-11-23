@@ -235,7 +235,7 @@ final class Installer: NSObject, ObservableObject {
         // (it is outside Henge's footprint, so iOS does not stop it) stalls the whole phone two thirds of the way through.
         var restoring = mac
         restoring.ramMB = min(max(mac.ramMB, 2048), 4096)
-        let ram = GuestMemory.prepare(restoring)
+        let ram = GuestMemory.prepare(restoring, cpus: cpus)
         guard ram >= 2048 else { throw message("Installing needs a few more GB of free storage for the Mac's memory.") }
         setenv("HV_WRITE_CACHE", "0", 1) // the ~15 GB the restore writes goes straight to storage (host/disk.c)
         defer { unsetenv("HV_WRITE_CACHE") } // the new Mac starts in this launch (#183): its first boot writes cached again

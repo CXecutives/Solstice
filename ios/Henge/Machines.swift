@@ -53,8 +53,13 @@ struct VirtualMac: Identifiable, Codable, Hashable {
 /// which is allowed once a debugger has attached (how JIT is turned on). If that is refused it uses
 /// a file beside the disk: iOS's memory limit does not count a mapped file's pages either.
 enum GuestMemory {
+    /// Address space left for the rest of the app (Metal, threads, frameworks) besides the engine's tables.
+    static let appRoomMB: UInt64 = 512
+
     /// Points the engine at the file (it is unlinked as soon as it is open) and returns the size that fits.
-    static func prepare(_ mac: VirtualMac) -> UInt64 {
+    /// Guest RAM is reserved first, in one piece, then the engine's tables (host/vm.c): the largest piece of address
+    /// space must leave room for those (sized from the code cache and the CPUs) and for the app.
+    static func prepare(_ mac: VirtualMac, cpus: Int) -> UInt64 {
         henge_ios_jit_prepare_vm_memory()
         let file = mac.directory.appendingPathComponent("ram.tmp")
         setenv("HV_RAM_FILE", file.path, 1)
@@ -62,13 +67,14 @@ enum GuestMemory {
             .volumeAvailableCapacityForImportantUsage ?? 0
         let room = free > 0 ? UInt64(max(free - (2 << 30), 0)) >> 20 : UInt64.max
         let reach = henge_largest_mapping_mb()
+        let tables = henge_engine_tables_mb(Int32(cpus)), keep = tables + appRoomMB
         // An 8 GB device cannot hold a 4 GB Mac beside the engine (its code cache and records come to 2.5 GB or
         // more) and iOS: an iPad Pro M4 compressed 7 GB and then closed Henge four minutes in. 3 GB there; macOS
         // makes up the difference with its own swap, on the Mac's disk, which iOS has none of.
         let physical = ProcessInfo.processInfo.physicalMemory >> 20
         let fits: UInt64 = physical <= 6700 ? 2048 : physical <= 8700 ? 3072 : UInt64.max
-        let ram = min(UInt64(mac.ramMB), room, reach > 512 ? reach - 512 : 0, fits) / 512 * 512
-        HengeLog.log("session", "guest RAM \(ram) MB (asked \(mac.ramMB), disk room \(room), largest mapping \(reach), this device fits \(fits == UInt64.max ? "any" : String(fits)))")
+        let ram = min(UInt64(mac.ramMB), room, reach > keep ? reach - keep : 0, fits) / 512 * 512
+        HengeLog.log("session", "guest RAM \(ram) MB (asked \(mac.ramMB), disk room \(room), largest mapping \(reach), engine tables \(tables), this device fits \(fits == UInt64.max ? "any" : String(fits)))")
         return ram
     }
 }

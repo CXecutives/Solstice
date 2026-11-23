@@ -780,7 +780,7 @@ int main(void) {
     setenv("HV_RAM_NO_LEDGER", "1", 1);
     setenv("HV_RAM_NO_PREFAULT", "1", 1);
     static const uint8_t mac[6] = {2, 0, 0, 0x12, 0x34, 0x56};
-    if (hv_vmapple_create(&board, &m, &cpu, RAM_SIZE, &root, &aux, &cfg, mac) != 0) return 1;
+    if (hv_vmapple_reserve_ram(&board, RAM_SIZE) != 0 || hv_vmapple_create(&board, &m, &cpu, &root, &aux, &cfg, mac) != 0) return 1;
     hv_vmapple_reset_cpu(&board);
     check("reset pc", cpu.pc, VMAPPLE_FIRMWARE);
     check("aux disk skips its 16 KB header", aux.size, (256 << 10) - 16384);

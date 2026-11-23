@@ -660,7 +660,7 @@ struct SessionView: View {
         guard !Task.isCancelled else { return }
         UIApplication.shared.isIdleTimerDisabled = true
         HardwareMouse.shared.start()
-        let ram = GuestMemory.prepare(mac)
+        let ram = GuestMemory.prepare(mac, cpus: cpus)
         HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB")
         guard ram >= 1024 else {
             error = "There is not room for this Mac's memory: it needs a few GB of free storage."
