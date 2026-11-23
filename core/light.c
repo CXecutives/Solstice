@@ -9,7 +9,7 @@
 uint32_t hv_light_flags;
 uint32_t hv_light_clock;
 
-/* How long a WFE waits for its word at most: 50 us at 24 MHz. */
+/* How long a WFE waits for its word before the guest's loop looks again: 50 us at 24 MHz. */
 #define HV_WFE_WAIT (24 * 50)
 
 /* mach_absolute_time, as the commpage has it read (hv_light_clock must not be 0). For deadlines, so no ISB before the
@@ -76,8 +76,9 @@ uintptr_t hv_resume(HvCpu *cpu) {
    dispatcher every time made a waiting CPU spin through it (a hundred thousand times a second). Wait here instead: the
    host core sleeps in its own WFE on the host copy of the word, which wakes when another core writes it (or at the
    event stream, about every microsecond). A request for this CPU (an interrupt, a TLBI: exit_req) ends the wait, and
-   so does a short timeout, so its timer and devices are seen to. Without a monitor to watch it leaves for the
-   dispatcher at once, as without HV_LIGHT_WFE_WAIT. */
+   so does its timer coming due (then for the dispatcher too, which takes the interrupt). After HV_WFE_WAIT the guest's
+   loop just looks at its word again: the kicker still brings the CPU out for devices and deadlines. Without a monitor
+   to watch it leaves for the dispatcher at once, as without HV_LIGHT_WFE_WAIT. */
 void hv_light_wfe(HvCpu *cpu) {
     uint32_t lf = __atomic_load_n(&hv_light_flags, __ATOMIC_RELAXED);
     uint64_t va = cpu->excl_addr;
@@ -91,7 +92,9 @@ void hv_light_wfe(HvCpu *cpu) {
     }
     const void *host = (const void *)(uintptr_t)(va + (uint64_t)e->addend);
     uint64_t want = cpu->excl_val[0] & (size == 8 ? ~0ull : (1ull << (8 * size)) - 1);
-    uint64_t deadline = light_now() + HV_WFE_WAIT;
+    uint64_t deadline = light_now() + HV_WFE_WAIT, due = __atomic_load_n(&cpu->timer_due, __ATOMIC_RELAXED);
+    int timer = due && due < deadline;
+    if (timer) deadline = due;
     if (cpu->m->stats_interval) HV_ST(cpu).wfe_waits++;
     for (;;) {
         uint64_t v;
@@ -103,7 +106,8 @@ void hv_light_wfe(HvCpu *cpu) {
         }
         if (v != want || __atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED)) break;
         if (light_now() >= deadline) {
-            __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_RELAXED);
+            /* With the big lock (HV_BIG_LOCK) the holder of the word may be waiting for it: the dispatcher hands it on. */
+            if (timer || cpu->m->big_lock_on) __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_RELAXED);
             break;
         }
         if (lf & HV_LIGHT_WFE_SLEEP) __asm__ volatile("wfe" ::: "memory");
