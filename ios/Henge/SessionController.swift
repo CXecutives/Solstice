@@ -61,13 +61,10 @@ final class SessionController: ObservableObject {
         JITBootstrap.releaseLingeringDebugger()
         Sharing.prepare()
         EngineTuning.apply()
-        henge_vm_set_display(UInt32(mac.screen.width), UInt32(mac.screen.height))
-        if mac.isRetina {
-            henge_vm_set_display_mm(UInt32(mac.retinaMM.width), UInt32(mac.retinaMM.height))
-        } else {
-            henge_vm_set_display_mm(0, 0)
-        }
-        HengeLog.log("session", "screen \(mac.screen.width)x\(mac.screen.height) retina \(mac.isRetina)")
+        let screen = mac.macScreen
+        henge_vm_set_display(UInt32(screen.pixels.width), UInt32(screen.pixels.height))
+        henge_vm_set_display_mm(UInt32(screen.mm?.width ?? 0), UInt32(screen.mm?.height ?? 0))
+        HengeLog.log("session", "screen \(mac.preset.rawValue) \(screen.pixels.width)x\(screen.pixels.height) mm \(screen.mm.map { "\($0.width)x\($0.height)" } ?? "none") shown at \(String(format: "%.3f", screen.factor))x")
         if mac.reportHostIdentity == true {
             let modelID = Device.snappedModelIdentifier(forOS: mac.osName)
             henge_vm_set_identity(Device.chipName, Device.marketingName,

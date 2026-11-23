@@ -206,7 +206,7 @@ static void display_set_page(HvPvgLite *p, uint64_t pa) {
     PUTF(0x28, (float)height_mm);
     PUT32(0x208, 1); /* one mode: */
     PUT32(0x210, display_h << 16 | display_w);
-    PUT32(0x214, p->hz << 16); /* m4 fork: 120 Hz on ProMotion (HV_HZ), so WindowServer animates at the panel's rate */
+    PUT32(0x214, p->hz << 16); /* HV_HZ: 60 by default; the app offers 120 only on a 120 Hz panel */
     PUTF(0xa10, 1.0f); /* identity colour matrix */
     PUTF(0xa24, 1.0f);
     PUTF(0xa38, 1.0f);

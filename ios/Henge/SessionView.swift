@@ -35,6 +35,7 @@ struct SessionView: View {
     @State private var zoomFollowing: Task<Void, Never>?
     @State var shown = CGSize(width: 0.5, height: 0.5) // how much of the Mac's screen the zoomed view shows
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     /// The Mac's lifecycle: starting it, the engine's state while it runs, storage, shutting down.
     @StateObject private var session: SessionController
 
@@ -66,11 +67,13 @@ struct SessionView: View {
             let full = CGSize(width: geo.size.width + insets.leading + insets.trailing,
                               height: geo.size.height + insets.top + insets.bottom)
             let landscape = full.width > full.height
-            let layout = Layout(full: full, insets: insets, landscape: landscape, zoomed: zoomed, typing: typing, centre: zoomCentre, aspect: mac.aspect)
+            let layout = Layout(full: full, insets: insets, landscape: landscape, zoomed: zoomed, typing: typing, centre: zoomCentre,
+                                pixels: CGSize(width: mac.screen.width, height: mac.screen.height), scale: displayScale)
             ZStack(alignment: .topLeading) {
                 (landscape || zoomed ? Color.black : Desk.page)
                 // One view in every layout: it holds the layer the engine draws into.
-                BootDisplay(display: display, role: .device)
+                // Upright, the 15 pt corner is the layer's own (no mask over the Mac's frames); filling the device, none.
+                BootDisplay(display: display, role: .device, cornerRadius: layout.fillsPhone ? 0 : 15)
                     .opacity(display.isExternal ? 0 : 1)
                     .overlay {
                         if display.isExternal && state != HENGE_VM_STOPPED {
@@ -87,7 +90,6 @@ struct SessionView: View {
                         }
                     }
                     .frame(width: layout.screen.width, height: layout.screen.height)
-                    .clipShape(RoundedRectangle(cornerRadius: layout.fillsPhone ? 0 : 15, style: .continuous))
                     .overlay {
                         if !layout.fillsPhone {
                             RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(Color.white.opacity(0.16), lineWidth: 0.5)

@@ -90,10 +90,10 @@ struct SettingsView: View {
                         Text("The last two times, Solstice ended while a Mac was running, so Macs start with Henge's standard engine settings until the next update.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Picker("Mac refresh rate", selection: $refreshRate) {
-                        Text("30 Hz").tag(30)
-                        Text("60 Hz").tag(60)
-                        Text("120 Hz").tag(120)
+                    Picker("Mac refresh rate", selection: Binding(
+                        get: { Device.refreshChoices.contains(refreshRate) ? refreshRate : Device.defaultRefresh },
+                        set: { refreshRate = $0 })) {
+                        ForEach(Device.refreshChoices, id: \.self) { Text("\($0) Hz").tag($0) }
                     }
                     .pickerStyle(.segmented)
                     Toggle("Faster disk writes", isOn: $fastFlush)
