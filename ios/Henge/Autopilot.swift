@@ -165,6 +165,7 @@ enum Autopilot {
         case "exit":
             HengeLog.log("autopilot", "quitting")
             try? await Task.sleep(nanoseconds: 300_000_000)
+            SafeMode.macLive(false) // a quit asked for is not a crash (two in a row would turn safe mode on)
             exit(0)
         default:
             HengeLog.log("autopilot", "unknown command")

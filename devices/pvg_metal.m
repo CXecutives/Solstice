@@ -68,8 +68,10 @@ static int cursor_scale(void) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "pvg_lite.h"
+#include "pvg_vblank_clock.h"
 #include "metallib.h"
 
 #if !TARGET_OS_IPHONE
@@ -261,6 +263,7 @@ typedef struct HvWalk {
     uint64_t cursor_seq;      /* screen_lock: a new pointer image */
     double cursor_next;       /* screen_lock: the next layer update, at most one a refresh */
     double present_every;     /* 1 / HV_HZ: frames go out no faster than macOS draws them */
+    double last_present;      /* presenter: when the last frame went out, for a present cap (hv_present_wait) */
     __weak CAMetalLayer *opaque_layer; /* presenter: the target made opaque, once a frame of its own was on it */
     id<MTLSamplerState> screen_sampler, cursor_sampler;
     uint64_t on_screen; /* the mapping showing */
@@ -3026,7 +3029,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
     CGFloat scale = cursor_scale();
     os_unfair_lock_lock(&screen_lock);
     cursor_queued = NO;
-    cursor_next = now_seconds() + present_every;
+    cursor_next = now_seconds() + hv_present_every(present_every, hv_pvg_present_hz()); /* paced as the screen */
     CAMetalLayer *target = atomic_load(&stopping) ? nil : layer;
     BOOL visible = target && cursor_layer_ok && !overlay_hold && cursor && screen_w && screen_h;
     uint32_t W = screen_w, H = screen_h, cw = cursor_w, ch = cursor_h, stride = cursor_stride;
@@ -3104,6 +3107,11 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
 
 - (void)presentLoop {
     for (;;) @autoreleasepool {
+        /* Under a present cap (hot, Low Power Mode: hv_pvg_present_hz) the next frame is taken a whole interval after
+           the last present, the newest there is then; frames meanwhile only mark the screen dirty. */
+        double wait = hv_present_wait(last_present, now_seconds(), present_every,
+                                      hv_present_every(present_every, hv_pvg_present_hz()));
+        if (wait > 0) usleep((useconds_t)(wait * 1e6));
         os_unfair_lock_lock(&screen_lock);
         if (!screen_dirty || !layer) {
             presenter_running = NO;
@@ -3279,6 +3287,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
                change, and three drawables queue at most that far ahead. */
             [cb presentDrawable:drawable afterMinimumDuration:present_every];
             [cb commit];
+            last_present = now_seconds();
             gpu_frames++;
         } else {
             screen_dirty = YES;

@@ -30,6 +30,9 @@ enum EngineTuning {
         "HV_RANGE_DROP": "256",
         // Grouped memory accesses (v2: plain copies in the cold part, so the hot code grows by the checks only).
         "HV_GROUPS": "1",
+        // Hot or in Low Power Mode (PowerPolicy): at most this many frames a second go to the screen. macOS still
+        // draws at HV_HZ (its clock follows that rate); the screen, its compositing and the panel do half the work.
+        "HV_SAVING_HZ": "30",
     ]
 
     static var defaults: [String: String] { upstream.merging(solstice) { $1 } }

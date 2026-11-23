@@ -60,26 +60,26 @@ enum JITBootstrap {
     /// The one region HengeVM's translator gets for the whole session (it flushes and starts over when full,
     /// never asks for more). 1 GB takes about 1.5 s to prepare, and a first boot through Setup makes that much code; a full flush drops all of it.
     static let codeCacheKey = "henge.perf.codeCacheMB"
-    /// 512 MB, 1 GB or 1.5 GB (Settings > Performance > Code cache; without a choice there, by the memory limit: 1 GB
-    /// with the increased memory limit; 512 MB under 3.5 GB, as on 4-6 GB devices without it, where 1 GB and its records
-    /// left a 2 GB Mac too little room in Setup, #70). A bigger cache fills and empties less often (macOS 27 filled 1 GB
-    /// about once a minute) and costs more memory (its blocks' records come to about 0.75 of its size). Fixed for the
-    /// launch: the region is claimed once.
+    /// What Settings > Performance > Code cache offers, in MB. Without a choice there, the device's (Device.profile:
+    /// 384 MB on 4 GB, 768 MB on 6-8 GB, 1.5 GB on 12-16 GB) within what the signing allows: at most 512 MB under a
+    /// 3.5 GB memory limit (4-6 GB devices without the increased limit, where 1 GB and its records left a 2 GB Mac too
+    /// little room in Setup, #70). A bigger cache fills and empties less often (macOS 27 filled 1 GB about once a
+    /// minute) and costs more memory: its blocks' records come to about 0.5-0.7 times its size on top. Fixed for the
+    /// launch: the region is claimed once (the hold in henge-ios-jit.c covers the largest choice).
     /// 1.5 GB needs all of: more than 8 GB of memory (an 8 GB iPad's Mac, cache and records left iOS too little and it
     /// closed Henge), the memory limit, and extended-virtual-addressing: generated code only runs below 0x7000000000,
     /// and without that entitlement the largest hole there is about 1080 MiB, so a 1.5 GB region lands where code
-    /// cannot run and JIT never turns on (a free team cannot sign it). A 1.5 GB choice without it is taken as 1 GB.
+    /// cannot run and JIT never turns on (a free team cannot sign it). 1.5 GB without it is taken as 1 GB.
+    static let codeCacheChoices = [384, 512, 768, 1024, 1536]
     static let defaultCodeCacheMB: Int = {
-        let limit = Entitlements.memoryLimitAtLaunch, physical = ProcessInfo.processInfo.physicalMemory
-        if limit >= 5_500 << 20 && physical > 9 << 30 && Entitlements.extendedAddressing { return 1536 }
-        return limit >= 3_500 << 20 ? 1024 : 512
+        let limit = Entitlements.memoryLimitAtLaunch, device = Device.profile.codeCacheMB
+        if device > 1024 { return limit >= 5_500 << 20 && Entitlements.extendedAddressing ? device : 1024 }
+        return limit >= 3_500 << 20 ? device : min(device, 512)
     }()
     static let jitBytes: Int = {
-        switch (UserDefaults.standard.object(forKey: codeCacheKey) as? Int) ?? defaultCodeCacheMB {
-        case 1536: return Entitlements.extendedAddressing ? 1536 << 20 : 1024 << 20
-        case 512: return 512 << 20
-        default: return 1024 << 20
-        }
+        let mb = (UserDefaults.standard.object(forKey: codeCacheKey) as? Int) ?? defaultCodeCacheMB
+        if mb > 1024 && !Entitlements.extendedAddressing { return 1024 << 20 }
+        return (codeCacheChoices.contains(mb) ? mb : 1024) << 20
     }()
 
     /// True once the region is held. The memory budget needs this: after a

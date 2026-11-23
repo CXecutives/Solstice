@@ -11,6 +11,7 @@
 #include "install.h"
 
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,10 @@ static void *g_progress_user;
 static char g_ipsw[1024], g_cache[1024], g_mux[64];
 static uint64_t g_ecid;
 static volatile int g_result = 1; /* 1 running, 0 done, < 0 failed */
+/* The restore that counts. A retry in the same launch can start while an earlier restore thread still waits for its
+   (gone) machine; when that one gives up, its progress and result must not fail the new install. */
+static uint32_t g_gen;
+static int current(void *gen) { return (uint32_t)(uintptr_t)gen == __atomic_load_n(&g_gen, __ATOMIC_ACQUIRE); }
 
 static void *mux_thread(void *arg) {
     (void)arg;
@@ -43,15 +48,13 @@ static void *mux_thread(void *arg) {
 }
 
 static void progress(int step, double p, void *user) {
-    (void)user;
-    if (g_progress) g_progress(step, p, g_progress_user);
+    if (current(user) && g_progress) g_progress(step, p, g_progress_user);
 }
 
 static void *restore_thread(void *arg) {
-    (void)arg;
     struct idevicerestore_client_t *c = idevicerestore_client_new();
     if (!c) {
-        g_result = -1;
+        if (current(arg)) g_result = -1;
         return NULL;
     }
     int flags = FLAG_ERASE;
@@ -60,10 +63,11 @@ static void *restore_thread(void *arg) {
     idevicerestore_set_ipsw(c, g_ipsw);
     idevicerestore_set_cache_path(c, g_cache);
     if (g_ecid) idevicerestore_set_ecid(c, g_ecid);
-    idevicerestore_set_progress_callback(c, progress, NULL);
+    idevicerestore_set_progress_callback(c, progress, arg);
     int r = idevicerestore_start(c);
     fprintf(stderr, "install: restore finished: %d\n", r);
     idevicerestore_client_free(c);
+    if (!current(arg)) return NULL; /* an earlier install's: a newer one owns the result now */
     g_result = r == 0 ? 0 : -1;
     if (g_progress) g_progress(r == 0 ? HV_INSTALL_DONE : HV_INSTALL_FAILED, 1.0, g_progress_user);
     return NULL;
@@ -82,6 +86,7 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
     g_progress = cb;
     g_progress_user = user;
     g_result = 1;
+    uint32_t gen = __atomic_add_fetch(&g_gen, 1, __ATOMIC_ACQ_REL);
     hv_libusb_shim_attach(usb);
     pthread_t t;
     /* usbmuxd runs for the rest of the launch: a second restore (HomeView's cloudOS, then the device) finds the
@@ -93,7 +98,7 @@ int hv_install_start(HvVirtioUsb *usb, const char *ipsw, const char *workdir, ui
         mux_running = 1;
         usleep(300000);
     }
-    if (pthread_create(&t, NULL, restore_thread, NULL) != 0) return -1;
+    if (pthread_create(&t, NULL, restore_thread, (void *)(uintptr_t)gen) != 0) return -1;
     pthread_detach(t);
     return 0;
 }
