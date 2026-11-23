@@ -326,8 +326,16 @@ test-key-queue: $(B)/test_key_queue
 	$(B)/test_key_queue
 .PHONY: test-key-queue
 
+# The installer's download: which failures another attempt can cure, and the hash catching up with a part file.
+$(B)/test_ranged_download: ios/Henge/RangedDownload.swift tests/test_ranged_download.swift | $(B)
+	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
+
+test-ranged-download: $(B)/test_ranged_download
+	$(B)/test_ranged_download
+.PHONY: test-ranged-download
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
 SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons \
-	test-lifecycle test-key-layout test-touch-gestures test-key-queue
+	test-lifecycle test-key-layout test-touch-gestures test-key-queue test-ranged-download
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

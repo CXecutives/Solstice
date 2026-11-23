@@ -32,10 +32,16 @@ final class DownloadHash {
     var hex: String { hasher.finalize().map { String(format: "%02x", $0) }.joined() }
 }
 
+/// Writing the part file failed: another attempt cannot help (the storage is full, or the file cannot be written).
+struct WriteFailed: LocalizedError {
+    let underlying: Error
+    var errorDescription: String? { underlying.localizedDescription }
+}
+
 /// Downloads `url` into the file `part`, appending: a download that stops for any reason (no network, Solstice
 /// closed or killed) goes on from where the file ends the next time, with an HTTP range request (#58).
 /// Apple's CDN answers ranges; a server that ignores one (200) starts the file again. Written in 8 MB pieces and
-/// hashed as it arrives (`digest`); progress is said at most 4 times a second, not for every network packet.
+/// hashed as it is written (`digest`, so a failed write leaves nothing to read again); progress is said at most 4 times a second, not for every network packet.
 final class RangedDownload: NSObject, URLSessionDataDelegate {
     let url: URL
     let part: URL
@@ -61,6 +67,18 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
         self.progress = progress
     }
 
+    /// Whether an error says the storage is full (ENOSPC, a quota), in it or in what it wraps.
+    static func storageFull(_ error: Error) -> Bool {
+        let ns = ((error as? WriteFailed)?.underlying ?? error) as NSError
+        if ns.domain == NSPOSIXErrorDomain && (ns.code == Int(ENOSPC) || ns.code == Int(EDQUOT)) { return true }
+        if ns.domain == NSCocoaErrorDomain && ns.code == NSFileWriteOutOfSpaceError { return true }
+        if let under = ns.userInfo[NSUnderlyingErrorKey] as? Error { return storageFull(under) }
+        return false
+    }
+
+    /// Whether another attempt can help: the network, yes; the part file that cannot be written, no.
+    static func retryable(_ error: Error) -> Bool { !(error is WriteFailed) && !storageFull(error) }
+
     /// Bytes already in a part file, or 0.
     static func size(of part: URL) -> Int64 {
         ((try? FileManager.default.attributesOfItem(atPath: part.path)[.size]) as? NSNumber)?.int64Value ?? 0
@@ -71,7 +89,7 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
     func run() async throws {
         if !FileManager.default.fileExists(atPath: part.path) {
             guard FileManager.default.createFile(atPath: part.path, contents: nil) else {
-                throw NSError(domain: "Solstice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Solstice couldn't create the download file."])
+                throw WriteFailed(underlying: NSError(domain: "Solstice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Solstice couldn't create the download file."]))
             }
         }
         have = Self.size(of: part)
@@ -112,10 +130,11 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
         guard let h = handle, !buffer.isEmpty else { return true }
         do {
             try h.write(contentsOf: buffer)
+            digest.add(buffer)
             buffer.removeAll(keepingCapacity: true)
             return true
         } catch {
-            failure = failure ?? error
+            failure = failure ?? WriteFailed(underlying: error)
             return false
         }
     }
@@ -188,7 +207,6 @@ final class RangedDownload: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard handle != nil else { return }
         buffer.append(data)
-        digest.add(data)
         have += Int64(data.count)
         if buffer.count >= Self.writeChunk && !flush() {
             dataTask.cancel()
