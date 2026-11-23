@@ -20,6 +20,7 @@
 #define HV_XHCI_INTRS 4
 #define HV_XHCI_EPS 32 /* device context index 1..31 */
 #define HV_XHCI_REPORTS 256
+#define HV_PTR_REPORTS 16
 
 /* The Magic Trackpad 2's sensor, in its own units (a ~160 x 115 mm pad).
    hv_xhci_touch takes coordinates in these ranges. */
@@ -27,6 +28,9 @@
 #define HV_TP_SENSOR_Y 5206
 #define HV_TP_FINGERS 10
 #define HV_TP_REPORTS 64
+/* Moves stop queueing one report each once this many reports wait: the guest is behind, and a newer
+   position replaces the waiting one (its time stamp too, so the speed the guest works out stays right). */
+#define HV_TP_COALESCE_AT 8
 #define HV_TP_REPORT_LEN (12 + 9 * HV_TP_FINGERS) /* report ID 2: 12-byte prefix, N x 9-byte fingers */
 
 typedef struct HvXhciRing {
@@ -77,6 +81,7 @@ typedef struct HvXhci {
     uint32_t tp_ts;    /* the report timestamp, one per report */
     uint8_t tp_reports[HV_TP_REPORTS][HV_TP_REPORT_LEN];
     uint8_t tp_rlen[HV_TP_REPORTS];
+    uint8_t tp_rmove[HV_TP_REPORTS]; /* the report only moved fingers: a newer one may replace it */
     uint32_t tp_rhead, tp_rtail;
     int tp_mt;         /* the guest switched us to multitouch mode (feature report 2) */
     uint64_t tp_delivered;
@@ -85,10 +90,12 @@ typedef struct HvXhci {
     uint32_t tp_multi_logs; /* multi-finger deliveries logged, capped */
     uint8_t tp_f1[8];   /* feature report 1: the header for the selected sensor register */
     int tp_f1_len;
-    /* The absolute pointer: where it is (0..HV_PTR_MAX on each axis) and whether
-       the guest has yet to be told. Only the latest place matters, so there is no queue. */
-    uint8_t ptr_report[5]; /* buttons (none: clicks go by the virtio mouse), X, Y (little-endian) */
-    int ptr_pending;
+    /* The absolute pointer: buttons, then X and Y (0..HV_PTR_MAX, little-endian). A move replaces a
+       waiting move; a button change queues, so a quick click's press is not lost behind its release. */
+    uint8_t ptr_report[5];                    /* the current state */
+    uint8_t ptr_reports[HV_PTR_REPORTS][5];   /* waiting for the guest */
+    uint32_t ptr_rhead, ptr_rtail;
+    int ptr_last_move; /* the newest waiting report only moved the pointer */
 } HvXhci;
 
 HvXhci *hv_xhci_create(HvMachine *m, HvPcie *bus);
@@ -108,9 +115,20 @@ void hv_xhci_touch(HvXhci *x, int id, int phase, int px, int py, uint32_t ts_ms)
 void hv_xhci_touch_frame(HvXhci *x, uint32_t ts_ms);
 /* Any thread: the pad's full press (a click), down or up. */
 void hv_xhci_touch_button(HvXhci *x, int down);
+/* Any thread: the Mac's own secondary click: two fingers resting on the pad (touch IDs
+   HV_TP_CLICK_ID and HV_TP_CLICK_ID + 1) and the pad pressed, then released and lifted. */
+#define HV_TP_CLICK_ID 10
+void hv_xhci_secondary_click(HvXhci *x, int down);
+/* Whether the guest has switched the pad to multitouch (before that it is a plain mouse). */
+int hv_xhci_multitouch(HvXhci *x);
+/* Before a machine starts: its keyboard is an ISO one (Apple 0x0221, with the key beside the left
+   Shift) rather than ANSI (0x0220). macOS reads the keyboard type once, when the keyboard appears. */
+void hv_xhci_set_keyboard_iso(int iso);
 /* Any thread: put the guest's pointer at x, y, each 0..HV_PTR_MAX across the screen. */
 #define HV_PTR_MAX 32767
 void hv_xhci_pointer(HvXhci *x, int px, int py);
+/* Any thread: the absolute pointer's buttons (bit 0 left, 1 right, 2 middle), where it is now. */
+void hv_xhci_pointer_buttons(HvXhci *x, int buttons);
 /* CPU thread: hand waiting reports to the guest. */
 void hv_xhci_poll(HvXhci *x);
 

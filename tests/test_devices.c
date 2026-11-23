@@ -801,6 +801,89 @@ static void capture_uart(void *opaque, uint8_t c) {
     if (uart_n < (int)sizeof uart_out - 1) uart_out[uart_n++] = (char)c;
 }
 
+/* The trackpad's reports, as they wait for the guest: the newest, n back from the end. */
+static const uint8_t *tp_back(HvXhci *x, uint32_t n, unsigned *len) {
+    unsigned at = (x->tp_rtail - 1 - n) % HV_TP_REPORTS;
+    *len = x->tp_rlen[at];
+    return x->tp_reports[at];
+}
+static uint32_t tp_stamp(const uint8_t *r) { return (uint32_t)(r[9] >> 3) | (uint32_t)r[10] << 5 | (uint32_t)r[11] << 13; }
+static int tp_state(const uint8_t *r, int finger) { return (r[12 + 9 * finger + 3] >> 5) & 7; }
+
+/* The USB input devices with a guest that reads nothing (as one under load): what waits for it. */
+static void test_xhci_input(HvXhci *x) {
+    unsigned len;
+    /* A long drag, then the lift: the lift and the final "no fingers" report are what count. */
+    x->tp_rhead = x->tp_rtail;
+    uint32_t t = 1000;
+    hv_xhci_touch(x, 1, 0, 4000, 2500, t);
+    for (int i = 0; i < 200; i++) {
+        hv_xhci_touch(x, 1, 1, 4000 + i, 2500, t += 8);
+        hv_xhci_touch_frame(x, t);
+    }
+    hv_xhci_touch(x, 1, 2, 0, 0, t += 8);
+    check("trackpad: no more waiting than the ring holds", x->tp_rtail - x->tp_rhead <= HV_TP_REPORTS, 1);
+    const uint8_t *r = tp_back(x, 0, &len);
+    check("trackpad: a lift after a long drag ends in no fingers", len, 12);
+    r = tp_back(x, 1, &len);
+    check("trackpad: ... after the finger's stop", len == 21 && tp_state(r, 0) == 7, 1);
+    r = tp_back(x, 2, &len);
+    check("trackpad: ... after its newest place", len == 21 && r[12] == (uint8_t)(4199 - HV_TP_SENSOR_X / 2), 1);
+    r = x->tp_reports[x->tp_rhead % HV_TP_REPORTS];
+    check("trackpad: the touch still comes first", x->tp_rlen[x->tp_rhead % HV_TP_REPORTS] == 21 && tp_state(r, 0) == 4, 1);
+    int increasing = 1;
+    for (uint32_t i = x->tp_rhead + 1; i != x->tp_rtail; i++)
+        increasing &= tp_stamp(x->tp_reports[i % HV_TP_REPORTS]) > tp_stamp(x->tp_reports[(i - 1) % HV_TP_REPORTS]);
+    check("trackpad: stamps keep increasing", increasing, 1);
+    /* Nothing but taps: the newest still gets in. */
+    for (int i = 0; i < 100; i++) {
+        hv_xhci_touch(x, 2, 0, 4000, 2500, t += 8);
+        hv_xhci_touch(x, 2, 2, 0, 0, t += 8);
+    }
+    check("trackpad: taps fill the ring", x->tp_rtail - x->tp_rhead, HV_TP_REPORTS);
+    tp_back(x, 0, &len);
+    check("trackpad: the last tap's lift is there", len, 12);
+
+    /* The secondary click: two fingers rest, the pad is pressed, released, the fingers lift. */
+    x->tp_rhead = x->tp_rtail;
+    hv_xhci_secondary_click(x, 1);
+    r = tp_back(x, 0, &len);
+    check("secondary click: pressed with two fingers", len == 30 && (r[1] & 1) && tp_state(r, 0) == 4 && tp_state(r, 1) == 4, 1);
+    r = tp_back(x, 1, &len);
+    check("secondary click: the fingers rest first", len == 30 && !(r[1] & 1), 1);
+    hv_xhci_secondary_click(x, 0);
+    r = tp_back(x, 2, &len);
+    check("secondary click: released with the fingers down", len == 30 && !(r[1] & 1), 1);
+    r = tp_back(x, 1, &len);
+    check("secondary click: the fingers stop", len == 30 && tp_state(r, 0) == 7, 1);
+    tp_back(x, 0, &len);
+    check("secondary click: and lift", len, 12);
+    check("secondary click: five reports", x->tp_rtail - x->tp_rhead, 5);
+    x->tp_rhead = x->tp_rtail;
+
+    /* The absolute pointer: a click's press and release each reach the guest, where they happened. */
+    x->ptr_rhead = x->ptr_rtail;
+    hv_xhci_pointer(x, 100, 200);
+    hv_xhci_pointer_buttons(x, 1);
+    hv_xhci_pointer_buttons(x, 0);
+    hv_xhci_pointer(x, 300, 400);
+    hv_xhci_pointer(x, 500, 600);
+    check("pointer: moves merge, buttons queue", x->ptr_rtail - x->ptr_rhead, 4);
+    const uint8_t *p = x->ptr_reports[(x->ptr_rhead + 1) % HV_PTR_REPORTS];
+    check("pointer: pressed at the first place", p[0] == 1 && (p[1] | p[2] << 8) == 100, 1);
+    p = x->ptr_reports[(x->ptr_rhead + 2) % HV_PTR_REPORTS];
+    check("pointer: released there too", p[0] == 0 && (p[1] | p[2] << 8) == 100, 1);
+    p = x->ptr_reports[(x->ptr_rhead + 3) % HV_PTR_REPORTS];
+    check("pointer: then the newest place", p[0] == 0 && (p[1] | p[2] << 8) == 500 && (p[3] | p[4] << 8) == 600, 1);
+    x->ptr_rhead = x->ptr_rtail;
+
+    /* The ISO key beside the left Shift (Linux KEY_102ND) is HID usage 0x64. */
+    hv_xhci_key_linux(x, 86, 1);
+    check("keyboard: the ISO key", x->state[2], 0x64);
+    hv_xhci_key_linux(x, 86, 0);
+    x->rhead = x->rtail;
+}
+
 static void test_guest_programs(void) {
     static HvCpu init;
     hv_machine_add_ram(&m, (uint64_t)(uintptr_t)devices_programs_begin, devices_programs_finish - devices_programs_begin,
@@ -882,6 +965,7 @@ int main(void) {
     check("xhci MaxPorts", usb->bar_read(usb, 0, 4, 4) >> 24, HV_XHCI_PORTS);
     check("xhci USB 2 protocol covers every port, from port 1",
           usb->bar_read(usb, 0, 0x800 + 8, 4) & 0xffff, 1u | (uint32_t)HV_XHCI_PORTS << 8);
+    test_xhci_input(board.usb);
     /* MSI frame: valid type register, doorbell pends the INTID */
     check("msi type valid", rd32(VMAPPLE_GIC_MSI + 8) >> 31, 1);
     check("msi base", (rd32(VMAPPLE_GIC_MSI + 8) >> 16) & 0x1fff, VMAPPLE_MSI_BASE);
