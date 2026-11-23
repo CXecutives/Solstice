@@ -144,14 +144,13 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
         [CATransaction setDisableActions:YES];
         target.device = device;
         target.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        target.framebufferOnly = !(getenv("HV_PVG_GPU_TEST") || getenv("HV_COLOR_PROBE")); /* the probe copies the drawable out */
+        target.framebufferOnly = !getenv("HV_PVG_GPU_TEST"); /* the GPU test copies the drawable out */
         target.allowsNextDrawableTimeout = YES;
         target.maximumDrawableCount = 3;
         [CATransaction commit];
         prepared_layer = target;
         fprintf(stderr, "hengevm: pvg-metal: half-float display surfaces are shown %s (HV_PVG_HALF=%s)\n",
                 hv_half_mode_get() == 1 ? "as LINEAR light with an sRGB encode" : "as display-encoded values, passed through", hv_half_mode_get() == 1 ? "linear" : "encoded/default");
-        if (cp.on) cp_log_layer(self, target);
     }
     return YES;
 }
@@ -210,16 +209,6 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
     screen_tex = surface->scanout, screen_half = half, screen_w = surface->surface_w, screen_h = surface->surface_h;
     screen_dirty = YES;
     [self kickPresenter:YES];
-    os_unfair_lock_unlock(&screen_lock);
-}
-
-/* The frame as it is, drawn again (the colour probe: another mode, a post-shader capture). */
-- (void)screenChanged {
-    os_unfair_lock_lock(&screen_lock);
-    if (screen_tex) {
-        screen_dirty = YES;
-        [self kickPresenter:YES];
-    }
     os_unfair_lock_unlock(&screen_lock);
 }
 
@@ -515,7 +504,6 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
             [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         }
         [e endEncoding];
-        if (cp.on) cp_capture_post(self, drawable.texture, W, H, cb);
 #if !TARGET_OS_IPHONE
         if (getenv("HV_PVG_GPU_TEST")) { /* the same pixels for a screenshot: this is the path a phone runs */
             NSUInteger bytes = (NSUInteger)W * H * 4;

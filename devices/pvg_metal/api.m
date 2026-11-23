@@ -20,8 +20,8 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         int rate = hz && atoi(hz) >= 30 && atoi(hz) <= 120 ? atoi(hz) : 60;
         r->present_every = 1.0 / rate;
         r->overlay_matched = -1;
-        /* Screenshots of the drawable (the GPU test, the colour probe) want the pointer in it. */
-        r->overlay_never = getenv("HV_PVG_GPU_TEST") || getenv("HV_COLOR_PROBE");
+        /* Screenshots of the drawable (the GPU test) want the pointer in it. */
+        r->overlay_never = getenv("HV_PVG_GPU_TEST") != NULL;
         r->screen_lock = OS_UNFAIR_LOCK_INIT;
         r->walk_epoch = 1;
         r->mapped_textures = [NSMutableDictionary new];
@@ -31,7 +31,6 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->planar_hashes = [NSMutableDictionary new];
         r->complaints = [NSMutableSet new];
         r->shot = getenv("HV_PVG_SHOT");
-        cp_start(r);
         [r openArchive];
 #if !TARGET_OS_IPHONE
         if (getenv("HV_PVG_GPU_TEST")) r->layer = [CAMetalLayer layer];
@@ -58,7 +57,6 @@ void hv_pvg_metal_destroy(HvPvgMetal *m) {
         HvReplay *r = CFBridgingRelease(m);
         atomic_store(&r->stopping, 1);
         if (r->shot_timer) { dispatch_source_cancel(r->shot_timer); r->shot_timer = nil; }
-        if (cp.timer) { dispatch_source_cancel(cp.timer); cp.timer = nil; }
         os_unfair_lock_lock(&r->screen_lock);
         r->layer = nil;
         r->layer_generation++;
@@ -91,14 +89,12 @@ void hv_pvg_metal_destroy(HvPvgMetal *m) {
             r->screen_tex = nil;
             r->cursor_tex = nil;
             r->last_cb = nil;
-            r->readback = r->test_readback = nil;
+            r->test_readback = nil;
             free(r->frame); r->frame = NULL;
             free(r->base); r->base = NULL;
             free(r->cursor); r->cursor = NULL;
             for (NSValue *old in r->retired_frames) free(old.pointerValue);
             r->retired_frames = nil;
-            free(cp.pend_src); cp.pend_src = NULL;
-            cp.on = 0;
         });
     }
 }
@@ -151,7 +147,6 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                     if (op == 8 && n >= 16) {
                         uint64_t shown = (uint64_t)args[3] << 32 | args[2];
                         if (r->tracing) fprintf(stderr, "trace: swap to %llu\n", shown);
-                        cp_note_swap(r, shown, args, n);
                         [r present:shown];
                     }
                     if (op == 4) [r cursorGlyph:args length:n];

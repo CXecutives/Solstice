@@ -65,6 +65,8 @@ static int cursor_scale(void) {
 #include <mach/mach.h>
 #include <stdatomic.h>
 #include <mach/vm_map.h>
+#include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -278,7 +280,6 @@ typedef struct HvWalk {
     double drawable_retry_deadline; /* at most two seconds of retrying an unavailable target */
     uint32_t screen_w, screen_h;
     id<MTLBuffer> test_readback; /* HV_PVG_GPU_TEST: the drawable's pixels for screenshots */
-    id<MTLBuffer> readback;
     const char *shot;
     unsigned shots;
     dispatch_source_t shot_timer;
@@ -289,7 +290,6 @@ typedef struct HvWalk {
 - (BOOL)hasDisplayLayer;
 - (void)kickPresenter:(BOOL)fresh;
 - (void)present:(uint64_t)mapping;
-- (void)screenChanged;
 - (void)cursorChanged;
 - (void)targetChanged;
 @end
@@ -347,10 +347,9 @@ static double now_seconds(void) {
 }
 
 /* How the half-float display surface is shown. WindowServer writes DISPLAY-ENCODED values there (extended sRGB: the guest's gray 128 is
-   0.502, measured with the colour probe), so mode 0 passes them through. Mode 1 treats them as LINEAR light and applies the sRGB encode,
+   0.502, measured on a phone), so mode 0 passes them through. Mode 1 treats them as LINEAR light and applies the sRGB encode,
    which is what this code did before (and was only right for a linear display profile such as ACES CG Linear: with every other profile
-   it encodes twice and the screen looks pale). HV_PVG_HALF=linear selects mode 1 at start; with the colour probe on, a file named
-   mode-linear or mode-encoded in its folder switches it while running. */
+   it encodes twice and the screen looks pale). HV_PVG_HALF=linear selects mode 1. */
 static _Atomic int hv_half_mode = -1;
 static int hv_half_mode_get(void) {
     int m = atomic_load(&hv_half_mode);
@@ -365,8 +364,6 @@ static float hv_half_shown(float v, int mode) { /* what the screen shows for a h
     v = v < 0 ? 0 : v > 1 ? 1 : v;
     return mode == 1 ? (v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f) : v;
 }
-
-#include "pvg_colorprobe.h" /* HV_COLOR_PROBE: what the display is told and shown, for chasing colour problems */
 
 #include "pvg_metal/memory.m" /* objects by ref, the guest task memory under them */
 
