@@ -39,7 +39,7 @@ All paths below are relative to `C:/Users/owner/AppData/Local/Temp/claude/09d7ec
 | `HV_FLUSH` | 2 (`F_BARRIERFSYNC`) | `host/disk.c:78-86` | Disk flush mode |
 | `HV_QOS` | `USER_INITIATED` | `vm.c:384-397` | Thread priority class of the vCPU threads |
 | `HV_STATS` | 10 | `EngineTuning.swift:18` | Seconds between engine stats lines |
-| `HV_HOIST_CHECK` | off | `translate.c:779-786` | Loop exit-check placement |
+| `HV_HOIST_CHECK` | off | `translate.c:779-786` | Loop exit-check placement; +2.3-2.5% code (hot part +0.6%) on test_fuzz's paired A/B (2026-11-23), over the 2% bar: off |
 
 Also on by default: `HV_TLBT`, `HV_WALK_LOG`, `HV_IJC_PAGES` and `HV_DNS_PROXY`.
 
