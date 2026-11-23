@@ -674,6 +674,18 @@ static void print_stats(HvCpu *cpu, int force) {
                 RATE(ijc_light) / 1e3, RATE(xchained));
         fprintf(stderr, "  process switches: %.0f/s saved, %.0f/s restored, %.0f/s dropped by a TLBI (%.0f entries each)\n", RATE(stash_saves), RATE(stash_hits), RATE(stash_stale),
                 s->stash_hits - last.stash_hits ? (double)(s->stash_entries - last.stash_entries) / (s->stash_hits - last.stash_hits) : 0.0);
+        {   /* mmu.c: what process switches cost */
+            uint64_t ur = 0;
+            for (int k = 0; k < 7; k++) ur += s->user_reset_why[k] - last.user_reset_why[k];
+            uint64_t ut = s->ijc_reset_kind[0] - last.ijc_reset_kind[0];
+            fprintf(stderr, "  mmu refills K/s: el0 empty %.0f el0 slot taken %.0f el1 empty %.0f el1 slot taken %.0f; stashes/s: missed %.0f evicted %.0f, %.0f entries out and %.0f kept a switch\n",
+                    RATE(refill_kind[0]) / 1e3, RATE(refill_kind[1]) / 1e3, RATE(refill_kind[2]) / 1e3, RATE(refill_kind[3]) / 1e3, RATE(stash_miss), RATE(stash_evict),
+                    s->stash_saves - last.stash_saves ? (double)(s->stash_out - last.stash_out) / (s->stash_saves - last.stash_saves) : 0.0,
+                    s->stash_saves - last.stash_saves ? (double)(s->switch_kept - last.switch_kept) / (s->stash_saves - last.stash_saves) : 0.0);
+            fprintf(stderr, "  mmu user-half branch-cache resets/s: all-ASID TLBI VA %.1f, all-ASID range %.1f, whole-TLB flush %.1f, id-page set full %.1f, keyed filter full %.1f, code under several pages %.1f, ASID log full %.1f, other %.1f\n",
+                    RATE(user_reset_why[0]), RATE(user_reset_why[1]), RATE(user_reset_why[2]), RATE(user_reset_why[3]), RATE(user_reset_why[4]), RATE(user_reset_why[5]),
+                    RATE(user_reset_why[6]), ut > ur ? (double)(ut - ur) / dt : 0.0);
+        }
         fprintf(stderr, "  tlb misses K/s: el0 empty %.0f el0 conflict %.0f el1 empty %.0f el1 conflict %.0f\n",
                 RATE(tlb_miss_kind[0]) / 1e3, RATE(tlb_miss_kind[1]) / 1e3, RATE(tlb_miss_kind[2]) / 1e3, RATE(tlb_miss_kind[3]) / 1e3);
         fprintf(stderr, "  slow mem causes K/s: mmio %.0f code-page write %.0f page end %.0f tlb miss %.0f other %.0f entry-but-tag %.0f\n",

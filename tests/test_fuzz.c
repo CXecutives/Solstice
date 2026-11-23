@@ -718,11 +718,16 @@ static int run_native_twice(const TestProgram *p, const HvCpu *init, HvCpu *out)
 /* ---- page tables for the MMU-on modes (16 KB granule, 48-bit VA), as test_mem.c builds them ---- */
 
 static uint64_t pt_next, root_el1, root_el0, cur_root, map_ap;
+static uint64_t root_same, root_moved; /* for "kept across switches": EL0's twigs exactly; the near area's pages rotated */
 
 static uint64_t *pt_host(uint64_t pa) { return (uint64_t *)(void *)(pt + (pa - PT_PA)); }
 static uint64_t pt_alloc(void) {
     uint64_t pa = PT_PA + pt_next;
     pt_next += 16384;
+    if (pt_next > PT_SIZE) {
+        printf("fuzz: out of page-table space\n");
+        exit(1);
+    }
     memset(pt_host(pa), 0, 16384);
     return pa;
 }
@@ -753,6 +758,24 @@ static void build_tables(void) {
         map_range(f, f, FAR_SIZE);
         map_range(s, s, STACK_SIZE);
     }
+    /* EL0's tables again under another root: new level 0 and 1 tables, the same level 2 ones (so every twig the same). */
+    root_same = pt_alloc();
+    for (int i = 0; i < 2048; i++) {
+        uint64_t e = pt_host(root_el0)[i];
+        if (!(e & 1)) continue;
+        uint64_t l1 = pt_alloc();
+        memcpy(pt_host(l1), pt_host(e & 0x0000ffffffffc000ull), 16384);
+        pt_host(root_same)[i] = l1 | 3;
+    }
+    /* And tables of their own that map the near area's pages one further on (the last to the first), the far area
+       read-only at EL0 (fewer rights), the rest as EL0's tables do. */
+    cur_root = root_moved = pt_alloc();
+    map_ap = 3u << 6;
+    map_range(c, c, CODE_SIZE);
+    map_range(f, f, FAR_SIZE);
+    map_ap = 1u << 6;
+    for (uint64_t off = 0; off < NEAR_SIZE; off += 16384) map_page(n + off, ALIAS_PA + (off + 16384) % NEAR_SIZE);
+    map_range(s, s, STACK_SIZE);
 }
 static void mmu_el1(HvCpu *cpu) {
     cpu->mair_el1 = 0xff;
@@ -768,13 +791,39 @@ static void mmu_el0(HvCpu *cpu) {
     cpu->el = 0;
     hv_tlb_flush(cpu);
 }
+/* The run's EL0 TLB entries come from process switches (hv_tlb_switch_user): every page filled under root_moved, a
+   switch to root_same (the moved near pages must go, the rest may stay), every page filled again, a switch to EL0's
+   tables (all of it may stay). An entry kept that should not have been reads or writes the wrong page. */
+static void switch_to(HvCpu *cpu, uint64_t ttbr0) {
+    uint64_t old = cpu->ttbr0_el1;
+    cpu->ttbr0_el1 = ttbr0;
+    hv_tlb_switch_user(cpu, old, ttbr0);
+    hv_ijc_switch(cpu);
+}
+static void fill_all(HvCpu *cpu) {
+    static const uint64_t sizes[4] = {CODE_SIZE, NEAR_SIZE, FAR_SIZE, STACK_SIZE};
+    const uint64_t bases[4] = {(uint64_t)(uintptr_t)code, (uint64_t)(uintptr_t)near_mem, (uint64_t)(uintptr_t)far_mem, (uint64_t)(uintptr_t)stack_mem};
+    for (int r = 0; r < 4; r++)
+        for (uint64_t off = 0; off < sizes[r]; off += 16384) {
+            uint64_t pa;
+            hv_mmu_access(cpu, bases[r] + off, HV_ACC_READ, 0, &pa);
+        }
+}
+static void mmu_el0_switched(HvCpu *cpu) {
+    mmu_el0(cpu);
+    switch_to(cpu, root_moved | 3ull << 48);
+    fill_all(cpu);
+    switch_to(cpu, root_same | 2ull << 48);
+    fill_all(cpu);
+    switch_to(cpu, root_el0 | 1ull << 48);
+}
 
 /* ---- the ways of translating ---- */
 
 typedef struct {
     const char *name;
     int tiny;  /* the machine with a tiny JIT region: it fills, and flushes, mid-run */
-    int mmu;   /* 0 off (EL1), 1 on at EL1, 2 on at EL0 */
+    int mmu;   /* 0 off (EL1), 1 on at EL1, 2 on at EL0, 3 on at EL0 with the TLB filled through process switches */
     int knob, value;
     int slow;  /* every access through hv_mem_emulate */
     unsigned runs, fails;
@@ -793,6 +842,7 @@ static Conf confs[] = {
     {"movimm", 0, 0, HV_K_MOVIMM, 1, 0, 0, 0},
     {"superblocks", 0, 2, HV_K_SUPERBLOCKS, 1, 0, 0, 0},
     {"hoisted checks", 0, 0, HV_K_HOIST, 1, 0, 0, 0},
+    {"el0, mmu, kept across switches", 0, 3, -1, 0, 0, 0, 0},
 };
 #define NCONF ((int)(sizeof confs / sizeof confs[0]))
 
@@ -858,7 +908,7 @@ static int one(int seq, uint64_t seed, Conf *c, int report) {
     hv_flush_blocks(mm);
     mm->slow_mem = c->slow;
     reset_mem();
-    int bad = run_jit(mm, &p, &init, jit, c->mmu == 1 ? mmu_el1 : c->mmu == 2 ? mmu_el0 : NULL);
+    int bad = run_jit(mm, &p, &init, jit, c->mmu == 1 ? mmu_el1 : c->mmu == 2 ? mmu_el0 : c->mmu == 3 ? mmu_el0_switched : NULL);
     char name[64];
     snprintf(name, sizeof name, "seq %d (%s)", seq, c->name);
     if (!bad) bad = report ? compare_cpus(name, &native, jit) : !same_regs(&native, jit);
