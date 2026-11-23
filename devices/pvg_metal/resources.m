@@ -102,7 +102,7 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
     struct __attribute__((packed)) { uint32_t heap; uint64_t offset, length; } h;
     if (hv_pvg_lite_task_read(lite, task, at, &h, sizeof h)) return;
     HvObject *parent = [self object:h.heap task:task];
-    id<MTLHeap> heap = parent ? parent->object : nil;
+    id<MTLHeap> heap = of_kind(parent ? parent->object : nil, @protocol(MTLHeap));
     o->parent = parent;
     o->object = [heap newBufferWithLength:(NSUInteger)h.length options:MTLResourceStorageModePrivate offset:(NSUInteger)h.offset];
     if (!o->object) {
@@ -172,7 +172,7 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
         uint64_t offset;
         memcpy(&offset, desc + (h.tag == 0x38 ? 0x2c : 0x24), 8);
         HvObject *parent = [self object:h.buffer task:task];
-        id<MTLHeap> heap = parent ? parent->object : nil;
+        id<MTLHeap> heap = of_kind(parent ? parent->object : nil, @protocol(MTLHeap));
         MTLTextureDescriptor *t = h.tag == 0x38 ? descriptor_v2(desc) : descriptor_v1(desc);
         t.resourceOptions = heap ? heap.resourceOptions : MTLResourceStorageModePrivate;
         o->parent = parent;
@@ -188,7 +188,7 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
         struct __attribute__((packed)) { uint16_t format, type; uint64_t levels[2], slices[2]; uint8_t swizzle[4]; } v;
         memcpy(&v, &h.offset, sizeof v);
         HvObject *parent = [self object:h.buffer task:task];
-        id<MTLTexture> from = parent ? parent->object : nil;
+        id<MTLTexture> from = of_kind(parent ? parent->object : nil, @protocol(MTLTexture));
         if (!from) { [self complain:[NSString stringWithFormat:@"view of nothing (tag %u, ref %u)", h.tag, h.buffer]]; return; }
         o->parent = parent;
         o->surface = parent->surface;

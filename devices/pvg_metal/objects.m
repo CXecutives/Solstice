@@ -82,6 +82,16 @@
     return o ? o->object : nil;
 }
 
+/* get:, where only one kind of object will do. */
+- (id)get:(uint32_t)ref task:(uint32_t)task as:(Protocol *)kind {
+    id x = [self get:ref task:task];
+    if (x && !of_kind(x, kind)) {
+        [self complain:[NSString stringWithFormat:@"object %u is a %@, not a %s", ref, NSStringFromClass([x class]), protocol_getName(kind)]];
+        return nil;
+    }
+    return x;
+}
+
 /* The object's guest memory as a buffer, once it has some. */
 static id<MTLBuffer> guest_copy(HvReplay *r, uint32_t task, HvObject *o) {
     if (!o->vpage || !o->length) return nil;

@@ -33,6 +33,9 @@ static void obj_clear(HvTaskObjects *t) {
     t->page = NULL, t->pages = 0;
 }
 
+/* x if it is that kind of object, else nil: a ref names any object, and Metal crashes on the wrong kind. */
+static id of_kind(id x, Protocol *kind) { return [x conformsToProtocol:kind] ? x : nil; }
+
 /* An object already made for a ref, or nil. */
 static HvObject *obj_known(HvReplay *r, uint32_t task, uint32_t ref) {
     if (task >= HV_TASKS) return nil;

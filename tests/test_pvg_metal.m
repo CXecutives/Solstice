@@ -164,6 +164,41 @@ static void test_offsets_do_not_wrap(HvReplay *r) {
     puts("answer offsets: one that wraps is refused");
 }
 
+/* A render pass on a small target of its own, for records that need an encoder. */
+static id<MTLRenderCommandEncoder> small_pass(HvReplay *r, id<MTLCommandBuffer> cb) {
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:16 height:16 mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget;
+    td.storageMode = MTLStorageModePrivate;
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = [r->device newTextureWithDescriptor:td];
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    return [cb renderCommandEncoderWithDescriptor:pass];
+}
+
+/* A ref names any object: a buffer where a pipeline or a depth-stencil state goes is refused, not handed to Metal. */
+static void test_wrong_kind_refused(HvReplay *r) {
+    put_object(r, 11, [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared]);
+    uint32_t ref = 11;
+    id<MTLCommandBuffer> cb = [r->queue commandBuffer];
+    id<MTLRenderCommandEncoder> re = small_pass(r, cb);
+    r->pipeline_set = YES;
+    [r render:re tag:116 rec:(Rec){(const uint8_t *)&ref, 4} task:1];
+    check("a buffer as a render pipeline: refused", !r->pipeline_set && complained(r, @"object 11 is a"));
+    [r render:re tag:104 rec:(Rec){(const uint8_t *)&ref, 4} task:1];
+    [re endEncoding];
+    id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+    r->pipeline_set = YES;
+    [r compute:ce tag:208 rec:(Rec){(const uint8_t *)&ref, 4} task:1];
+    check("a buffer as a compute pipeline: refused", !r->pipeline_set);
+    [ce endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    check("the command buffer still runs", cb.status == MTLCommandBufferStatusCompleted);
+    drop_object(r, 11);
+    puts("wrong kinds: a buffer named as a pipeline or a state is refused");
+}
+
 /* A pipeline compiled off the worker: its first use waits for it and gets it; several compile side by side. */
 static void test_pipelines_compiled_later(HvReplay *r) {
     id<MTLFunction> f = [r computeStandIn];
@@ -518,6 +553,7 @@ int main(void) {
         HvReplay *r = (__bridge HvReplay *)m;
         dispatch_sync(r->worker, ^{ test_short_records(r); });
         dispatch_sync(r->worker, ^{ test_offsets_do_not_wrap(r); });
+        dispatch_sync(r->worker, ^{ test_wrong_kind_refused(r); });
         dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
         dispatch_sync(r->worker, ^{ test_video_surface(r); });
         dispatch_sync(r->worker, ^{ test_told_buffer_outlives_remap(r); });

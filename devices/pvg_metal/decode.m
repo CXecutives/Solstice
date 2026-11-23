@@ -221,7 +221,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         break;
     }
     case 116: { /* Metal crashes on a missing pipeline, and on drawing without one */
-        id state = [self get:U32(0) task:task];
+        id state = [self get:U32(0) task:task as:@protocol(MTLRenderPipelineState)];
         if (state) [e setRenderPipelineState:state];
         pipeline_set = state != nil;
         if (tracing) fprintf(stderr, "trace:  pipeline %u %s\n", U32(0), [objc_getAssociatedObject(state, "hvname") UTF8String]);
@@ -318,7 +318,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         break;
     }
     case 104: {
-        id state = [self get:U32(0) task:task];
+        id state = [self get:U32(0) task:task as:@protocol(MTLDepthStencilState)];
         [e setDepthStencilState:state];
         break;
     }
@@ -624,7 +624,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         break;
     }
     case 208: {
-        id state = [self get:U32(0) task:task];
+        id state = [self get:U32(0) task:task as:@protocol(MTLComputePipelineState)];
         if (state) [e setComputePipelineState:state];
         pipeline_set = state != nil;
         if (tracing) fprintf(stderr, "trace:  pipeline %u %s\n", U32(0), [objc_getAssociatedObject(state, "hvname") UTF8String]);
