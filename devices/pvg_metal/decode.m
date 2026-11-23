@@ -1,27 +1,53 @@
 /* The serialized calls: render, compute, blit and object queries, each record checked (part of pvg_metal.m). */
 
-/* A record's bytes, as a pointer into the buffer's private copy. */
+/* A record's bytes. They are where the guest wrote them (task_span), in memory another of its CPUs can change at any
+   time, so a handler reads each field once, into a local, and checks and uses that. */
 typedef struct {
     const uint8_t *p;
     uint32_t size;
 } Rec;
 
-#define U32(off) (*(const uint32_t *)(r.p + (off)))
-#define U16(off) (*(const uint16_t *)(r.p + (off)))
-#define U64(off) ({ uint64_t _v; memcpy(&_v, r.p + (off), 8); _v; })
+/* HV_PVG_READ_ONCE (the tests): a field read twice in one handler is counted, so that check-then-use on the guest's
+   bytes does not come back. Each handler starts with READS_BEGIN(). */
+#ifdef HV_PVG_READ_ONCE
+static uint32_t read_once_epoch, read_once_at[0x400];
+static unsigned read_twice;
+static const uint8_t *read_once(const uint8_t *p, uint32_t off, uint32_t n) {
+    for (uint32_t i = off; i < off + n && i < 0x400; i++) {
+        if (read_once_at[i] == read_once_epoch) {
+            if (read_twice++ < 8) fprintf(stderr, "pvg-metal: record byte %u read twice in one handler\n", i);
+            break;
+        }
+        read_once_at[i] = read_once_epoch;
+    }
+    return p + off;
+}
+#define READS_BEGIN() (void)++read_once_epoch
+#define REC_AT(off, n) read_once(r.p, (off), (n))
+#else
+#define READS_BEGIN() (void)0
+#define REC_AT(off, n) (r.p + (off))
+#endif
+#define U32(off) (*(const uint32_t *)REC_AT((off), 4))
+#define U16(off) (*(const uint16_t *)REC_AT((off), 2))
+#define U64(off) ({ uint64_t _v; memcpy(&_v, REC_AT((off), 8), 8); _v; })
 
 /* n bytes at the guest's offset off fit in length bytes: off + n would wrap for an offset near 2^64. */
 static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= length && length - off >= n; }
 
 - (id<MTLRenderCommandEncoder>)beginPass:(Rec)r task:(uint32_t)task commandBuffer:(id<MTLCommandBuffer>)cb {
+    READS_BEGIN();
     if (r.size < 0x48) { /* the depth and stencil attachments, which every pass record has */
         [self complain:[NSString stringWithFormat:@"render pass of %u bytes, too short: skipped", r.size]];
         return nil;
     }
     MTLRenderPassDescriptor *d = [MTLRenderPassDescriptor renderPassDescriptor];
-#define ATTACH(a, o)                                                 \
+    /* Each attachment's texture ref as read, once: depth, stencil, colour 0...7 (0: none or not in the record). */
+    uint32_t refs[10] = {0};
+#define ATTACH(a, o, k)                                              \
     do {                                                             \
-        a.texture = [self get:U32((o)) task:task];                   \
+        refs[k] = U32((o));                                          \
+        a.texture = [self get:refs[k] task:task];                    \
         a.resolveTexture = [self get:U32((o) + 4) task:task];        \
         a.level = U16((o) + 8), a.slice = U16((o) + 10);             \
         a.depthPlane = U16((o) + 12), a.resolveLevel = U16((o) + 14); \
@@ -30,17 +56,20 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
         a.storeAction = (MTLStoreAction)U16((o) + 22);               \
         a.storeActionOptions = U16((o) + 24);                        \
     } while (0)
-    ATTACH(d.depthAttachment, 0);
+    ATTACH(d.depthAttachment, 0, 0);
     double clear_depth;
     memcpy(&clear_depth, r.p + 0x1c, 8);
     d.depthAttachment.clearDepth = clear_depth;
-    ATTACH(d.stencilAttachment, 0x28);
+    ATTACH(d.stencilAttachment, 0x28, 1);
     d.stencilAttachment.clearStencil = U32(0x44);
     for (int i = 0; i < 8; i++) {
         uint32_t o = 0x4c + (uint32_t)i * 0x3c;
-        if (o + 0x3c > r.size) break;
+        if (o + 0x3c > r.size) {
+            if (o + 4 <= r.size) refs[2 + i] = U32(o); /* named in a record too short for it: never made */
+            break;
+        }
         MTLRenderPassColorAttachmentDescriptor *c = d.colorAttachments[i];
-        ATTACH(c, o);
+        ATTACH(c, o, 2 + i);
         double col[4];
         memcpy(col, r.p + o + 0x1c, sizeof col);
         c.clearColor = MTLClearColorMake(col[0], col[1], col[2], col[3]);
@@ -56,7 +85,8 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
     if (!d.stencilAttachment.texture) d.stencilAttachment.loadAction = MTLLoadActionDontCare, d.stencilAttachment.storeAction = MTLStoreActionDontCare;
     /* After the attachments: the visibility buffer and the render target's size. */
     if (r.size >= 0x248) {
-        if (U32(0x22c)) d.visibilityResultBuffer = [self get:U32(0x22c) task:task];
+        uint32_t visibility = U32(0x22c);
+        if (visibility) d.visibilityResultBuffer = [self get:visibility task:task];
         uint64_t layers = U64(0x230), rw = U64(0x238), rh = U64(0x240);
         if (layers) d.renderTargetArrayLength = (NSUInteger)layers;
         if (rw) d.renderTargetWidth = (NSUInteger)rw;
@@ -110,8 +140,7 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
        no attachments; with a render size and no sample count, the GPU driver aborts the whole app building it. Skip it. */
     int named = 0, made = 0;
     for (int i = -2; i < 8; i++) {
-        uint32_t o = i == -2 ? 0 : i == -1 ? 0x28 : 0x4c + (uint32_t)i * 0x3c;
-        if (o + 4 > r.size || !U32(o)) continue;
+        if (!refs[i + 2]) continue;
         named++;
         made += (i == -2 ? d.depthAttachment.texture : i == -1 ? d.stencilAttachment.texture : d.colorAttachments[i].texture) != nil;
     }
@@ -124,19 +153,18 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
     if (tracing) {
         id<MTLTexture> c0 = d.colorAttachments[0].texture;
         MTLClearColor cc = d.colorAttachments[0].clearColor;
-        uint32_t c0ref = r.size >= 0x50 ? U32(0x4c) : 0;
-        HvObject *co = [self object:c0ref task:task];
-        fprintf(stderr, "trace: pass c0 ref %u %lux%lu fmt %lu load %lu store %lu clear %.2f %.2f %.2f %.2f surface %s heap %d\n", U32(0x4c), (unsigned long)c0.width, (unsigned long)c0.height, (unsigned long)c0.pixelFormat, (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction, cc.red, cc.green, cc.blue, cc.alpha, co && co->surface ? "yes" : "no", c0.heap != nil);
+        HvObject *co = [self object:refs[2] task:task];
+        fprintf(stderr, "trace: pass c0 ref %u %lux%lu fmt %lu load %lu store %lu clear %.2f %.2f %.2f %.2f surface %s heap %d\n", refs[2], (unsigned long)c0.width, (unsigned long)c0.height, (unsigned long)c0.pixelFormat, (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction, cc.red, cc.green, cc.blue, cc.alpha, co && co->surface ? "yes" : "no", c0.heap != nil);
     }
     id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:d];
     if (!e) {
         NSMutableString *m = [NSMutableString stringWithString:@"no render encoder:"];
         for (int i = 0; i < 8; i++) {
             MTLRenderPassColorAttachmentDescriptor *c = d.colorAttachments[i];
-            uint32_t at = 0x4c + (uint32_t)i * 0x3c, ref = at + 4 <= r.size ? U32(at) : 0;
+            uint32_t ref = refs[2 + i];
             if (ref) [m appendFormat:@" c%d ref %u %s %lux%lu fmt %lu load %lu store %lu usage %lu", i, ref, c.texture ? "ok" : "MISSING", (unsigned long)c.texture.width, (unsigned long)c.texture.height, (unsigned long)c.texture.pixelFormat, (unsigned long)c.loadAction, (unsigned long)c.storeAction, (unsigned long)c.texture.usage];
         }
-        [m appendFormat:@" depth ref %u stencil ref %u", U32(0), U32(0x28)];
+        [m appendFormat:@" depth ref %u stencil ref %u", refs[0], refs[1]];
         [self complain:m];
     }
     return e;
@@ -192,6 +220,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
 }
 
 - (void)render:(id<MTLRenderCommandEncoder>)e tag:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
+    READS_BEGIN();
     if (!FITS(render_min, tag, r.size)) {
         [self complain:[NSString stringWithFormat:@"render command %u: %u bytes, too short", tag, r.size]];
         return;
@@ -256,8 +285,13 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         else [e setTileBuffers:buffers offsets:offsets withRange:range];
         break;
     }
-    case 126: if (U32(0) < BUFFER_SLOTS) [e setVertexBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)]; break;
-    case 111: if (U32(0) < BUFFER_SLOTS) [e setFragmentBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)]; break;
+    case 126: case 111: { /* {index, offset} */
+        uint32_t index = U32(0);
+        if (index >= BUFFER_SLOTS) break;
+        if (tag == 126) [e setVertexBufferOffset:(NSUInteger)U64(4) atIndex:index];
+        else [e setFragmentBufferOffset:(NSUInteger)U64(4) atIndex:index];
+        break;
+    }
     case 114: case 161: { /* fragment, tile textures */
         uint32_t index = U32(0), count = U32(4);
         NSRange range;
@@ -424,7 +458,11 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         [e setVertexBuffers:buffers offsets:offsets attributeStrides:strides withRange:range];
         break;
     }
-    case 166: if (U32(0) < BUFFER_SLOTS) [e setVertexBufferOffset:(NSUInteger)U64(4) attributeStride:(NSUInteger)U64(12) atIndex:U32(0)]; break;
+    case 166: {
+        uint32_t index = U32(0);
+        if (index < BUFFER_SLOTS) [e setVertexBufferOffset:(NSUInteger)U64(4) attributeStride:(NSUInteger)U64(12) atIndex:index];
+        break;
+    }
     case 101: {
         float c[4];
         memcpy(c, r.p, sizeof c);
@@ -597,6 +635,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
 
 /* Compute calls. Tags start at 200. */
 - (void)compute:(id<MTLComputeCommandEncoder>)e tag:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
+    READS_BEGIN();
     if (tag >= 200 && !FITS(compute_min, tag - 200, r.size)) {
         [self complain:[NSString stringWithFormat:@"compute command %u: %u bytes, too short", tag, r.size]];
         return;
@@ -654,10 +693,13 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         [e setBuffers:buffers offsets:offsets withRange:range];
         break;
     }
-    case 207:
-        if (tracing) fprintf(stderr, "trace:  cbuf %u offset now %llu\n", U32(0), (unsigned long long)U64(4));
-        if (U32(0) < BUFFER_SLOTS) [e setBufferOffset:(NSUInteger)U64(4) atIndex:U32(0)];
+    case 207: {
+        uint32_t index = U32(0);
+        uint64_t offset = U64(4);
+        if (tracing) fprintf(stderr, "trace:  cbuf %u offset now %llu\n", index, (unsigned long long)offset);
+        if (index < BUFFER_SLOTS) [e setBufferOffset:(NSUInteger)offset atIndex:index];
         break;
+    }
     case 206: {
         uint32_t index = U32(0), count = U32(4);
         NSRange range;
@@ -692,7 +734,11 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         [e setSamplerStates:items withRange:range];
         break;
     }
-    case 211: if (U32(8) < BUFFER_SLOTS) [e setThreadgroupMemoryLength:(NSUInteger)U64(0) atIndex:U32(8)]; break;
+    case 211: { /* {length 64, index} */
+        uint32_t index = U32(8);
+        if (index < BUFFER_SLOTS) [e setThreadgroupMemoryLength:(NSUInteger)U64(0) atIndex:index];
+        break;
+    }
     case 200: case 202: {
         MTLSize a, b;
         memcpy(&a, r.p, sizeof a), memcpy(&b, r.p + sizeof a, sizeof b);
@@ -704,8 +750,11 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
     }
     case 216: /* {width, height} of the imageblock, 32x32 from macOS 27's glass and blur kernels: without it their
                  imageblock memory is undefined, and toolbars came out black with coloured blocks */
-        if (U32(0) && U32(4) && U32(0) <= 256 && U32(4) <= 256) [e setImageblockWidth:U32(0) height:U32(4)];
+    {
+        uint32_t w = U32(0), h = U32(4);
+        if (w && h && w <= 256 && h <= 256) [e setImageblockWidth:w height:h];
         break;
+    }
     case 219: /* not a command the framework knows either, though the guest sends it */
         break;
     default:
@@ -716,6 +765,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
 
 /* Blit calls. Tags start at 300. */
 - (void)blit:(id<MTLBlitCommandEncoder>)e tag:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
+    READS_BEGIN();
     if (tag >= 300 && !FITS(blit_min, tag - 300, r.size)) {
         [self complain:[NSString stringWithFormat:@"blit command %u: %u bytes, too short", tag, r.size]];
         return;
@@ -790,6 +840,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
    450, {ref, buffer ref, offset}. The guest's Metal puts these real host values
    into its argument buffers. */
 - (void)info:(uint32_t)tag rec:(Rec)r task:(uint32_t)task {
+    READS_BEGIN();
     if (tag == 451 || tag == 469) { /* how big a texture would be in a heap: {description, buffer ref, offset} */
         uint32_t at = tag == 451 ? 0x20 : 0x28;
         if (r.size < at + 12) return;
@@ -807,12 +858,9 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         [self complain:[NSString stringWithFormat:@"info command %u: %u bytes, too short", tag, r.size]];
         return;
     }
-    uint32_t ref = U32(0), bufref = U32(4);
-    uint64_t off = U64(8);
-    if (tag == 460) { /* an object's identifier: {ref, kind, buffer ref, offset} */
-        bufref = U32(8);
-        off = U64(12);
-    }
+    /* {ref, buffer ref, offset}; an object's identifier (460): {ref, kind, buffer ref, offset} */
+    uint32_t ref = U32(0), bufref = tag == 460 ? U32(8) : U32(4);
+    uint64_t off = tag == 460 ? U64(12) : U64(8);
     HvObject *to = [self object:bufref task:task];
     if (to) refresh_pages(self, task, to);
     uint8_t *out = to && to->mapped && fits_at(to->length, off, 28) ? to->mapped + off : NULL;

@@ -271,7 +271,10 @@ static BOOL recovery_allowed(double *times, double now) {
                     if (tag == 30 && size >= 12) pre_raster_samples = U32(0);
                     else if (tag == 34 && size >= 12) pre_imageblock = U32(0);
                     else if (tag == 35 && size >= 12) pre_threadgroup = U32(0);
-                    else if (tag == 36 && size >= 12) pre_tile_w = U32(0) & 0xffff, pre_tile_h = U32(0) >> 16;
+                    else if (tag == 36 && size >= 12) {
+                        uint32_t tile = U32(0); /* read once: the guest's memory */
+                        pre_tile_w = tile & 0xffff, pre_tile_h = tile >> 16;
+                    }
                     else if (tag == 33 || tag == 32) [self complain:[NSString stringWithFormat:@"pass description %u (%u bytes) not done", tag, size]];
                 } else if (etype == 0 && tag == 26) {
                     if (e) [e endEncoding];

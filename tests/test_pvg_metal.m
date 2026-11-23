@@ -1,5 +1,6 @@
 /* The Metal replay's own parts, with devices/pvg_metal.m compiled into this test so its static functions and HvReplay's
    methods can be called directly. Needs a Metal device (any Mac, CI's virtual one included). */
+#define HV_PVG_READ_ONCE 1 /* a record field read twice in one handler is counted (read_twice) */
 #include "../devices/pvg_metal.m"
 #include <sys/mman.h>
 #include <mach/mach_vm.h>
@@ -88,6 +89,9 @@ static void test_short_records(HvReplay *r) {
         for (uint32_t size = 0; size <= 4; size += 4) [r info:tag rec:at_guard(NULL, size) task:1];
     [cb commit];
     [cb waitUntilCompleted];
+    /* The records are in memory the guest shares: a field read twice could change in between (an index checked, then
+       another used). */
+    check("no record field read twice in one handler", read_twice == 0);
 
     /* Object entries too short for their makers: serialized objects (sampler, depth-stencil with both sides, fence,
        pipelines, unknown) and textures (both description forms). */
