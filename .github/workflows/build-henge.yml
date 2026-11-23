@@ -46,6 +46,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Every HV_ setting through core/knobs.def (no getenv("HV_ elsewhere, no name it lacks), and what is generated
+      # from it as checked in.
+      - name: Settings table
+        run: |
+          python3 tools/knobs.py --check
+          bash tools/regen.sh
+          git diff --exit-code
       - name: Engine tests
         env:
           TESTS: ${{ inputs.tests }}
