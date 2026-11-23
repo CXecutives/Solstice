@@ -397,7 +397,7 @@ static void stash_test(void) {
    SW_S (as every process shares the shared region's) and each has its own at SW_P. What B's tables map the same as A's
    stays live when A switches to B, and only that: a twig remapped, a descriptor changed (TLBI or not yet), fewer rights
    all make it go; and what stayed dies on TLBIs from either CPU. */
-#define SW_S(i) (0x180000000ull + ((uint64_t)(i) << 14))
+#define SW_S(i) (0x180000000ull + (((uint64_t)(i) + 64) << 14)) /* TLB slots 64 on: not SW_P's */
 
 static void keep_test(void) {
     static HvMachine km;
