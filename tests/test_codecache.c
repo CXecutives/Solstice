@@ -76,6 +76,10 @@ enum {
     RUN_STATS = 2,     /* the stats line every 2 s (its counters and the code-cache line) */
     RUN_SYNC_WAIT = 4, /* TLBI waits asleep, as on the phone (HV_SYNC_WAIT=1) */
     RUN_NO_CPU0 = 8,   /* the CPUs are 1.. (CPU 0 never runs: the stats line must come all the same) */
+    RUN_ROOMY = 16,    /* nothing is evicted (the reference for how much is translated again) */
+};
+static uint64_t last_translations, last_runs; /* the last run's */
+enum {
 };
 
 /* One run: cap_mb of code cache, ncpu CPUs, until want_laps times round (at least min_laps) or max_s seconds. */
@@ -175,12 +179,13 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     printf("%s: branch caches caught up: %llu scanned (%.0f ms, %llu entries dropped), %llu reset\n", name,
            (unsigned long long)cc->ijc_scans, (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped,
            (unsigned long long)cc->ijc_resets);
-    if (!cc->ijc_scans || !cc->ijc_dropped) printf("%s: no branch cache caught up by dropping entries: FAIL\n", name), failed++;
+    last_translations = tot.translations, last_runs = runs;
+    if (!(opts & RUN_ROOMY) && (!cc->ijc_scans || !cc->ijc_dropped)) printf("%s: no branch cache caught up by dropping entries: FAIL\n", name), failed++;
     if (bad) printf("%s: %llu runs wrong: FAIL\n", name, (unsigned long long)bad), failed++;
     if (cc->check_bad) printf("%s: a freed segment was still reachable: FAIL\n", name), failed++;
     if (laps < min_laps) printf("%s: the cache went round %.1f times, want %.0f: FAIL\n", name, laps, min_laps), failed++;
-    if (!cc->evict_tenured || !tot.cc_tenured) printf("%s: nothing tenured, or no tenured segment evicted: FAIL\n", name), failed++;
-    if (!cc->evict_unchained) printf("%s: no chained exit undone: FAIL\n", name), failed++;
+    if (!(opts & RUN_ROOMY) && (!cc->evict_tenured || !tot.cc_tenured)) printf("%s: nothing tenured, or no tenured segment evicted: FAIL\n", name), failed++;
+    if (!(opts & RUN_ROOMY) && !cc->evict_unchained) printf("%s: no chained exit undone: FAIL\n", name), failed++;
     if (rate0 != 0 || rate * secs < 0.9 * (double)tot.blocks || rate * secs > 1.1 * (double)tot.blocks)
         printf("%s: blocks/s since the mark %.0f (first read %.0f), %.0f entered in %.1f s: FAIL\n", name, rate, rate0,
                (double)tot.blocks, secs), failed++;
@@ -213,6 +218,22 @@ int main(void) {
     failed += run("3 cpus, 1 MB, TLBI waits asleep (HV_SYNC_WAIT=1, as on the phone)", 1, 3, RUN_SYNC_WAIT, 100, 300, 60);
     /* One CPU that is not CPU 0, the stats line every 2 s: it printed only from CPU 0. */
     failed += run("cpu 1 alone, 2 MB, stats", 2, 1, RUN_NO_CPU0 | RUN_STATS, 0, 1e9, 7);
+    /* EXPERIMENT: how much is translated again, by policy, with the hot pages about 1.4x the cache (1 MB) and 0.7x
+       (2 MB, a little more than the tenured share). The program's blocks, translated once: with room for all. */
+    failed += run("reference: 64 MB, room for all", 64, 1, RUN_ROOMY, 0, 1e9, 3);
+    double once = (double)last_translations;
+    for (int cap = 1; cap <= 2; cap++)
+        for (int t = 0; t < 4; t++) {
+            char name[64], v[8];
+            snprintf(v, sizeof v, "%d", t);
+            setenv("HV_CC_TEST", v, 1);
+            snprintf(name, sizeof name, "policy %d, %d MB", t, cap);
+            failed += run(name, cap, 1, 0, 0, 1e9, 6);
+            printf("%s: translated again %.1f%% (%llu translations, %.0f a run; the program's blocks %.0f; %llu second chances)\n", name,
+                   100.0 * ((double)last_translations - once) / (double)last_translations, (unsigned long long)last_translations,
+                   (double)last_translations / (double)(last_runs ? last_runs : 1), once, (unsigned long long)m.cc.second_chances);
+        }
+    unsetenv("HV_CC_TEST");
     print_code_size("test_codecache");
     printf("%s\n", failed ? "FAIL" : "ok");
     return failed != 0;

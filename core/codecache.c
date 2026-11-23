@@ -69,6 +69,11 @@ static inline uint32_t tenure_key(const HvCodeCache *cc, uint64_t va, uint64_t p
     return (uint32_t)(h >> 32) & cc->evicted_mask;
 }
 
+static int cc_test(void) { /* EXPERIMENT */
+    const char *v = getenv("HV_CC_TEST");
+    return v ? atoi(v) : 0;
+}
+
 /* As many segments as fit, about 16 (at most 64, at least 128 KB each); under 4, none. */
 static void geometry(HvMachine *m) {
     HvCodeCache *cc = &m->cc;
@@ -84,6 +89,7 @@ static void geometry(HvMachine *m) {
        young stream need only hold code until it is evicted and marked (a block wanted again within two laps of that
        comes back tenured). A starting point, to be set from the stats line of long device sessions. */
     cc->tenure_max = n >= 8 ? (uint32_t)n * 3 / 4 - 1 : n ? (uint32_t)n / 2 - 1 : 0;
+    if (n >= 8 && (cc_test() & 2)) cc->tenure_max = (uint32_t)n * 7 / 8 - 1; /* EXPERIMENT */
 }
 
 void hv_cc_reset(HvMachine *m) {
@@ -281,6 +287,7 @@ static int take_free(HvCodeCache *cc) {
 static void close_seg(HvCodeCache *cc, int s) {
     int k = cc->kind[s];
     cc->state[s] = SEG_FULL;
+    __atomic_store_n(&cc->used[s], 0, __ATOMIC_RELAXED); /* in use from here on: entered again */
     cc->fifo[k][(cc->fifo_head[k] + cc->fifo_len[k]) % HV_CC_MAX_SEGS] = (uint8_t)s;
     cc->fifo_len[k]++;
     cc->open[k] = -1;
@@ -307,6 +314,17 @@ static int take_back(HvMachine *m, int force) {
         k = pick(cc);
     }
     if (k < 0) return 0;
+    /* EXPERIMENT (HV_CC_TEST bit 0): a tenured segment entered since it filled or since its last chance goes to the
+       back once instead (all of them: the oldest after all). */
+    if (k == HV_CC_TENURED && (cc_test() & 1))
+        for (uint32_t i = 0; i < cc->fifo_len[k]; i++) {
+            uint32_t h = cc->fifo[k][cc->fifo_head[k]];
+            if (!__atomic_load_n(&cc->used[h], __ATOMIC_RELAXED)) break;
+            __atomic_store_n(&cc->used[h], 0, __ATOMIC_RELAXED);
+            cc->fifo_head[k] = (cc->fifo_head[k] + 1) % HV_CC_MAX_SEGS;
+            cc->fifo[k][(cc->fifo_head[k] + cc->fifo_len[k] - 1) % HV_CC_MAX_SEGS] = (uint8_t)h;
+            cc->second_chances++;
+        }
     uint32_t s = cc->fifo[k][cc->fifo_head[k]];
     cc->fifo_head[k] = (cc->fifo_head[k] + 1) % HV_CC_MAX_SEGS;
     cc->fifo_len[k]--;

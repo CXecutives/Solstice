@@ -35,6 +35,8 @@ typedef struct HvCodeCache {
     uint32_t seg_shift; /* a segment is 1 << seg_shift words */
     uint32_t tag[HV_CC_MAX_SEGS]; /* seg << 24 | generation, bumped at a condemn: a block whose stag differs is gone */
     uint8_t epoch_seg[HV_CC_EPOCHS]; /* [e % HV_CC_EPOCHS]: the segment epoch e condemned, written before e is */
+    /* Written by any CPU, rarely: a segment's code was entered since it filled, or since its last second chance. */
+    uint8_t used[HV_CC_MAX_SEGS] __attribute__((aligned(128)));
     /* The rest under the translation lock (m->tr_mu), but slot_top. */
     uint8_t state[HV_CC_MAX_SEGS] __attribute__((aligned(128)));
     uint8_t kind[HV_CC_MAX_SEGS];
@@ -66,7 +68,15 @@ typedef struct HvCodeCache {
     uint64_t evictions, evict_tenured, evict_blocks, evict_unchained, evict_ticks;
     uint64_t waits, wait_ticks, stale, check_bad;
     uint64_t ijc_scans, ijc_scan_ticks, ijc_dropped, ijc_resets; /* catching up: branch caches scanned, or reset */
+    uint64_t second_chances;
 } HvCodeCache;
+
+/* A block of the segment its tag names was found by a lookup or chained to (the dispatcher, never translated code):
+   the segment is in use (hv_cc_* gives a tenured one in use a second chance). */
+static inline void hv_cc_touch(HvCodeCache *cc, uint32_t stag) {
+    uint8_t *u = &cc->used[(stag >> 24) & (HV_CC_MAX_SEGS - 1)];
+    if (!__atomic_load_n(u, __ATOMIC_RELAXED)) __atomic_store_n(u, 1, __ATOMIC_RELAXED);
+}
 
 int hv_cc_init(struct HvMachine *m);
 void hv_cc_free(struct HvMachine *m);

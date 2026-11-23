@@ -138,7 +138,10 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     uint32_t j = (uint32_t)((va >> 2) ^ (va >> 18) ^ ((uint64_t)flags << 13)) & ((1u << HV_JC_BITS) - 1);
     __typeof__(cpu->pc_state->jc[0]) *jc = cpu->pc_state->jc;
     HvBlock *c = jc[j].va == va ? jc[j].b : NULL;
-    if (c && c->pa == pa && c->flags == flags && *hv_block_gen(m, c) == c->gen && hv_block_live(m, c)) return c;
+    if (c && c->pa == pa && c->flags == flags && *hv_block_gen(m, c) == c->gen && hv_block_live(m, c)) {
+        hv_cc_touch(&m->cc, c->stag);
+        return c;
+    }
     uint32_t h = hash_of(m, va, pa, flags);
     HvRam *ram = hv_ram_lookup(m, pa);
     uint64_t pg = (pa - ram->pa) >> HV_TLB_PAGE_BITS;
@@ -146,6 +149,7 @@ static HvBlock *lookup(HvCpu *cpu, uint64_t va, uint64_t pa, uint32_t flags, con
     HvBlock *b = find(m, h, va, pa, flags, gen);
     if (b) {
         jc[j].va = va, jc[j].b = b;
+        hv_cc_touch(&m->cc, b->stag);
         return b;
     }
 
@@ -791,6 +795,7 @@ static void chain(HvCpu *cpu, uint64_t *slot, HvBlock *b) {
         hv_cc_xlink(m, ram, pg, idx); /* on the target page's list (hv_invalidate_code) */
     }
     __atomic_store_n(slot, (uint64_t)(uintptr_t)code, __ATOMIC_RELEASE);
+    hv_cc_touch(&m->cc, b->stag);
     /* And the stub's B, when the target is in its range: a direct branch, no load. */
     int64_t off = code - site;
     if (off >= -(1 << 25) && off < (1 << 25)) {
