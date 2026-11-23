@@ -178,6 +178,29 @@ static double overshoot_us(qos_class_t qos, uint64_t ticks) {
     return o.us;
 }
 
+/* The longest this host kept a 1 ms timed wait from coming back while a test ran. A CI virtual Mac sometimes stalls
+   every thread for 100 ms and more; a check of "no timer was lost" (a lost one comes about 100 ms late, at the WFI
+   cap) cannot tell that from a lost timer, so it is only made when the host itself did not stall. */
+static _Atomic int stall_watch;
+static double stall_worst_us;
+static void *watch_stalls(void *arg) {
+    (void)arg;
+    pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+    const uint64_t ticks = 24000;
+    while (atomic_load(&stall_watch)) {
+        struct timespec ts = {0, (long)ticks * 1000 / 24};
+        uint64_t t0 = mach_absolute_time();
+        pthread_mutex_lock(&mu);
+        pthread_cond_timedwait_relative_np(&cv, &mu, &ts);
+        pthread_mutex_unlock(&mu);
+        uint64_t dt = mach_absolute_time() - t0;
+        double late = dt > ticks ? (double)(dt - ticks) / 24.0 : 0;
+        if (late > stall_worst_us) stall_worst_us = late;
+    }
+    return NULL;
+}
+
 /* O9: timer interrupts 1 ms after they are set, 300 each on four CPUs: two spin in a loop that never leaves by itself
    (only a kick gets them out: the kicker's, at their deadline), two wait in WFI (until their deadline). On time, as
    far as the host's own timed waits allow; the spinning ones by a kick at nearly every deadline. */
@@ -187,10 +210,19 @@ static void timers(void) {
     double slack_kicker = overshoot_us(QOS_CLASS_USER_INTERACTIVE, delay), slack_cpu = overshoot_us(QOS_CLASS_DEFAULT, delay);
     printf("timers: this host's 1 ms timed waits come back %.0f us late (kicker's QoS), %.0f us (CPU threads')\n", slack_kicker, slack_cpu);
     uint64_t kicks0 = m.stats.kicker_kicks;
+    pthread_t watcher;
+    stall_worst_us = 0;
+    atomic_store(&stall_watch, 1);
+    pthread_create(&watcher, NULL, watch_stalls, NULL);
     kicker_start();
     start(prog, n, delay, NULL);
     for (int i = 0; i < NCPU; i++) pthread_join(threads[i], NULL), threads[i] = 0;
     kicker_end();
+    atomic_store(&stall_watch, 0);
+    pthread_join(watcher, NULL);
+    int host_stalled = stall_worst_us > 50000;
+    if (host_stalled) printf("timers: this host stalled a 1 ms wait for %.0f ms itself: 'never lost' is not checked
+", stall_worst_us / 1000);
     uint64_t kicks = m.stats.kicker_kicks - kicks0;
     for (int i = 0; i < NCPU; i++) {
         char msg[200];
@@ -204,7 +236,7 @@ static void timers(void) {
         snprintf(msg, sizeof msg, "timers: cpu %d on time (late by %.0f us on average, under %.0f us)", i, mean, bound);
         check(msg, mean < bound);
         snprintf(msg, sizeof msg, "timers: cpu %d never lost (at most %.0f us late, under 100 ms)", i, max);
-        check(msg, max < 100000 + 3 * (i < 2 ? slack_kicker : slack_cpu));
+        if (!host_stalled) check(msg, max < 100000 + 3 * (i < 2 ? slack_kicker : slack_cpu));
     }
     printf("timers: the kicker kicked %llu CPUs at their deadline for %llu interrupts of the spinning CPUs\n",
            (unsigned long long)kicks, (unsigned long long)(2 * n));

@@ -22,8 +22,9 @@ typedef struct HvRam {
        were more. When the page becomes code only those are dropped, not a whole
        TLB scanned. */
     uint64_t *whint;     /* CPU-major: whint[cpu * npages + page], so CPUs filling the same pages write their own lines */
-    /* Per page: the VA page (| 2) its blocks have been cached as branch targets under since its code last changed;
-       0 none, ~0 more than one. So a code change drops just those cached targets (hv_invalidate_code). */
+    /* Per page, HV_IJC_VAS slots: the VA pages (| 2) its blocks have been cached as branch targets under since its
+       code last changed; 0 a free slot, ~0 in the first: more than fit. So a code change drops just those cached
+       targets (hv_invalidate_code). */
     uint64_t *ijc_va;
     /* Per page: the exits from other pages chained into it (a slot + 1, 0 none), listed through HvMachine.slot_xnext,
        so its code changing unchains just those (it scanned every such exit, under the translation lock: 2.3% of the
@@ -63,6 +64,7 @@ _Static_assert(sizeof(HvBlock) == 40, "HvBlock: 40 bytes");
 #define HV_BLOCK_PAN   8u        /* EL1 with PSTATE.PAN set (selects TLB table 2) */
 
 #define HV_MAX_RAM 8
+#define HV_IJC_VAS 4 /* VA pages a code page's cached targets are noted under (HvRam.ijc_va) */
 #define HV_MAX_MMIO 48
 #define HV_JC_BITS 16
 #define HV_PROF_RING (1 << 16)
@@ -134,6 +136,15 @@ typedef struct HvStats {
     uint64_t dev_polls;       /* CPU 0's device polls (vmapple.c) */
     uint64_t pv_waits, pv_kicks; /* paravirtual ticket locks: waits for a kick (VCPU_WFK), kicks (VCPU_KICK; exception.c) */
     uint64_t cc_tenured;      /* blocks translated into the code cache's tenured segments (codecache.c) */
+    /* mmu.c: what process switches cost (counted always, one increment each). */
+    uint64_t refill_kind[4];  /* hv_tlb_refill: EL0 slot empty, EL0 slot held another entry, EL1 empty, EL1 another */
+    uint64_t stash_miss;      /* process switches that found no stash for the incoming address space */
+    uint64_t stash_evict;     /* stashes taken over from another address space (least recently used) */
+    uint64_t stash_out;       /* entries copied into stashes at process switches */
+    uint64_t switch_kept;     /* user entries that stayed live across process switches (the new tables map them the same) */
+    uint64_t user_reset_why[7]; /* user-half branch-cache resets by cause: all-ASID TLBI by VA, all-ASID big range,
+                                   whole-TLB flush, (id, page) set half full, keyed filter full, code under several VA
+                                   pages, ASID log overflow (the rest of ijc_reset_kind[0]: code-cache epochs) */
     /* Not summed: tables of the first few values seen, and debugging rings (per CPU). */
     struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 regions mapped under 16 KB were */
     struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */
@@ -166,9 +177,12 @@ typedef struct HvStorm {
 /* A process's user TLB entries, put aside when it is switched out (TTBR0 now
    names another address space) and put back when it comes back, as a TLB
    tagged by ASID keeps them. Any TLBI that could touch the address space
-   (here or from another CPU) bumps gen; a stash whose gen moved is dropped. */
-#define HV_STASHES 8
+   (here or from another CPU) bumps gen; a stash whose gen moved is dropped.
+   A stash stays valid while its entries are live again: the next switch away
+   adds only what was filled since (mmu.c, hv_tlb_switch_user). */
+#define HV_STASHES 32
 #define HV_STASH_CAP 1024
+#define HV_STASH_FILTER_BITS 12 /* a stash's page filter: 4096 bits, one per hash of a page number it holds */
 typedef struct HvTlbStash {
     uint64_t ttbr0;      /* the address space (0: empty); read by other CPUs */
     uint32_t gen;        /* bumped by TLBIs (atomic) */
@@ -177,6 +191,9 @@ typedef struct HvTlbStash {
     uint64_t used;       /* for replacing the least recently saved */
     uint16_t *slot;      /* slot << 2 | table, as user_fills */
     HvTlbEntry *ent;
+    /* Pages that may have entries here (set as they are saved, cleared with the stash): a TLBI by VA or small range
+       looks at the stashes whose bit is set only, here and from other CPUs. */
+    uint64_t filter[(1u << HV_STASH_FILTER_BITS) / 64];
 } HvTlbStash;
 
 typedef struct HvPerCpu {
@@ -244,6 +261,11 @@ typedef struct HvPerCpu {
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
+    uint32_t live_stash;         /* index + 1 of the stash whose entries are live in the TLB again (0: none) */
+    uint32_t live_kept;          /* user_fills before this stayed from the process before (mmu.c: not in it) */
+    uint32_t live_from;          /* user_fills from here on are not in it (filled after it was put back) */
+    uint32_t pos_epoch;          /* stash_pos entries of another epoch mean nothing */
+    uint32_t *stash_pos;         /* by TLB code: pos_epoch << 10 | where its entry is in the stash being saved or put back */
     uint32_t cc_seen;            /* the code cache's epoch this CPU caught up with (hv_cc_service; read by others) */
     uint32_t cc_work;            /* HV_CC_NEED, HV_CC_JOB: code-cache work at the top of its loop (its own thread only) */
     /* What only this CPU's thread writes on its hot paths (or another thread while it is parked): on cache lines of
