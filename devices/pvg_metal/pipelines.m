@@ -366,8 +366,14 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     dispatch_async(compiler, ^{
         @autoreleasepool {
             NSError *err = nil;
-            id state = [self pipelineState:tag descriptor:descriptor error:&err];
-            if (!state) p->failure = [NSString stringWithFormat:@"%@: %@", what, err.localizedDescription];
+            id state = nil;
+            NSString *raised = nil;
+            @try { /* Metal raises on some descriptors: on the worker the exec's @catch took that; here nothing would */
+                state = [self pipelineState:tag descriptor:descriptor error:&err];
+            } @catch (NSException *x) {
+                raised = x.reason ?: x.name;
+            }
+            if (!state) p->failure = [NSString stringWithFormat:@"%@: %@", what, raised ?: err.localizedDescription];
             else if (name) objc_setAssociatedObject(state, "hvname", name, OBJC_ASSOCIATION_RETAIN);
             p->state = state;
             dispatch_group_leave(p->done);
