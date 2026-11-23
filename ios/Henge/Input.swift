@@ -306,36 +306,55 @@ struct ModifierRow: View {
     }
 }
 
-/// A key that goes down when touched and up when let go, so holding it repeats as on a Mac.
+/// A key that goes down when touched and up when let go, so holding it repeats as on a Mac. It is a button, so the
+/// row it sits in still scrolls: the system's own press state follows the finger, and goes off when the scroll view
+/// takes the touch (where a drag gesture never ends). It also comes up when the row goes away or Solstice stops being
+/// active.
 private struct HeldKey: View {
     let label: String
     let code: UInt16
     var name: String?
-    @State private var down = false
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Desk.text)
-            .padding(.horizontal, 8)
-            .frame(minWidth: 40, maxHeight: .infinity)
-            .background(down ? Desk.accent : Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard !down else { return }
-                        down = true
-                        henge_vm_key(code, 1)
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    }
-                    .onEnded { _ in
-                        down = false
-                        henge_vm_key(code, 0)
-                        StickyKeys.shared.used()
-                    }
-            )
-            .accessibilityLabel(name ?? label)
+        Button {} label: {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Desk.text)
+                .padding(.horizontal, 8)
+                .frame(minWidth: 40, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(Held(code: code))
+        .accessibilityLabel(name ?? label)
+    }
+
+    private struct Held: ButtonStyle {
+        let code: UInt16
+        func makeBody(configuration: Configuration) -> some View {
+            Key(code: code, pressed: configuration.isPressed, label: configuration.label)
+        }
+    }
+
+    private struct Key: View {
+        let code: UInt16
+        let pressed: Bool
+        let label: ButtonStyleConfiguration.Label
+        @State private var down = false
+
+        var body: some View {
+            label
+                .background(down ? Desk.accent : Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .onChange(of: pressed) { hold($0) }
+                .onDisappear { hold(false) }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in hold(false) }
+        }
+
+        private func hold(_ on: Bool) {
+            guard on != down else { return }
+            down = on
+            henge_vm_key(code, on ? 1 : 0)
+            if on { UIImpactFeedbackGenerator(style: .light).impactOccurred() } else { StickyKeys.shared.used() }
+        }
     }
 }
 
