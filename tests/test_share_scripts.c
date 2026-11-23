@@ -26,37 +26,47 @@ static int sh_parses(const char *name, const char *script) {
 }
 
 int main(void) {
+    check("tune: sh parses it", sh_parses("tune", tune_script));
     check("lighten: sh parses it", sh_parses("lighten", lighten_script));
     check("unlighten: sh parses it", sh_parses("unlighten", unlighten_script));
-    const char *from = strstr(lighten_script, "<<'EOF'\n"), *to = from ? strstr(from, "\nEOF\n") : NULL;
-    check("lighten: writes the daemon from a here-document", from && to);
+    /* Set Up brings only what nobody sees; how macOS looks and behaves is the optional lighten's business. */
+    check("Set Up runs tune", strstr(install_script, "/.henge/tune | sh") != NULL);
+    check("Set Up does not run lighten", strstr(install_script, "/.henge/lighten") == NULL);
+    check("lighten starts with tune", strstr(lighten_script, "/.henge/tune | sh") != NULL);
+    static const char *const visible[] = {"Animation", "animation", "launchanim", "screensaver", "Widgets", "Siri",
+                                          "Assistant", "Suggestions", "CrashReporter", "mdutil", "tmutil",
+                                          "Desktop Pictures", "killall", "AutomaticCheckEnabled", "commerce", "show-recents"};
+    for (size_t i = 0; i < sizeof visible / sizeof visible[0]; i++)
+        if (strstr(tune_script, visible[i])) printf("  tune touches something visible: %s\n", visible[i]), check("tune: nothing visible", 0);
+    const char *from = strstr(tune_script, "<<'EOF'\n"), *to = from ? strstr(from, "\nEOF\n") : NULL;
+    check("tune: writes the daemon from a here-document", from && to);
     if (from && to) {
         from += strlen("<<'EOF'\n");
         char path[256], cmd[320];
         snprintf(path, sizeof path, "%s/hv-test-spins.plist", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
-        check("lighten: the daemon written", !write_file(path, from, (size_t)(to - from) + 1));
+        check("tune: the daemon written", !write_file(path, from, (size_t)(to - from) + 1));
         snprintf(cmd, sizeof cmd, "plutil -lint -s '%s'", path);
-        check("lighten: the daemon is a valid property list", system(cmd) == 0);
+        check("tune: the daemon is a valid property list", system(cmd) == 0);
         snprintf(cmd, sizeof cmd, "plutil -extract Label raw -o - '%s' | grep -qx '" HV_SPINS_LABEL "'", path);
-        check("lighten: the daemon's label", system(cmd) == 0);
+        check("tune: the daemon's label", system(cmd) == 0);
         snprintf(cmd, sizeof cmd, "plutil -extract ProgramArguments.2 raw -o - '%s' | grep -qx 'kern.ticket_lock_spins=8'", path);
-        check("lighten: the daemon sets kern.ticket_lock_spins to 8", system(cmd) == 0);
+        check("tune: the daemon sets kern.ticket_lock_spins to 8", system(cmd) == 0);
         static const char *const slack[] = {"kern.timer_coalesce_bg_ns_max=250000000", "kern.timer_coalesce_tier3_ns_max=150000000"};
         for (int i = 0; i < 2; i++) {
             snprintf(cmd, sizeof cmd, "plutil -extract ProgramArguments.%d raw -o - '%s' | grep -qx '%s'", 3 + i, path, slack[i]);
-            check("lighten: the daemon sets the background timer slack", system(cmd) == 0);
+            check("tune: the daemon sets the background timer slack", system(cmd) == 0);
             snprintf(cmd, sizeof cmd, "sysctl -n %.*s >/dev/null 2>&1", (int)(strchr(slack[i], '=') - slack[i]), slack[i]);
-            check("lighten: macOS has that timer setting (on this runner)", system(cmd) == 0);
+            check("tune: macOS has that timer setting (on this runner)", system(cmd) == 0);
         }
         snprintf(cmd, sizeof cmd, "plutil -extract RunAtLoad raw -o - '%s' | grep -qx true", path);
-        check("lighten: the daemon runs at every boot", system(cmd) == 0);
+        check("tune: the daemon runs at every boot", system(cmd) == 0);
     }
-    check("lighten: owned by root:wheel", strstr(lighten_script, "sudo chown root:wheel " HV_SPINS_PLIST) != NULL);
-    check("lighten: mode 0644", strstr(lighten_script, "sudo chmod 644 " HV_SPINS_PLIST) != NULL);
-    check("lighten: started now", strstr(lighten_script, "sudo launchctl bootstrap system " HV_SPINS_PLIST) != NULL);
-    const char *sudo = strstr(lighten_script, "if sudo -v </dev/tty; then"), *fi = sudo ? strstr(sudo, "\nfi\n") : NULL;
-    const char *tee = strstr(lighten_script, "sudo tee " HV_SPINS_PLIST);
-    check("lighten: the daemon is set up in the part with the password", sudo && fi && tee && tee > sudo && tee < fi);
+    check("tune: owned by root:wheel", strstr(tune_script, "sudo chown root:wheel " HV_SPINS_PLIST) != NULL);
+    check("tune: mode 0644", strstr(tune_script, "sudo chmod 644 " HV_SPINS_PLIST) != NULL);
+    check("tune: started now", strstr(tune_script, "sudo launchctl bootstrap system " HV_SPINS_PLIST) != NULL);
+    const char *sudo = strstr(tune_script, "if sudo -v </dev/tty; then"), *fi = sudo ? strstr(sudo, "\nfi\n") : NULL;
+    const char *tee = strstr(tune_script, "sudo tee " HV_SPINS_PLIST);
+    check("tune: the daemon is set up in the part with the password", sudo && fi && tee && tee > sudo && tee < fi);
     check("unlighten: stops the daemon", strstr(unlighten_script, "sudo launchctl bootout system/" HV_SPINS_LABEL) != NULL);
     check("unlighten: removes it", strstr(unlighten_script, "sudo rm -f " HV_SPINS_PLIST) != NULL);
     check("unlighten: back to xnu's 100 spins", strstr(unlighten_script, "kern.ticket_lock_spins=100") != NULL);

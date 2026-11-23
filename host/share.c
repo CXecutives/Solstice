@@ -601,8 +601,9 @@ static const char install_script[] =
     "EOF\n"
     "launchctl bootstrap \"gui/$(id -u)\" \"$P\"\n"
     "echo 'Solstice is set up.'\n"
-    /* Solstice: one command does both, so the lighter Mac is the normal one. */
-    "curl -fsS http://" HV_SHARE_ADDR "/.henge/lighten | sh\n";
+    /* Solstice: Set Up also brings the part of a lighter Mac nobody sees (tune_script). How macOS looks and behaves
+       stays as Apple made it; the visible part is the optional Lighter macOS command (lighten_script). */
+    "curl -fsS http://" HV_SHARE_ADDR "/.henge/tune | sh\n";
 
 /* What "curl -s http://10.0.2.4/.henge/lighten | sh" runs in macOS: less background work and drawing, for a Mac
    whose CPUs are emulated: less animation and drawing, and the system part (update checks, Time Machine) with the
@@ -612,8 +613,42 @@ static const char install_script[] =
    Nothing reads the script's own stdin (sh is reading the script from it). */
 #define HV_SPINS_LABEL "com.henge.ticketspins"
 #define HV_SPINS_PLIST "/Library/LaunchDaemons/" HV_SPINS_LABEL ".plist"
+/* What Set Up runs in macOS ("curl -s http://10.0.2.4/.henge/tune | sh", also the start of lighten): only what
+   nobody sees. macOS updates are not downloaded or installed by themselves (Solstice runs macOS 15.6.1, and a
+   background download is gigabytes of emulated work), Power Nap is off, and a LaunchDaemon helps CPUs that wait.
+   Nothing reads the script's own stdin (sh is reading the script from it). */
+static const char tune_script[] =
+    "#!/bin/sh\n"
+    "defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true </dev/null\n"
+    "echo 'Your Mac password, once (macOS updates only when you ask; CPUs that wait sleep sooner):'\n"
+    "if sudo -v </dev/tty; then\n"
+    "  for k in AutomaticDownload AutomaticallyInstallMacOSUpdates; do sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate $k -bool false </dev/null; done\n"
+    "  sudo pmset -a powernap 0 </dev/null\n"
+    /* Solstice answers macOS's paravirtual ticket-lock calls (exception.c): a CPU waiting for a lock sleeps until the
+       holder kicks it. macOS spins 100 WFE rounds first (kern.ticket_lock_spins, xnu's LOCK_SNOOP_SPINS), each up to
+       50 us of emulated waiting here: 8 at every boot, by a LaunchDaemon (the sysctl does not persist). The same
+       daemon lets background work wake the CPUs less: timers of background-QoS threads may slip up to 250 ms
+       (xnu's 100) and those of latency tier 3 (apps in App Nap) up to 150 ms (75), so they share wakeups. Timers
+       of everything on screen keep their 1 ms, or animations would stutter. */
+    "  sudo tee " HV_SPINS_PLIST " >/dev/null <<'EOF'\n"
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+    "<plist version=\"1.0\"><dict>\n"
+    "<key>Label</key><string>" HV_SPINS_LABEL "</string>\n"
+    "<key>ProgramArguments</key><array><string>/usr/sbin/sysctl</string><string>-w</string><string>kern.ticket_lock_spins=8</string>"
+    "<string>kern.timer_coalesce_bg_ns_max=250000000</string><string>kern.timer_coalesce_tier3_ns_max=150000000</string></array>\n"
+    "<key>RunAtLoad</key><true/>\n"
+    "</dict></plist>\n"
+    "EOF\n"
+    "  sudo chown root:wheel " HV_SPINS_PLIST " </dev/null\n"
+    "  sudo chmod 644 " HV_SPINS_PLIST " </dev/null\n"
+    "  sudo launchctl bootout system/" HV_SPINS_LABEL " 2>/dev/null </dev/null\n"
+    "  sudo launchctl bootstrap system " HV_SPINS_PLIST " </dev/null\n"
+    "fi\n";
+
 static const char lighten_script[] =
     "#!/bin/sh\n"
+    "curl -fsS http://" HV_SHARE_ADDR "/.henge/tune | sh\n"
     "echo 'Making macOS lighter for Henge...'\n"
     "defaults write com.apple.universalaccess reduceMotion -bool true 2>/dev/null </dev/null || "
     "echo '  Reduce Motion: turn it on in System Settings, Accessibility, Motion.'\n"
@@ -643,34 +678,14 @@ static const char lighten_script[] =
     "defaults write com.apple.CrashReporter DialogType -string none </dev/null\n"
     "defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true </dev/null\n"
     /* The system part, with the Mac's password once (sudo asks on the terminal, not on the script's stdin):
-       Spotlight indexing (most of a new Mac's first-login storm), Time Machine, automatic updates, Power Nap. */
-    "echo 'Your Mac password, once, for the system part (Spotlight indexing, updates, Time Machine):'\n"
+       Spotlight indexing (most of a new Mac's first-login storm; Spotlight then finds no files), Time Machine,
+       update checks, App Store updates. */
+    "echo 'Your Mac password, once, for the system part (Spotlight indexing, update checks, Time Machine):'\n"
     "if sudo -v </dev/tty; then\n"
     "  sudo mdutil -a -i off >/dev/null </dev/null\n"
     "  sudo tmutil disable 2>/dev/null </dev/null\n"
-    "  for k in AutomaticCheckEnabled AutomaticDownload AutomaticallyInstallMacOSUpdates; do sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate $k -bool false </dev/null; done\n"
+    "  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool false </dev/null\n"
     "  sudo defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool false </dev/null\n"
-    "  sudo pmset -a powernap 0 </dev/null\n"
-    /* Solstice answers macOS's paravirtual ticket-lock calls (exception.c): a CPU waiting for a lock sleeps until the
-       holder kicks it. macOS spins 100 WFE rounds first (kern.ticket_lock_spins, xnu's LOCK_SNOOP_SPINS), each up to
-       50 us of emulated waiting here: 8 at every boot, by a LaunchDaemon (the sysctl does not persist). The same
-       daemon lets background work wake the CPUs less: timers of background-QoS threads may slip up to 250 ms
-       (xnu's 100) and those of latency tier 3 (apps in App Nap) up to 150 ms (75), so they share wakeups. Timers
-       of everything on screen keep their 1 ms, or animations would stutter. */
-    "  sudo tee " HV_SPINS_PLIST " >/dev/null <<'EOF'\n"
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-    "<plist version=\"1.0\"><dict>\n"
-    "<key>Label</key><string>" HV_SPINS_LABEL "</string>\n"
-    "<key>ProgramArguments</key><array><string>/usr/sbin/sysctl</string><string>-w</string><string>kern.ticket_lock_spins=8</string>"
-    "<string>kern.timer_coalesce_bg_ns_max=250000000</string><string>kern.timer_coalesce_tier3_ns_max=150000000</string></array>\n"
-    "<key>RunAtLoad</key><true/>\n"
-    "</dict></plist>\n"
-    "EOF\n"
-    "  sudo chown root:wheel " HV_SPINS_PLIST " </dev/null\n"
-    "  sudo chmod 644 " HV_SPINS_PLIST " </dev/null\n"
-    "  sudo launchctl bootout system/" HV_SPINS_LABEL " 2>/dev/null </dev/null\n"
-    "  sudo launchctl bootstrap system " HV_SPINS_PLIST " </dev/null\n"
     "fi\n"
     "W=\"/System/Library/Desktop Pictures/Solid Colors/Black.png\"\n"
     "[ -f \"$W\" ] || W=$(ls \"/System/Library/Desktop Pictures/Solid Colors/\"*.png 2>/dev/null | head -1)\n"
@@ -686,7 +701,7 @@ static const char lighten_script[] =
     "fi\n"
     "killall Dock 2>/dev/null\n"
     "echo 'Done: animations, desktop widgets, the screen saver, a moving wallpaper, Siri and suggestions are off;'\n"
-    "echo 'with the password also Spotlight indexing, Time Machine, automatic updates and Power Nap, and locks spin less.'\n"
+    "echo 'with the password also Spotlight indexing, Time Machine, update checks and App Store updates.'\n"
     "echo 'Also turn on Reduce Motion and Reduce Transparency: System Settings, Accessibility.'\n"
     "echo 'Log out and back in for all of it to take effect. To undo: curl -s http://" HV_SHARE_ADDR "/.henge/unlighten | sh'\n";
 
@@ -784,9 +799,9 @@ static int serve_henge(Conn *c, Request *r) {
         if (body_discard(c, r) != 0) return -1;
         return respond(c, r, 200, "OK", "Content-Type: text/plain\r\n", install_script, sizeof install_script - 1);
     }
-    if ((!strcmp(what, "lighten") || !strcmp(what, "unlighten")) && !strcmp(r->method, "GET")) {
+    if ((!strcmp(what, "lighten") || !strcmp(what, "unlighten") || !strcmp(what, "tune")) && !strcmp(r->method, "GET")) {
         if (body_discard(c, r) != 0) return -1;
-        const char *s = what[0] == 'l' ? lighten_script : unlighten_script;
+        const char *s = what[0] == 'l' ? lighten_script : what[0] == 't' ? tune_script : unlighten_script;
         return respond(c, r, 200, "OK", "Content-Type: text/plain\r\n", s, strlen(s));
     }
     if (!strcmp(what, "agent") && !strcmp(r->method, "GET")) return serve_agent(c, r);
