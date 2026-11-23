@@ -6,14 +6,16 @@ struct ExternalMacDisplay: View {
     let presentation: MacPresentation
     /// The id this display's view connects to the router under; a display scene passes its own.
     var surface = UUID()
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geometry in
-            let aspect = presentation.aspect
-            let width = min(geometry.size.width, geometry.size.height * aspect)
+            // Aspect-fit and centred, on whole pixels of the external screen (PixelFit, as on the device).
+            let fit = PixelFit.fit(CGSize(width: presentation.aspect, height: 1), in: CGRect(origin: .zero, size: geometry.size),
+                                   scale: displayScale, whole: false)
             BootDisplay(display: presentation.display, role: .external, surface: surface)
-                .frame(width: width, height: width / aspect)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: fit.width, height: fit.height)
+                .position(x: fit.midX, y: fit.midY)
         }
         .background(.black)
         .ignoresSafeArea()
