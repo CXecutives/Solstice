@@ -66,14 +66,25 @@ Siehe `PLAN.md`. Zusätzlich: Air 4 bekommt 2 GB/2 vCPUs/Large-Screen über die 
   Preis: Auffrischen alle 7 Tage über den PC (laut Doku automatisch per WLAN, wenn Impactor läuft).
 - Ablauf: Impactor starten → Apple-ID (Besitzer) → `out/Solstice.ipa` installieren → Entwickler vertrauen →
   Solstice öffnen → JIT-Kopplung auf dem iPhone. Entwicklermodus ist schon an; LocalDevVPN bleibt.
-- PC behält: Apple Mobile Device Support 19.4 + iTunes 12.13 (Impactor braucht Apples Treiber/Dienst) und
-  Treiber 538. Entfernt: iloader samt Keyring-Einträgen und Datenordnern. iPhone: SideStore kann gelöscht werden.
-- Ersetzt Windows Update den Treiber wieder durch 552 (iPhone fällt nach ~10 s raus): Cab „Apple, Inc. -
-  USBDevice - 538.0.0.0“ (amd64) aus dem Microsoft Update Catalog, `pnputil /add-driver AppleUsb.inf /install`.
+- PC: `tools/windows-sideload.ps1` (einmal, fragt nach Admin) entfernt iTunes-App und LocalSend, behält Apple Mobile
+  Device Support (Impactor spricht nur mit dessen usbmuxd auf 127.0.0.1:27015, Anisette `mac-ani.jkcoxson.com`),
+  pinnt Treiber 538 (löscht andere appleusb-Versionen aus dem Store) und versteckt 552 in Windows Update
+  (nur bei eingestecktem Gerät sichtbar → mit iPhone/iPad am hinteren Prozessor-USB laufen lassen).
+- Entfernt: iloader samt Keyring-Einträgen/Ordnern, `out/GetMoreRam.ipa` (Impactor beantragt IML selbst).
 
-## Als Nächstes
-1. Solstice per Impactor aufs iPhone 16 Pro, macOS installieren, Log-Stream an PC
-   (`py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log`, PC <PC-ADDRESS>:7777).
-2. Log auswerten (IML, largest mapping, Jetsam, Flushes, „code cache:“-Zeile, TLBI-Warten), Startwerte justieren.
-3. iPad Air 4 einrichten (gleicher Weg).
-4. Aufgeräumt: Worktrees, gemergte Branches (lokal + origin), `pr-*`-Kopien, iloader. Nur noch `main`.
+## Als Nächstes (24.11., Besitzer am PC)
+1. iPhone hinten (Prozessor-USB) einstecken, `tools/windows-sideload.ps1` ausführen (ein UAC-Klick).
+2. Impactor (Desktop) → Apple-ID → `out/Solstice.ipa` aufs iPhone 16 Pro → Entwickler vertrauen → Solstice öffnen →
+   JIT-Kopplung → macOS installieren. SideStore vorher vom iPhone löschen (3-App-Grenze).
+3. iPad Air 4 (iPadOS aktuell, Air 4 = iPad13,1/2, 4 GB): LocalDevVPN aus dem App Store, ≥ 40 GB frei, per USB-C hinten
+   an den PC, Impactor → Solstice → vertrauen → Entwicklermodus (erscheint erst nach der Installation) → Neustart →
+   Solstice. Profil: 2 GB Mac, 2 vCPUs, 512 MB Code-Cache (nach Speichergrenze), kleiner Bildschirm.
+4. Log-Stream an PC (`py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log`, <PC-ADDRESS>:7777):
+   IML an? largest mapping, Jetsam, Flushes, „code cache:“-Zeile, TLBI-Warten → Startwerte justieren.
+5. Danach Block 4 nach Messung (SVC/ERET-Thunks, Vor-Übersetzung auf E-Kernen, Thermik, ggf. PGO/ThinLTO).
+
+## Stand der App (23.11. ~02:00)
+- Block 1–3 fertig; Block 4: segmentierter Code-Cache fertig, Rest braucht Gerätemessung.
+- Block 5: Geräteprofil-Tabelle + iPad-Eingabe #170 (Trackpad-Klick), #167 (Zwei-Finger-Scrollen als Magic
+  Trackpad), #123 (Stage Manager: ein Zeiger über USB-Absolutzeiger) übernommen.
+- Bewusst offen: IJC-Tabellen nur für gestartete vCPUs (nach Air-4-Log), Cache-Verwaltung kleiner (nach Log).
