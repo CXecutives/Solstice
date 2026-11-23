@@ -14,6 +14,7 @@
     .globl _mp_spin
     .globl _mp_pv_probe
     .globl _mp_pv_pingpong
+    .globl _mp_lock
 _mp_programs_begin:
 
     .p2align 11
@@ -225,6 +226,27 @@ _mp_pv_pingpong:
     subs x15, x15, #1
     b.ne 1b
     b _mp_done
+
+// x0 times: take the spinlock at x9 (LDAXR/STXR; held, wait in WFE for the holder's release), add one to the count at
+// x9 + 8 with a plain load and store, release it (STLR, SEV), as xnu's hw_lock does. On two CPUs at once the count
+// comes out exact only if the lock excludes.
+_mp_lock:
+    SETUP
+    mov w10, #1
+1:  ldaxr w2, [x9]
+    cbnz w2, 4f
+    stxr w3, w10, [x9]
+    cbnz w3, 1b
+    ldr x4, [x9, #8]
+    add x4, x4, #1
+    str x4, [x9, #8]
+    stlr wzr, [x9]
+    sev
+    subs x0, x0, #1
+    b.ne 1b
+    b _mp_done
+4:  wfe
+    b 1b
 
 _mp_done:
     b _mp_done
