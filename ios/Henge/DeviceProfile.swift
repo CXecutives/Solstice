@@ -45,7 +45,7 @@ struct DeviceProfile: Equatable {
         Row(belowMB: .max, ramGB: 6, maxCPUs: 5, codeCacheMB: 1536, headroomMB: 1100...2100, guestCapMB: nil, lean: false),
     ]
 
-    /// What Settings > Performance > Code cache offers, in MB.
+    /// What Settings > Advanced > Code Cache offers, in MB.
     static let codeCacheChoices = [384, 512, 768, 1024, 1536]
     /// The code cache the signing allows: above 1 GB only with a memory limit of 5.5 GB and extended-virtual-addressing
     /// (generated code only runs below 0x7000000000, and without that entitlement the largest hole there is about
@@ -87,6 +87,19 @@ struct DeviceProfile: Equatable {
         if mb > 1024 && !extendedAddressing { return 1024 }
         return Self.codeCacheChoices.contains(mb) ? mb : 1024
     }
+
+    // MARK: A Mac's memory and CPUs (what Settings offers)
+
+    /// The most memory offered for a Mac where the device has no boot cap, in GB.
+    static let largestMacGB = 16
+    /// A Mac's memory choices here, in GB: up to what boots beside the engine and iOS (guestCapMB).
+    var memoryChoicesGB: ClosedRange<Int> { 1...(guestCapMB.map { Int($0 >> 10) } ?? Self.largestMacGB) }
+    /// The memory suggested for a new Mac, in GB: the row's, where that boots.
+    var suggestedGB: Int { min(ramGB, memoryChoicesGB.upperBound) }
+    /// A Mac's CPU choices.
+    static let cpuChoices = 1...6
+    /// A Mac's CPUs: its own count where it has one, else this device's; always one of the choices.
+    func cpus(chosen: Int?) -> Int { min(max(chosen ?? cpus, Self.cpuChoices.lowerBound), Self.cpuChoices.upperBound) }
 
     // MARK: Screens (MacScreen.swift sizes them)
 

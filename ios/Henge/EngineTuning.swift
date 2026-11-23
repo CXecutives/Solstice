@@ -1,6 +1,6 @@
 import Foundation
 
-/// Engine settings, without a rebuild. Defaults below, then the Performance settings,
+/// Engine settings, without a rebuild. Defaults below, then the Advanced settings,
 /// then Documents/henge-env.txt (HV_ variables only, EnvOverrides) overrides them all.
 /// Applied at launch and again before each Mac starts, so changes need no relaunch.
 enum EngineTuning {

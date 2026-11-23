@@ -28,8 +28,12 @@ struct VirtualMac: Identifiable, Codable, Hashable {
     /// Experimental — it may bring the device's icon, and may confuse macOS.
     var reportHostModelID: Bool?
     var uiScale: Double?
+    /// The Mac's virtual CPUs; nil: this device's default (DeviceProfile). Applied at the next boot.
+    var cpuCount: Int?
 
     var preset: ScreenPreset { screenPreset ?? .recommended }
+    /// The CPUs the Mac starts with: the one place a start, a resume and an install read them.
+    var cpus: Int { Device.profile.cpus(chosen: cpuCount) }
     /// What the preset gives on this device: macOS's pixels, the panel's millimetres for Retina, the on-screen factor.
     var macScreen: MacScreen { Device.macScreen(preset) }
     var screen: (width: Int, height: Int) { (macScreen.pixels.width, macScreen.pixels.height) }
@@ -332,6 +336,17 @@ final class Machines: ObservableObject {
         }
         all = list.filter { FileManager.default.fileExists(atPath: $0.disk.path) }
         migrateScreens()
+        migrateCPUs()
+    }
+
+    /// Before per-Mac CPUs one count was kept for the whole app: the Macs made then keep it, once, and the key goes.
+    private func migrateCPUs() {
+        let d = UserDefaults.standard, key = "henge.cpus"
+        guard let appWide = d.object(forKey: key) as? Int else { return }
+        for i in all.indices where all[i].cpuCount == nil { all[i].cpuCount = appWide }
+        save()
+        d.removeObject(forKey: key)
+        HengeLog.log("machines", "CPUs \(appWide) moved from the app to each Mac")
     }
 
     /// Macs made before screen presets get the preset nearest what they had (MacScreen.migrate), once.
