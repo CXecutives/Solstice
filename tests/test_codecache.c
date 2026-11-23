@@ -176,9 +176,15 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
            (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3, (unsigned long long)tot.cc_tenured,
            (unsigned long long)cc->stale, (unsigned long long)cc->check_bad, (unsigned long long)tot.block_flushes,
            (unsigned long long)tot.flush_full, (unsigned long long)nchanges);
-    printf("%s: branch caches caught up: %llu scanned (%.0f ms, %llu entries dropped), %llu reset\n", name,
-           (unsigned long long)cc->ijc_scans, (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped,
-           (unsigned long long)cc->ijc_resets);
+    printf("%s: branch caches caught up: %llu scanned (%llu passes over the tables, %llu scans more than one epoch "
+           "behind; %.0f ms, %.2f ms a scan, %llu entries dropped), %llu reset\n", name,
+           (unsigned long long)cc->ijc_scans, (unsigned long long)cc->ijc_passes, (unsigned long long)cc->ijc_behind,
+           (double)cc->ijc_scan_ticks / 24e3, (double)cc->ijc_scan_ticks / 24e3 / ((double)cc->ijc_scans + 1e-9),
+           (unsigned long long)cc->ijc_dropped, (unsigned long long)cc->ijc_resets);
+    /* However many epochs behind a CPU is, it reads its tables once. */
+    if (cc->ijc_passes != cc->ijc_scans)
+        printf("%s: %llu passes over the branch caches for %llu scans: FAIL\n", name, (unsigned long long)cc->ijc_passes,
+               (unsigned long long)cc->ijc_scans), failed++;
     last_translations = tot.translations, last_runs = runs, last_chances = cc->second_chances;
     /* (Entries into the segment there may be none: one CPU, few branches.) */
     if (!(opts & RUN_ROOMY) && !cc->ijc_scans) printf("%s: no branch cache caught up by a scan: FAIL\n", name), failed++;

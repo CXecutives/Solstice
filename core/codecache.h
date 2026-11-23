@@ -69,6 +69,7 @@ typedef struct HvCodeCache {
     uint64_t evictions, evict_tenured, evict_blocks, evict_unchained, evict_ticks;
     uint64_t waits, wait_ticks, stale, check_bad;
     uint64_t ijc_scans, ijc_scan_ticks, ijc_dropped, ijc_resets; /* catching up: branch caches scanned, or reset */
+    uint64_t ijc_passes, ijc_behind; /* passes over the tables (one a scan), and catch-ups more than one epoch behind */
     uint64_t second_chances;
 } HvCodeCache;
 

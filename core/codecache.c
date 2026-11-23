@@ -606,18 +606,21 @@ static int cc_step(HvMachine *m) {
 }
 
 /* Every entry of this CPU's branch caches (each table it filled) and return predictions (every table) that leads into
-   segment s: dropped. Its own thread, out of translated code; another CPU's TLBI may drop entries meanwhile, which
-   writes the same zeros. */
-static uint64_t ijc_drop_seg(HvCpu *cpu, uint32_t s) {
+   a segment of mask (bit s: segment s): dropped, in one pass however many segments (a pass reads megabytes). Its own
+   thread, out of translated code; another CPU's TLBI may drop entries meanwhile, which writes the same zeros. */
+static uint64_t ijc_drop_segs(HvCpu *cpu, uint64_t mask) {
     HvMachine *m = cpu->m;
     HvPerCpu *p = cpu->pc_state;
-    uintptr_t lo = (uintptr_t)(m->jit.base + ((size_t)s << m->cc.seg_shift)), len = seg_words(&m->cc) * sizeof(uint32_t);
+    uintptr_t base = (uintptr_t)m->jit.base;
+    uint32_t sh = m->cc.seg_shift + 2; /* bytes */
+    _Static_assert(HV_CC_MAX_SEGS == 64, "one bit a segment");
+#define IN_MASK(code) ((((uintptr_t)(code) - base) >> sh) < HV_CC_MAX_SEGS && (mask >> (((uintptr_t)(code) - base) >> sh) & 1))
     uint64_t n = 0;
     for (int t = 0; t < HV_IJC_TABLES; t++) {
         if (!(p->ijc_tables_used >> t & 1)) continue; /* never filled since it was last cleared: all zero */
         uint64_t *ent = p->ijc + (size_t)t * (HV_IJC_TABLE_BYTES / 8);
         for (size_t i = 0; i < HV_IJC_TABLE_BYTES / 8; i += 2)
-            if ((uintptr_t)ent[i + 1] - lo < len) {
+            if (IN_MASK(ent[i + 1])) {
                 __atomic_store_n(&ent[i], 0, __ATOMIC_RELAXED); /* the empty tag */
                 __atomic_store_n(&ent[i + 1], 0, __ATOMIC_RELAXED);
                 n++;
@@ -625,10 +628,12 @@ static uint64_t ijc_drop_seg(HvCpu *cpu, uint32_t s) {
     }
     uint64_t *ret = (uint64_t *)(void *)cpu->ret_tab;
     for (size_t i = 0; i < sizeof cpu->ret_tab / 8; i += 2) /* {tag, the host return address} */
-        if ((uintptr_t)ret[i + 1] - lo < len) {
+        if (IN_MASK(ret[i + 1])) {
             ret[i] = ret[i + 1] = 0;
             n++;
         }
+#undef IN_MASK
+    __atomic_add_fetch(&m->cc.ijc_passes, 1, __ATOMIC_RELAXED);
     return n;
 }
 
@@ -644,9 +649,11 @@ static int cc_ack(HvCpu *cpu) {
        most one more is published meanwhile: half the ring is safe to read. Further behind (parked long, or a first
        run): everything. */
     if (cc->nseg && e - seen <= HV_CC_EPOCHS / 2) {
-        uint64_t t0 = mach_absolute_time(), n = 0;
+        uint64_t t0 = mach_absolute_time(), mask = 0;
         for (uint32_t k = seen + 1; k != e + 1; k++)
-            n += ijc_drop_seg(cpu, __atomic_load_n(&cc->epoch_seg[k & (HV_CC_EPOCHS - 1)], __ATOMIC_RELAXED));
+            mask |= 1ull << (__atomic_load_n(&cc->epoch_seg[k & (HV_CC_EPOCHS - 1)], __ATOMIC_RELAXED) & (HV_CC_MAX_SEGS - 1));
+        uint64_t n = ijc_drop_segs(cpu, mask);
+        if (e - seen > 1) __atomic_add_fetch(&cc->ijc_behind, 1, __ATOMIC_RELAXED);
         __atomic_add_fetch(&cc->ijc_scans, 1, __ATOMIC_RELAXED);
         __atomic_add_fetch(&cc->ijc_dropped, n, __ATOMIC_RELAXED);
         __atomic_add_fetch(&cc->ijc_scan_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
