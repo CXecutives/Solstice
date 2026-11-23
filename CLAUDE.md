@@ -10,6 +10,8 @@ AltStore Classic 2.3. Plan und Blöcke: `PLAN.md`; Detailwissen: `docs/solstice/
 - `tools/check.sh test_jit test_mem` – nur die genannten Engine-Tests in CI (berührte Teile).
 - `tools/check-all.sh` – alle Engine-Tests + iOS-Build + IPA (Blockende).
 - IPA landet nach `tools/check-all.sh` in `out/Solstice.ipa`.
+- CI testet zusätzlich mit den ausgelieferten Einstellungen (`tools/shipped_env.py` aus `EngineTuning.swift`) + ThinLTO.
+- `tools/windows-sideload.ps1` – dieser PC fürs Sideloading mit Impactor (Treiber 538, Gerät hinten am Prozessor-USB).
 
 ## Grenzen
 - Privat. Pushen nur nach `origin` (CXecutives/Solstice); nichts veröffentlichen.
@@ -19,6 +21,8 @@ AltStore Classic 2.3. Plan und Blöcke: `PLAN.md`; Detailwissen: `docs/solstice/
   `Henge.personal.entitlements` (kostenloses Team: kein EVA).
 - Engine-Standardwerte nur in `ios/Henge/EngineTuning.swift`, Geräte-Werte nur in der Gerätetabelle
   in `ios/Henge/Hardware.swift`.
-- Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`
-  heraus kein memset/memcpy/SIMD (CI-Gate `tools/simd_gate.py`).
+- Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`/`hv_light`
+  heraus kein libc-Aufruf und kein SIMD (Dateien in `NOSIMD` im Makefile; CI-Gate `tools/simd_gate.py`).
+  Resets großer Tabellen nur im Dispatcher.
+- Gast-Setup: Set Up ruft nur `tune` (nichts Sichtbares); sichtbare Änderungen nur im optionalen `lighten`.
 - Sprache im Repo: Englisch (Code, Kommentare, Commits); mit dem Besitzer: Deutsch.
