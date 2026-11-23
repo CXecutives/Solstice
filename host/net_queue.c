@@ -1,3 +1,4 @@
+/* The frame queue between the network thread and the CPU (see net_queue.h). */
 #include "net_queue.h"
 
 #include <stdlib.h>
