@@ -30,12 +30,13 @@ enum KeepAlive {
         return enabled && (s == 1 || s == 3 || s == 4 || Installer.shared.busy)
     }
 
-    /// Once, at launch: follow what Henge is doing, and say in the log what iOS tells it about memory.
+    /// Once, at launch: follow what Henge is doing, say in the log what iOS tells it about memory, and follow the heat.
     static func start() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            MainActor.assumeIsolated { update(); MemoryRelief.sample() }
+            MainActor.assumeIsolated { update(); MemoryRelief.sample(); PowerPolicy.shared.tick() }
         }
+        PowerPolicy.shared.start()
         let center = NotificationCenter.default
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { note in
             let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
