@@ -52,21 +52,23 @@ enum Sharing {
     }
 
     /// Text from this device, pasted at the Mac's cursor. Without the helper it is typed, as far as the keyboard can.
+    /// In turn with the keys (Keys.output): what is typed after it waits until it is pasted. The text replaces the
+    /// Mac's clipboard.
     static func paste(_ text: String) {
-        Task { @MainActor in
-            if helperRunning {
-                henge_share_set_clipboard(text)
-                // The helper's next request for news says it has put the text on the Mac's clipboard; it comes
-                // within a few milliseconds. An older helper may not say: then a second at most.
-                let until = Date().addingTimeInterval(1)
-                while henge_share_clipboard_taken() == 0 && Date() < until {
-                    try? await Task.sleep(nanoseconds: 10_000_000)
-                }
-                Keys.chord(Keys.command, "v")
-            } else {
-                await Keys.typeSlowly(text)
+        guard helperRunning else {
+            Keys.queueSlowTyping(text)
+            return
+        }
+        Keys.output.wait { _ in
+            henge_share_set_clipboard(text)
+            // The helper's next request for news says it has put the text on the Mac's clipboard; it comes
+            // within a few milliseconds. An older helper may not say: then a second at most.
+            let until = Date().addingTimeInterval(1)
+            while henge_share_clipboard_taken() == 0 && Date() < until {
+                try? await Task.sleep(nanoseconds: 10_000_000)
             }
         }
+        Keys.chord(Keys.command, "v")
     }
 
     /// Files dropped onto the session: copied into the Shared folder, which the Mac has as ~/Henge.
