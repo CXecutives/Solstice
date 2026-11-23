@@ -241,12 +241,101 @@ static void ijc_clear_used_only(void) {
     hv_machine_free(&m);
 }
 
+/* Page tables for the program at EL0 (16 KB granule, 48-bit VA: levels 0-3), identity mapped. */
+#define ADDR(sym) ((uint64_t)(uintptr_t)(sym))
+#define PT_TABLES 16
+#define PT_BITS (3ull | 1ull << 10 | 3ull << 8) /* page, accessed, inner shareable, attribute 0; no UXN: EL0 runs it */
+static uint8_t *pt;
+static unsigned pt_next;
+
+static uint64_t pt_table(void) {
+    uint8_t *t = pt + (size_t)(pt_next < PT_TABLES - 1 ? pt_next++ : pt_next) * 16384;
+    memset(t, 0, 16384);
+    return ADDR(t);
+}
+
+static uint64_t *pt_entry(uint64_t root, uint64_t va) {
+    uint64_t table = root;
+    for (int level = 0; level < 3; level++) {
+        int shift = 14 + 11 * (3 - level);
+        uint64_t *e = (uint64_t *)(uintptr_t)table + ((va >> shift) & (level == 0 ? 1 : 0x7ff));
+        if (!(*e & 1)) *e = pt_table() | 3;
+        table = *e & 0x0000ffffffffc000ull;
+    }
+    return (uint64_t *)(uintptr_t)table + ((va >> 14) & 0x7ff);
+}
+
+/* The branch cache's filters full and the user ids about to run out while translated code misses in it: the light
+   path (hv_ijc_resolve from hv_ijc_thunk, the guest's q0-q31 live in the host's) must not start the cache over
+   (that clears with libc, which uses those registers); it leaves that to the dispatcher. The program at EL0 with
+   the MMU on, so its indirect branches go that way; every register must come out as the native run's. */
+static void light_path_leaves_resets(void) {
+    if (hv_machine_init(&m, 32 << 20) != 0) {
+        check("machine init", 0);
+        return;
+    }
+    m.stats_interval = 3600; /* counted as on a device, never printed here */
+    pt = aligned_alloc(16384, PT_TABLES * 16384);
+    pt_next = 0;
+    uint64_t lo = ADDR(codecache_programs_begin), hi = ADDR(codecache_programs_finish);
+    hv_machine_add_ram(&m, lo, hi - lo, (void *)codecache_programs_begin, 1);
+    hv_machine_add_ram(&m, ADDR(pt), PT_TABLES * 16384, pt, 0);
+    uint64_t root = pt_table();
+    for (uint64_t va = lo & ~0x3fffull; va < hi; va += 16384) *pt_entry(root, va) = va | PT_BITS;
+    static HvCpu init, native, cpu;
+    memset(&init, 0, sizeof init);
+    seed_cpu(&init, 77, 0); /* q0-q31 hold the seed's values throughout: the program never touches them */
+    init.x[20] = 0;          /* no TLBIs (EL0) */
+    init.x[21] = 1;
+    run_native(&prog, &init, &native, NULL);
+    hv_cpu_reset(&cpu, &m);
+    cpu.cpacr_el1 = 3u << 20;
+    cpu.ttbr0_el1 = root | 1ull << 48;
+    cpu.tcr_el1 = 16 | 2u << 14 | 1u << 23 | 5ull << 32; /* T0SZ 16, TG0 16 KB, EPD1, 48-bit PA */
+    cpu.mair_el1 = 0xff;
+    cpu.sctlr_el1 |= 1;
+    hv_ijc_switch(&cpu); /* ASID 1's id */
+    cpu.el = 0;
+    m.stop_pc = ADDR(prog.end);
+    HvPerCpu *p = cpu.pc_state;
+    const HvStats *st = &p->own.stats;
+    const uint32_t keyed0 = (1u << 17) - 4, ucode0 = (1u << HV_UCODE_BITS) / 2 - 4;
+    uint64_t light0 = 0, restarts0 = 0;
+    char what[200];
+    for (int run = 0; run < 2; run++) {
+        if (run) { /* the blocks are made: the user half emptied, so every indirect branch misses into the light path */
+            hv_ijc_reset(&cpu, 0);
+            p->ijc_keyed_count = keyed0; /* and its filters a few fills from full */
+            p->ucode_count = ucode0;
+            cpu.next_cid = 0xffff; /* the second user-half restart runs out of ids (fresh_cid) */
+            light0 = st->ijc_light, restarts0 = st->reset_why[6];
+        }
+        memcpy(cpu.x, init.x, sizeof cpu.x);
+        memcpy(cpu.v, init.v, sizeof cpu.v);
+        cpu.sp = init.sp, cpu.nzcv = init.nzcv, cpu.fpcr = init.fpcr, cpu.fpsr = init.fpsr;
+        cpu.pc = ADDR(prog.start);
+        int r = hv_run(&cpu);
+        snprintf(what, sizeof what, "light path: run %d at EL0 ends at the program's end (%d at pc %llx)", run, r, (unsigned long long)cpu.pc);
+        check(what, r == HV_EXIT_HALT);
+        snprintf(what, sizeof what, "light path: run %d: every register as the native run's, q0-q31 too", run);
+        check(what, compare_cpus("ccstress at EL0", &native, &cpu) == 0);
+    }
+    snprintf(what, sizeof what, "light path: %llu fills by it, %llu filter-full restarts (the dispatcher's), counts now keyed %u ucode %u, next id %u",
+             (unsigned long long)(st->ijc_light - light0), (unsigned long long)(st->reset_why[6] - restarts0), p->ijc_keyed_count,
+             p->ucode_count, cpu.next_cid);
+    check(what, st->ijc_light > light0 && st->reset_why[6] > restarts0 && p->ijc_keyed_count < keyed0 && p->ucode_count < ucode0 &&
+                    cpu.next_cid < 0xffff);
+    hv_machine_free(&m);
+    free(pt);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     check("a block record is 40 bytes", sizeof(HvBlock) == 40);
     check("hv_xpa round trip", hv_xpa_ram(hv_xpa(7, (1u << 28) - 1)) == 7 && hv_xpa_pg(hv_xpa(7, (1u << 28) - 1)) == (1u << 28) - 1 &&
           hv_xpa_ram(hv_xpa(0, 5)) == 0 && hv_xpa_pg(hv_xpa(0, 5)) == 5 && hv_xpa(0, 0) != 0);
     ijc_clear_used_only();
+    light_path_leaves_resets();
     for (int n = 1; n <= 4; n++) one_machine(n);
     printf("%d checks, %d failures\n%s\n", checks, failures, failures ? "FAIL" : "ok");
     return failures != 0;

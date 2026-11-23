@@ -75,7 +75,6 @@ int hv_tlbi_drop_remote_va(HvCpu *target, uint64_t va, int asid);       /* just 
 /* The same for npages pages from va in one go (big range TLBIs; HV_RANGE_DROP sets how big). */
 int hv_tlbi_drop_remote_range(HvCpu *target, uint64_t va, uint64_t npages, int asid);
 void hv_ijc_drop_range(HvCpu *cpu, uint64_t va, uint64_t len, int asid);
-void hv_ucode_add(HvCpu *cpu, uint64_t va); /* a user target was cached in this page (current address space) */
 void hv_tlb_protect_code(HvCpu *cpu, const uint8_t *host_page);
 void hv_tlb_protect_code_page(HvCpu *cpu, struct HvRam *ram, uint64_t pg); /* the same, through the page's write hints */
 
