@@ -72,6 +72,14 @@ enum JITBootstrap {
         return ok
     }
 
+    /// KeepAlive's 1 s tick, until the region is held: a debugger that attached since (an external tool a moment
+    /// after Solstice became active, which bumps no attachGeneration) is noticed and the region claimed. Cheap (one
+    /// csops); a failed claim is not retried here (lastFailure), the setup flow does that.
+    static func claimIfAttached() {
+        guard !ready, lastFailure == nil, debuggedFlag else { return }
+        prewarm()
+    }
+
     /// Whether Henge has JIT now: the region is held. CS_DEBUGGED alone is not enough: the debugger must also answer
     /// the brk that claims the region, or an install stops at "Henge has no JIT region" (#23). Cheap, and logs nothing.
     static var ready: Bool { prewarmed || isLive }
