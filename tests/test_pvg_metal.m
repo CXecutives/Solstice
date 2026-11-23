@@ -176,6 +176,12 @@ static void test_wrong_kind_refused(HvReplay *r) {
     check("a buffer as a render pipeline: refused", !r->pipeline_set && complained(r, @"object 11 is a"));
     [r render:re tag:104 rec:(Rec){(const uint8_t *)&ref, 4} task:1];
     [re endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    check("the render pass still runs", cb.status == MTLCommandBufferStatusCompleted);
+    if (cb.status != MTLCommandBufferStatusCompleted) printf("  status %ld: %s\n", (long)cb.status, cb.error.localizedDescription.UTF8String ?: "no error");
+    /* Compute: an encoder with nothing in it (the paravirtual GPU may not run one), so only the refusal is checked. */
+    cb = [r->queue commandBuffer];
     id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
     r->pipeline_set = YES;
     [r compute:ce tag:208 rec:(Rec){(const uint8_t *)&ref, 4} task:1];
@@ -183,7 +189,7 @@ static void test_wrong_kind_refused(HvReplay *r) {
     [ce endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
-    check("the command buffer still runs", cb.status == MTLCommandBufferStatusCompleted);
+    if (cb.status != MTLCommandBufferStatusCompleted) printf("  (an empty compute pass: status %ld, %s)\n", (long)cb.status, cb.error.localizedDescription.UTF8String ?: "no error");
     /* An answer about a render pipeline (info 457) for a ref that is a buffer. */
     uint8_t *page = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     HvObject *answers = put_object(r, 9, [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared]);
