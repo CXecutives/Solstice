@@ -82,12 +82,12 @@
     [self startPipelines:bufs count:nbuf task:task];
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = nil;
-    BOOL sync_after = NO;
+    BOOL sync_after = NO, surfaces_blitted = NO;
     for (uint32_t i = 0; i < nres; i++) {
         HvObject *o = [self object:res[i * 2] task:task];
         if (!o) continue;
         if (o->mapped) refresh_pages(self, task, o);
-        if (o->surface) sync_iosurface(o->surface);
+        if (o->surface && [self syncSurface:o->surface blit:&blit commandBuffer:cb]) surfaces_blitted = YES;
         static int tally = -1;
         if (tally < 0) tally = getenv("HV_PVG_TALLY") != NULL;
         if (tally && (o->entry[0] & 0xff) == OBJ_MAPPED_TEXTURE) {
@@ -104,6 +104,12 @@
             o->host_valid = YES;
         }
         if (res[i * 2 + 1] & 4) sync_after = YES;
+    }
+    /* The views the guest draws with are other textures over the same IOSurface than the copies' views, so Metal's
+       own tracking does not order them: what this exec encodes waits for a fence the copies update. */
+    if (surfaces_blitted) {
+        if (!surfaces_in) surfaces_in = [device newFence];
+        [blit updateFence:surfaces_in];
     }
     [blit endEncoding];
     /* Bit 1: this exec writes it, so the guest's copy is out of date from here on. Never
@@ -156,8 +162,14 @@
             }
             continue;
         }
-        if (!e && type == 1) e = [cb computeCommandEncoder], pipeline_set = NO;
-        if (!e && type == 2) e = [cb blitCommandEncoder];
+        if (!e && type == 1) {
+            e = [cb computeCommandEncoder], pipeline_set = NO;
+            if (surfaces_blitted) [(id<MTLComputeCommandEncoder>)e waitForFence:surfaces_in];
+        }
+        if (!e && type == 2) {
+            e = [cb blitCommandEncoder];
+            if (surfaces_blitted) [(id<MTLBlitCommandEncoder>)e waitForFence:surfaces_in];
+        }
         etype = type;
         @try {
             while (p + 8 <= end) {
@@ -174,6 +186,7 @@
                 } else if (etype == 0 && tag == 26) {
                     if (e) [e endEncoding];
                     e = [self beginPass:r task:task commandBuffer:cb];
+                    if (e && surfaces_blitted) [(id<MTLRenderCommandEncoder>)e waitForFence:surfaces_in beforeStages:MTLRenderStageVertex];
                     pipeline_set = NO, tess_factors = NO;
                 } else if (e) {
                     if (etype == 0) [self render:e tag:tag rec:r task:task];
@@ -211,7 +224,7 @@
     if (++execs % 2000 == 0) {
         static double t0;
         if (!t0) t0 = now_seconds();
-        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps, %.0f s; encoding %.2f s (%.2f s of it waiting for pipelines), waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, now_seconds() - t0, encode_time, pipe_wait, gpu_wait_time);
+        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps, %llu surface copies, %.0f s; encoding %.2f s (%.2f s of it waiting for pipelines), waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, (unsigned long long)surfaces_copied, now_seconds() - t0, encode_time, pipe_wait, gpu_wait_time);
         encode_time = gpu_wait_time = pipe_wait = 0;
     }
     return YES;

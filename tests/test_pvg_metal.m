@@ -24,7 +24,7 @@ static void test_archive_room(void) {
     check("too many files: the oldest go, room for a session left", ARCHIVE_FILES + 8 - k == ARCHIVE_FILES - ARCHIVE_ROOM);
     check("after that, room again", !archive_full_at(ARCHIVE_FILES + 8 - k + 1, (ARCHIVE_FILES + 8 - k + 1) << 20, cap));
     sizes[0] = sizes[1] = cap / 2;
-    check("too many bytes: the oldest go", archive_evict(sizes, 10, cap) == 2);
+    check("too many bytes: the oldest go until under 7/8 of the cap", archive_evict(sizes, 10, cap) == 1);
     puts("saved pipelines: room checked");
 }
 
@@ -115,6 +115,71 @@ static void test_pipelines_compiled_later(HvReplay *r) {
     puts("pipelines: compiled off the worker, waited for at first use");
 }
 
+/* A two-plane video surface whose host copy is kept up to date from the guest's pages: what changed in the guest is
+   copied, plane by plane, and a plane the guest left alone keeps what the host side has in it (the GPU drew it). */
+static int plane_matches(IOSurfaceRef ios, uint32_t i, const uint8_t *guest, uint64_t row, size_t w_bytes, size_t rows) {
+    IOSurfaceLock(ios, kIOSurfaceLockReadOnly, NULL);
+    const uint8_t *host = IOSurfaceGetBaseAddressOfPlane(ios, i);
+    size_t host_row = IOSurfaceGetBytesPerRowOfPlane(ios, i);
+    int same = 1;
+    for (size_t y = 0; y < rows && same; y++) same = !memcmp(host + y * host_row, guest + y * row, w_bytes);
+    IOSurfaceUnlock(ios, kIOSurfaceLockReadOnly, NULL);
+    return same;
+}
+
+static void test_video_surface(HvReplay *r) {
+    enum { W = 64, H = 32, ROW = 64, LUMA = ROW * H, CHROMA = ROW * (H / 2), ALLOC = LUMA + CHROMA, PAGES = 0x4000 };
+    vm_address_t at = 0;
+    if (vm_allocate(mach_task_self(), &at, PAGES, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) { check("guest pages", 0); return; }
+    uint8_t *guest = (uint8_t *)at;
+    for (int i = 0; i < ALLOC; i++) guest[i] = (uint8_t)(i * 7 + 3);
+    HvObject *s = [HvObject new];
+    s->mapped = guest, s->length = PAGES, s->first = 0, s->alloc = ALLOC;
+    s->object = [r->device newBufferWithBytesNoCopy:guest length:PAGES options:MTLResourceStorageModeShared
+                                        deallocator:^(void *p, NSUInteger n) { vm_deallocate(mach_task_self(), (vm_address_t)p, n); }];
+    s->mapping_in_buffer = s->object != nil;
+    s->plane_count = 2;
+    s->plane_from[0] = 0, s->plane_row[0] = ROW, s->plane_h[0] = H;
+    s->plane_from[1] = LUMA, s->plane_row[1] = ROW, s->plane_h[1] = H / 2;
+    NSDictionary *planes[2] = {
+        @{(__bridge id)kIOSurfacePlaneWidth: @W, (__bridge id)kIOSurfacePlaneHeight: @H, (__bridge id)kIOSurfacePlaneBytesPerRow: @ROW,
+          (__bridge id)kIOSurfacePlaneOffset: @0, (__bridge id)kIOSurfacePlaneSize: @LUMA, (__bridge id)kIOSurfacePlaneBytesPerElement: @1},
+        @{(__bridge id)kIOSurfacePlaneWidth: @(W / 2), (__bridge id)kIOSurfacePlaneHeight: @(H / 2), (__bridge id)kIOSurfacePlaneBytesPerRow: @ROW,
+          (__bridge id)kIOSurfacePlaneOffset: @LUMA, (__bridge id)kIOSurfacePlaneSize: @CHROMA, (__bridge id)kIOSurfacePlaneBytesPerElement: @2},
+    };
+    NSDictionary *props = @{(__bridge id)kIOSurfaceWidth: @W, (__bridge id)kIOSurfaceHeight: @H, (__bridge id)kIOSurfacePixelFormat: @('420v'),
+                            (__bridge id)kIOSurfaceAllocSize: @ALLOC, (__bridge id)kIOSurfacePlaneInfo: [NSArray arrayWithObjects:planes count:2]};
+    s->iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+    if (!s->iosurface || IOSurfaceGetPlaneCount(s->iosurface) != 2) { check("a two-plane IOSurface", 0); return; }
+
+    id<MTLCommandBuffer> cb = [r->queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = nil;
+    BOOL by_gpu = [r syncSurface:s blit:&blit commandBuffer:cb];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    check("luma copied", plane_matches(s->iosurface, 0, guest, ROW, W, H));
+    check("chroma copied", plane_matches(s->iosurface, 1, guest + LUMA, ROW, W, H / 2));
+
+    /* The host side draws into luma; the guest changes chroma only. */
+    IOSurfaceLock(s->iosurface, 0, NULL);
+    memset(IOSurfaceGetBaseAddressOfPlane(s->iosurface, 0), 0xab, IOSurfaceGetBytesPerRowOfPlane(s->iosurface, 0) * H);
+    IOSurfaceUnlock(s->iosurface, 0, NULL);
+    for (int i = LUMA; i < ALLOC; i++) guest[i] ^= 0x5a;
+    cb = [r->queue commandBuffer];
+    blit = nil;
+    [r syncSurface:s blit:&blit commandBuffer:cb];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    check("the changed plane copied again", plane_matches(s->iosurface, 1, guest + LUMA, ROW, W, H / 2));
+    IOSurfaceLock(s->iosurface, kIOSurfaceLockReadOnly, NULL);
+    check("the other plane kept what the host drew", ((const uint8_t *)IOSurfaceGetBaseAddressOfPlane(s->iosurface, 0))[5] == 0xab);
+    IOSurfaceUnlock(s->iosurface, kIOSurfaceLockReadOnly, NULL);
+    check("nothing changed: nothing copied", ![r syncSurface:s blit:&blit commandBuffer:nil] && blit == nil);
+    printf("video surface: planes copied as the guest changed them (%s)\n", by_gpu ? "by the GPU" : "by the CPU: no GPU copy here");
+}
+
 int main(void) {
     alarm(120);
     @autoreleasepool {
@@ -124,6 +189,7 @@ int main(void) {
         HvReplay *r = (__bridge HvReplay *)m;
         dispatch_sync(r->worker, ^{ test_short_records(r); });
         dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
+        dispatch_sync(r->worker, ^{ test_video_surface(r); });
         hv_pvg_metal_destroy(m);
     }
     if (failures) printf("%d failures\n", failures);

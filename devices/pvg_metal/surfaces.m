@@ -88,10 +88,13 @@ static IOSurfaceRef make_iosurface(HvObject *to, const uint8_t *desc, uint64_t a
     return made;
 }
 
-/* A sample of every 64th byte, to tell cheaply whether pixels changed. */
+/* Guest bytes sampled to tell whether a surface's pixels changed: one 8-byte word every SURFACE_SAMPLE bytes. One every
+   64 bytes read every cache line of a 4K video frame (27 MB) for every exec that named the surface; a decoded frame
+   changes nearly every word, so a sparser sample still sees each new one. */
+enum { SURFACE_SAMPLE = 1024 };
 static uint64_t hash_bytes(const uint8_t *from, uint64_t len) {
     uint64_t hash = 0xcbf29ce484222325ull;
-    for (uint64_t i = 0; i + 8 <= len; i += 64) {
+    for (uint64_t i = 0; i + 8 <= len; i += SURFACE_SAMPLE) {
         uint64_t v;
         memcpy(&v, from + i, 8);
         hash = (hash ^ v) * 0x100000001b3ull;
@@ -108,9 +111,92 @@ static uint64_t plane_bytes(HvObject *s, uint32_t i) {
     return row * s->plane_h[i];
 }
 
-/* Guest pixels into its IOSurface, when they changed. */
-static void sync_iosurface(HvObject *s) {
-    if (!s->iosurface) return;
+/* A format with a plane's bytes per element, for copying it as it is. */
+static MTLPixelFormat copy_format(size_t bpe) {
+    switch (bpe) {
+    case 1: return MTLPixelFormatR8Uint;
+    case 2: return MTLPixelFormatR16Uint;
+    case 4: return MTLPixelFormatR32Uint;
+    case 8: return MTLPixelFormatRG32Uint;
+    case 16: return MTLPixelFormatRGBA32Uint;
+    default: return MTLPixelFormatInvalid;
+    }
+}
+
+/* Debugging, read once: HV_PVG_HOST_DUMP=prefix, the host surface as it is just before the guest's pixels go over it
+   (the first few multi-plane surfaces, with its layout in a .txt beside it: did the GPU draw something here that this
+   copy throws away?); HV_PVG_SURFACE_DUMP=prefix, the guest's bytes copied. */
+static const char *host_dump_prefix(void) {
+    static const char *p;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ p = getenv("HV_PVG_HOST_DUMP"); });
+    return p;
+}
+static const char *surface_dump_prefix(void) {
+    static const char *p;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ p = getenv("HV_PVG_SURFACE_DUMP"); });
+    return p;
+}
+
+static void dump_host_surface(HvObject *s) {
+    const char *host_dump = host_dump_prefix();
+    static int host_dumped;
+    if (!host_dump || !s->plane_count || host_dumped >= 12) return;
+    char path[1100];
+    IOSurfaceLock(s->iosurface, kIOSurfaceLockReadOnly, NULL);
+    snprintf(path, sizeof path, "%s-%d.bin", host_dump, host_dumped);
+    FILE *f = fopen(path, "wb");
+    if (f) fwrite(IOSurfaceGetBaseAddress(s->iosurface), 1, IOSurfaceGetAllocSize(s->iosurface), f), fclose(f);
+    snprintf(path, sizeof path, "%s-%d.txt", host_dump, host_dumped++);
+    f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "fourcc %08x w %zu h %zu alloc %zu guest %llu\n", IOSurfaceGetPixelFormat(s->iosurface), IOSurfaceGetWidth(s->iosurface),
+                IOSurfaceGetHeight(s->iosurface), IOSurfaceGetAllocSize(s->iosurface), (unsigned long long)s->alloc);
+        for (size_t i = 0; i < IOSurfaceGetPlaneCount(s->iosurface); i++)
+            fprintf(f, "plane %zu off %ld row %zu h %zu w %zu bpe %zu\n", i,
+                    (long)((uint8_t *)IOSurfaceGetBaseAddressOfPlane(s->iosurface, i) - (uint8_t *)IOSurfaceGetBaseAddress(s->iosurface)),
+                    IOSurfaceGetBytesPerRowOfPlane(s->iosurface, i), IOSurfaceGetHeightOfPlane(s->iosurface, i),
+                    IOSurfaceGetWidthOfPlane(s->iosurface, i), IOSurfaceGetBytesPerElementOfPlane(s->iosurface, i));
+        fclose(f);
+    }
+    IOSurfaceUnlock(s->iosurface, kIOSurfaceLockReadOnly, NULL);
+}
+
+/* Plane i of the guest's pixels into the host IOSurface by the GPU: a blit from the buffer over the guest's pages into a
+   view of the plane, in cb, before what cb draws. NO where that cannot be done (no buffer over the pages, a layout the
+   blit cannot take): the CPU copies that plane then. */
+- (BOOL)blitPlane:(uint32_t)i of:(HvObject *)s blit:(id<MTLBlitCommandEncoder> *)blit commandBuffer:(id<MTLCommandBuffer>)cb {
+    id<MTLBuffer> pages = s->mapping_in_buffer ? s->object : nil;
+    IOSurfaceRef ios = s->iosurface;
+    size_t bpe = IOSurfaceGetBytesPerElementOfPlane(ios, i), pw = IOSurfaceGetWidthOfPlane(ios, i), ph = IOSurfaceGetHeightOfPlane(ios, i);
+    uint64_t row = s->plane_row[i], from = (uint64_t)s->first + s->plane_from[i];
+    size_t rows = MIN((size_t)s->plane_h[i], ph), w = bpe ? MIN(pw, (size_t)(row / bpe)) : 0;
+    MTLPixelFormat format = copy_format(bpe);
+    if (!cb || !pages || format == MTLPixelFormatInvalid || !w || !rows || row % bpe || from % bpe || !plane_bytes(s, i) ||
+        from + row * (rows - 1) + w * bpe > pages.length)
+        return NO;
+    if (!s->plane_view[i]) {
+        MTLTextureDescriptor *t = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:pw height:ph mipmapped:NO];
+        t.storageMode = MTLStorageModeShared;
+        t.usage = MTLTextureUsageShaderRead;
+        s->plane_view[i] = [device newTextureWithDescriptor:t iosurface:ios plane:i];
+        if (!s->plane_view[i]) {
+            [self complain:[NSString stringWithFormat:@"surface plane %u (%zu bytes an element): no view to copy into; copied by the CPU", i, bpe]];
+            return NO;
+        }
+    }
+    if (!*blit) *blit = [cb blitCommandEncoder];
+    [*blit copyFromBuffer:pages sourceOffset:(NSUInteger)from sourceBytesPerRow:(NSUInteger)row sourceBytesPerImage:(NSUInteger)(row * rows)
+               sourceSize:MTLSizeMake(w, rows, 1) toTexture:s->plane_view[i] destinationSlice:0 destinationLevel:0
+        destinationOrigin:MTLOriginMake(0, 0, 0)];
+    return YES;
+}
+
+/* Guest pixels into a surface's host IOSurface, the planes that changed: by the GPU when there is a command buffer to
+   put the copy in (see blitPlane), else by the CPU. YES if a blit went into cb, which what cb draws must wait for. */
+- (BOOL)syncSurface:(HvObject *)s blit:(id<MTLBlitCommandEncoder> *)blit commandBuffer:(id<MTLCommandBuffer>)cb {
+    if (!s->iosurface) return NO;
     const uint8_t *from = s->mapped + s->first;
     BOOL by_plane = s->plane_count && IOSurfaceGetPlaneCount(s->iosurface) >= s->plane_count;
     uint64_t hashes[4] = {0};
@@ -121,42 +207,27 @@ static void sync_iosurface(HvObject *s) {
             hashes[i] = hash_bytes(from + s->plane_from[i], plane_bytes(s, i));
             if (hashes[i] != have[i]) changed |= 1u << i;
         }
-        if (!changed) return;
+        if (!changed) return NO;
     } else {
         uint64_t hash = guest_hash(s);
-        if (hash == s->content_hash) return;
+        if (hash == s->content_hash) return NO;
         s->content_hash = hash;
     }
-    IOSurfaceLock(s->iosurface, 0, NULL);
-    /* HV_PVG_HOST_DUMP=prefix (debugging): the host surface as it is just before the guest's pixels go over it,
-       for the first few multi-plane surfaces, with its layout in a .txt beside it: did the GPU draw something here
-       that this copy throws away? */
-    const char *host_dump = getenv("HV_PVG_HOST_DUMP");
-    static int host_dumped;
-    if (host_dump && s->plane_count && host_dumped < 12) {
-        char path[1100];
-        snprintf(path, sizeof path, "%s-%d.bin", host_dump, host_dumped);
-        FILE *f = fopen(path, "wb");
-        if (f) fwrite(IOSurfaceGetBaseAddress(s->iosurface), 1, IOSurfaceGetAllocSize(s->iosurface), f), fclose(f);
-        snprintf(path, sizeof path, "%s-%d.txt", host_dump, host_dumped++);
-        f = fopen(path, "w");
-        if (f) {
-            fprintf(f, "fourcc %08x w %zu h %zu alloc %zu guest %llu\n", IOSurfaceGetPixelFormat(s->iosurface), IOSurfaceGetWidth(s->iosurface),
-                    IOSurfaceGetHeight(s->iosurface), IOSurfaceGetAllocSize(s->iosurface), (unsigned long long)s->alloc);
-            for (size_t i = 0; i < IOSurfaceGetPlaneCount(s->iosurface); i++)
-                fprintf(f, "plane %zu off %ld row %zu h %zu w %zu bpe %zu\n", i,
-                        (long)((uint8_t *)IOSurfaceGetBaseAddressOfPlane(s->iosurface, i) - (uint8_t *)IOSurfaceGetBaseAddress(s->iosurface)),
-                        IOSurfaceGetBytesPerRowOfPlane(s->iosurface, i), IOSurfaceGetHeightOfPlane(s->iosurface, i),
-                        IOSurfaceGetWidthOfPlane(s->iosurface, i), IOSurfaceGetBytesPerElementOfPlane(s->iosurface, i));
-            fclose(f);
-        }
-    }
+    dump_host_surface(s);
+    surfaces_copied++;
+    BOOL blitted = NO;
     if (by_plane) {
-        /* IOSurface can choose different offsets and row strides from those
-           requested. Copy each changed video plane through its actual host layout. */
+        BOOL locked = NO;
         for (uint32_t i = 0; i < s->plane_count && i < 4; i++) {
             if (!(changed & 1u << i)) continue;
             have[i] = hashes[i];
+            if ([self blitPlane:i of:s blit:blit commandBuffer:cb]) {
+                blitted = YES;
+                continue;
+            }
+            /* IOSurface can choose different offsets and row strides from those requested: copied through its
+               actual host layout. */
+            if (!locked) IOSurfaceLock(s->iosurface, 0, NULL), locked = YES;
             uint8_t *dst = IOSurfaceGetBaseAddressOfPlane(s->iosurface, i);
             size_t dst_row = IOSurfaceGetBytesPerRowOfPlane(s->iosurface, i);
             size_t rows = MIN((size_t)s->plane_h[i], IOSurfaceGetHeightOfPlane(s->iosurface, i));
@@ -166,12 +237,13 @@ static void sync_iosurface(HvObject *s) {
             for (size_t y = 0; y < rows; y++)
                 memcpy(dst + y * dst_row, from + src_off + y * src_row, bytes);
         }
+        if (locked) IOSurfaceUnlock(s->iosurface, 0, NULL);
     } else {
-        uint8_t *base = IOSurfaceGetBaseAddress(s->iosurface);
-        memcpy(base, from, MIN(s->alloc, IOSurfaceGetAllocSize(s->iosurface)));
+        IOSurfaceLock(s->iosurface, 0, NULL);
+        memcpy(IOSurfaceGetBaseAddress(s->iosurface), from, MIN(s->alloc, IOSurfaceGetAllocSize(s->iosurface)));
+        IOSurfaceUnlock(s->iosurface, 0, NULL);
     }
-    IOSurfaceUnlock(s->iosurface, 0, NULL);
-    const char *dump = getenv("HV_PVG_SURFACE_DUMP");
+    const char *dump = surface_dump_prefix();
     static int dumped;
     if (dump && s->plane_count && dumped < 6) {
         char path[1100];
@@ -179,6 +251,7 @@ static void sync_iosurface(HvObject *s) {
         FILE *f = fopen(path, "wb");
         if (f) fwrite(from, 1, s->alloc, f), fclose(f);
     }
+    return blitted;
 }
 
 /* A multi-plane surface's host IOSurface, shared by every mapping of the same guest memory (another process):
@@ -215,7 +288,7 @@ static void sync_iosurface(HvObject *s) {
         for (int i = 0; i < 96; i++) [m appendFormat:@" %08x", ((const uint32_t *)desc)[i]];
         [self complain:m];
     }
-    sync_iosurface(surface);
+    [self syncSurface:surface blit:NULL commandBuffer:nil];
 }
 
 /* A surface (IOSurface in the guest): a texture over its guest pages, so the
@@ -283,19 +356,19 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
     }
     surface->surface_w = (uint32_t)sw, surface->surface_h = (uint32_t)sh;
     uint64_t n = surface->length >> 14;
-    vm_address_t base = 0;
+    vm_address_t pages_at = 0;
     uint32_t page0 = n ? surface_page_entry(lite, list, n, 0) : 0;
-    if (!page0 || vm_allocate(mach_task_self(), &base, surface->length, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) {
+    if (!page0 || vm_allocate(mach_task_self(), &pages_at, surface->length, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) {
         [self complain:[NSString stringWithFormat:@"surface %llu has no pages", mapping]];
         return nil;
     }
-    surface->mapped = (uint8_t *)base;
+    surface->mapped = (uint8_t *)pages_at;
     for (uint64_t i = 0; i < n; i++) {
         uint32_t page = surface_page_entry(lite, list, n, i);
         if (!page) continue;
         uint8_t *src = hv_pvg_lite_phys(lite, (uint64_t)(page >> 2) << 14, 0x4000);
         if (!src) continue;
-        vm_address_t to = base + (i << 14);
+        vm_address_t to = pages_at + (i << 14);
         vm_prot_t cur, max;
         vm_remap(mach_task_self(), &to, 0x4000, 0, VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)src, FALSE, &cur, &max, VM_INHERIT_NONE);
     }

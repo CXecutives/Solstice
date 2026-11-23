@@ -142,6 +142,7 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     /* Each plane's sampled guest bytes when last copied: only the planes the guest changed are copied, so a CPU
        write to one plane (a decoder refilling luma) does not wipe what the GPU drew into another (chroma, alpha). */
     uint64_t plane_hash[4];
+    id<MTLTexture> plane_view[4]; /* each plane of the host IOSurface as it is, to copy the guest's bytes into */
     /* For a host IOSurface shared by several mappings (see planar): the same four hashes, kept once for all of
        them, since they describe what the one host surface holds. */
     NSMutableData *shared_hashes;
@@ -218,7 +219,8 @@ typedef struct HvWalk {
     NSMutableDictionary<NSString *, NSNumber *> *planar_uses; /* mappings using each: the entry goes with the last one */
     NSMutableDictionary<NSString *, NSMutableData *> *planar_hashes; /* and what its planes held when last copied */
     NSMutableSet<NSString *> *complaints;
-    uint64_t execs, draws, failed, heap_bytes, synced, remaps;
+    uint64_t execs, draws, failed, heap_bytes, synced, remaps, surfaces_copied;
+    id<MTLFence> surfaces_in; /* an exec's surface copies (syncSurface), done before its encoders go on */
     /* Work the GPU has not finished. Stamps are given back in the order they came: the
        GPU's completion handlers run in the order of commit. */
     _Atomic int inflight;
