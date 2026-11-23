@@ -119,7 +119,7 @@ _Static_assert(SLOT_BYTES == 48, "an exit slot: 48 bytes");
 
 static size_t percpu_tables_bytes(void) {
     return (size_t)HV_IJC_TABLES * HV_IJC_TABLE_BYTES + (sizeof(uint64_t) << HV_UCODE_BITS) + 65536 * sizeof(uint64_t[4]) +
-           (size_t)HV_STASHES * HV_STASH_CAP * (sizeof(HvTlbEntry) + sizeof(uint16_t));
+           (size_t)HV_STASHES * HV_STASH_CAP * (sizeof(HvTlbEntry) + sizeof(uint16_t)) + (size_t)HV_TLB_SIZE * 4 * sizeof(uint32_t);
 }
 
 size_t hv_machine_table_bytes(size_t jit_bytes, int ncpus) {
@@ -147,6 +147,7 @@ static int percpu_tables(HvPerCpu *p) {
     t += 65536 * sizeof(uint64_t[4]);
     for (int k = 0; k < HV_STASHES; k++, t += HV_STASH_CAP * sizeof(HvTlbEntry)) p->stash[k].ent = (HvTlbEntry *)(void *)t;
     for (int k = 0; k < HV_STASHES; k++, t += HV_STASH_CAP * sizeof(uint16_t)) p->stash[k].slot = (uint16_t *)(void *)t;
+    p->stash_pos = (uint32_t *)(void *)t; /* zeroed: epoch 0, which no switch uses */
     return 0;
 }
 

@@ -162,9 +162,12 @@ typedef struct HvStats {
 /* A process's user TLB entries, put aside when it is switched out (TTBR0 now
    names another address space) and put back when it comes back, as a TLB
    tagged by ASID keeps them. Any TLBI that could touch the address space
-   (here or from another CPU) bumps gen; a stash whose gen moved is dropped. */
-#define HV_STASHES 8
+   (here or from another CPU) bumps gen; a stash whose gen moved is dropped.
+   A stash stays valid while its entries are live again: the next switch away
+   adds only what was filled since (mmu.c, hv_tlb_switch_user). */
+#define HV_STASHES 32
 #define HV_STASH_CAP 1024
+#define HV_STASH_FILTER_BITS 12 /* a stash's page filter: 4096 bits, one per hash of a page number it holds */
 typedef struct HvTlbStash {
     uint64_t ttbr0;      /* the address space (0: empty); read by other CPUs */
     uint32_t gen;        /* bumped by TLBIs (atomic) */
@@ -173,6 +176,9 @@ typedef struct HvTlbStash {
     uint64_t used;       /* for replacing the least recently saved */
     uint16_t *slot;      /* slot << 2 | table, as user_fills */
     HvTlbEntry *ent;
+    /* Pages that may have entries here (set as they are saved, cleared with the stash): a TLBI by VA or small range
+       looks at the stashes whose bit is set only, here and from other CPUs. */
+    uint64_t filter[(1u << HV_STASH_FILTER_BITS) / 64];
 } HvTlbStash;
 
 typedef struct HvPerCpu {
@@ -237,6 +243,10 @@ typedef struct HvPerCpu {
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
+    uint32_t live_stash;         /* index + 1 of the stash whose entries are live in the TLB again (0: none) */
+    uint32_t live_from;          /* user_fills from here on are not in it (filled after it was put back) */
+    uint32_t pos_epoch;          /* stash_pos entries of another epoch mean nothing */
+    uint32_t *stash_pos;         /* by TLB code: pos_epoch << 10 | where its entry is in the stash being saved or put back */
     uint32_t cc_seen;            /* the code cache's epoch this CPU caught up with (hv_cc_service; read by others) */
     uint32_t cc_work;            /* HV_CC_NEED, HV_CC_JOB: code-cache work at the top of its loop (its own thread only) */
     /* What only this CPU's thread writes on its hot paths (or another thread while it is parked): on cache lines of

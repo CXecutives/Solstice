@@ -153,6 +153,7 @@ void hv_tlb_flush(HvCpu *cpu) {
     }
     cpu->nuser_fills = 0;
     cpu->nkernel_fills = 0;
+    if (cpu->pc_state) cpu->pc_state->live_stash = 0; /* user_fills start over: the next switch saves them all */
     hv_tlb_stash_drop(cpu, -1);
 }
 
@@ -306,7 +307,7 @@ void hv_ijc_reset(HvCpu *cpu, int kernel) {
 /* TTBR0 changed or an ASID was dropped: only user-half (TTBR0) translations go;
    the kernel's TTBR1 entries stay. */
 void hv_tlb_flush_user(HvCpu *cpu) {
-    if (cpu->pc_state) HV_ST(cpu).tlb_flushes++;
+    if (cpu->pc_state) HV_ST(cpu).tlb_flushes++, cpu->pc_state->live_stash = 0; /* see hv_tlb_flush */
     uint32_t n = cpu->nuser_fills;
     cpu->nuser_fills = 0;
     if (n <= HV_USER_FILLS) {
@@ -1105,15 +1106,26 @@ static void stash_drop(HvPerCpu *p, int asid) {
     }
 }
 
+/* A page's bit in a stash's filter: by the low 56 bits of its VA, as the drops compare. */
+static uint32_t stash_bit(uint64_t va) {
+    return (uint32_t)((((va & 0x00ffffffffffffffull) >> HV_TLB_PAGE_BITS) * 0x9e3779b97f4a7c15ull) >> (64 - HV_STASH_FILTER_BITS));
+}
+
+static int stash_may_hold(const HvTlbStash *s, uint32_t bit) {
+    return __atomic_load_n(&s->filter[bit >> 6], __ATOMIC_RELAXED) >> (bit & 63) & 1;
+}
+
 /* Forget the stashed entries for va's page in address space asid (-1: all). Other CPUs do this to
    the target's stashes too, under the same walk_seq check as stash_drop; they only ever write tags
-   (never an addend), so a restore racing it reads each entry whole or with a tag gone. */
+   (never an addend), so a restore racing it reads each entry whole or with a tag gone. Only the
+   stashes whose filter has the page's bit are looked through. */
 static void stash_drop_va(HvPerCpu *p, uint64_t va, int asid) {
     uint64_t pg = va & 0x00ffffffffffffffull & ~(uint64_t)PAGE_MASK; /* tagged addresses: by the low 56 bits */
+    uint32_t bit = stash_bit(va);
     for (int i = 0; i < HV_STASHES; i++) {
         HvTlbStash *s = &p->stash[i];
         uint64_t t = __atomic_load_n(&s->ttbr0, __ATOMIC_SEQ_CST);
-        if (!t || (asid >= 0 && (int)(t >> 48) != asid)) continue;
+        if (!t || (asid >= 0 && (int)(t >> 48) != asid) || !stash_may_hold(s, bit)) continue;
         uint32_t n = __atomic_load_n(&s->n, __ATOMIC_RELAXED);
         if (n > HV_STASH_CAP) n = HV_STASH_CAP;
         for (uint32_t k = 0; k < n; k++) {
@@ -1137,6 +1149,9 @@ static void stash_drop_range(HvPerCpu *p, uint64_t va, uint64_t npages, int asid
         HvTlbStash *s = &p->stash[i];
         uint64_t t = __atomic_load_n(&s->ttbr0, __ATOMIC_SEQ_CST);
         if (!t || (asid >= 0 && (int)(t >> 48) != asid)) continue;
+        int any = npages > 64; /* past that, scanning is as cheap as asking the filter */
+        for (uint64_t k = 0; !any && k < npages; k++) any = stash_may_hold(s, stash_bit(va + (k << HV_TLB_PAGE_BITS)));
+        if (!any) continue;
         uint32_t n = __atomic_load_n(&s->n, __ATOMIC_RELAXED);
         if (n > HV_STASH_CAP) n = HV_STASH_CAP;
         for (uint32_t k = 0; k < n; k++) {
@@ -1157,10 +1172,54 @@ void hv_tlb_stash_drop(HvCpu *cpu, int asid) {
     if (cpu->pc_state) stash_drop(cpu->pc_state, asid);
 }
 
+/* The page VA a valid entry is for. */
+static uint64_t entry_va(const HvTlbEntry *e) {
+    return e->read_tag != HV_TLB_INVALID ? e->read_tag + HV_TLB_ADJ : e->exec_tag != HV_TLB_INVALID ? hv_exec_key(e->exec_tag, e->addend) : e->write_tag + HV_TLB_ADJ;
+}
+
 static int user_entry(const HvTlbEntry *e) {
     if (e->read_tag == HV_TLB_INVALID && e->exec_tag == HV_TLB_INVALID && e->write_tag == HV_TLB_INVALID) return 0;
-    uint64_t tag = e->read_tag != HV_TLB_INVALID ? e->read_tag + HV_TLB_ADJ : e->exec_tag != HV_TLB_INVALID ? hv_exec_key(e->exec_tag, e->addend) : e->write_tag + HV_TLB_ADJ;
-    return !((tag >> 55) & 1);
+    return !((entry_va(e) >> 55) & 1);
+}
+
+/* stash_pos: for the one stash being saved or just put back, where each TLB code's entry is in it. A new epoch
+   forgets all of it at once. */
+_Static_assert(HV_STASH_CAP <= 1024, "stash_pos keeps a stash index in 10 bits");
+static void pos_epoch_next(HvPerCpu *p) {
+    if (++p->pos_epoch >= 1u << 22) {
+        memset(p->stash_pos, 0, (size_t)HV_TLB_SIZE * 4 * sizeof *p->stash_pos);
+        p->pos_epoch = 1;
+    }
+}
+
+/* Copy the user entry e at TLB code into stash s, which is being saved under the current epoch: over its earlier copy
+   there if it has one, else at the end if there is room (a stash may hold a part of what was live: each entry is a
+   translation in its own right). Other CPUs may read s meanwhile (stash_drop_va): the switch is inside walk_begin,
+   so such a drop counts as raced and is done again. 1 if copied. */
+static int stash_put(HvPerCpu *p, HvTlbStash *s, uint16_t code, const HvTlbEntry *e) {
+    uint32_t v = p->stash_pos[code], j;
+    if (v >> 10 == p->pos_epoch) {
+        j = v & 1023;
+    } else {
+        if (s->n >= HV_STASH_CAP) return 0;
+        j = s->n;
+        s->slot[j] = code;
+        p->stash_pos[code] = p->pos_epoch << 10 | j;
+    }
+    s->ent[j] = *e;
+    if (j == s->n) __atomic_store_n(&s->n, j + 1, __ATOMIC_RELAXED);
+    uint32_t bit = stash_bit(entry_va(e));
+    __atomic_store_n(&s->filter[bit >> 6], s->filter[bit >> 6] | 1ull << (bit & 63), __ATOMIC_RELAXED);
+    return 1;
+}
+
+/* Start s over for address space ttbr0, empty. */
+static void stash_start(HvPerCpu *p, HvTlbStash *s, uint64_t ttbr0) {
+    __atomic_store_n(&s->n, 0, __ATOMIC_RELAXED);
+    for (uint32_t w = 0; w < sizeof s->filter / sizeof s->filter[0]; w++) __atomic_store_n(&s->filter[w], 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->ttbr0, ttbr0, __ATOMIC_SEQ_CST);
+    s->saved_gen = __atomic_load_n(&s->gen, __ATOMIC_SEQ_CST);
+    pos_epoch_next(p);
 }
 
 static HvRam *ram_of_host(HvMachine *m, const uint8_t *host) {
@@ -1238,7 +1297,9 @@ int hv_tlb_check_all(HvCpu *cpu) {
 
 /* TTBR0 went from old to now (a process switch): keep old's user entries
    aside, drop them from the TLB, and bring back now's if they were kept and no
-   TLBI touched them since. */
+   TLBI touched them since. A stash brought back stays valid: TLBIs reach it as
+   they reach the live TLB (stash_drop, stash_drop_va: every stash, live or
+   not), so the next switch away copies only what was filled since. */
 void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
     HvPerCpu *p = cpu->pc_state;
     HvMachine *m = cpu->m;
@@ -1254,49 +1315,55 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
     uint32_t n = cpu->nuser_fills;
     cpu->nuser_fills = 0;
     HvTlbStash *s = NULL;
-    if (old && n <= HV_STASH_CAP) {
-        for (int i = 0; i < HV_STASHES && !s; i++)
-            if (p->stash[i].ttbr0 == old) s = &p->stash[i];
-        for (int i = 0; i < HV_STASHES && !s; i++)
-            if (!p->stash[i].ttbr0) s = &p->stash[i];
-        if (!s) {
-            s = &p->stash[0];
-            for (int i = 1; i < HV_STASHES; i++)
-                if (p->stash[i].used < s->used) s = &p->stash[i];
-            p->own.stats.stash_evict++;
+    if (old && n > HV_USER_FILLS) { /* what is live is not known: old's stash would come back without some of it */
+        for (int i = 0; i < HV_STASHES; i++)
+            if (p->stash[i].ttbr0 == old) __atomic_store_n(&p->stash[i].ttbr0, 0, __ATOMIC_SEQ_CST);
+    } else if (old) {
+        uint32_t from = 0;
+        HvTlbStash *live = p->live_stash ? &p->stash[p->live_stash - 1] : NULL;
+        if (live && live->ttbr0 == old && __atomic_load_n(&live->gen, __ATOMIC_SEQ_CST) == live->saved_gen && p->live_from <= n) {
+            s = live, from = p->live_from; /* it has the rest: what was put back, less what TLBIs took from both */
+        } else {
+            for (int i = 0; i < HV_STASHES && !s; i++)
+                if (p->stash[i].ttbr0 == old) s = &p->stash[i];
+            for (int i = 0; i < HV_STASHES && !s; i++)
+                if (!p->stash[i].ttbr0) s = &p->stash[i];
+            if (!s) { /* the least recently used, but not the one about to be put back */
+                for (int i = 0; i < HV_STASHES; i++)
+                    if (p->stash[i].ttbr0 != now && (!s || p->stash[i].used < s->used)) s = &p->stash[i];
+                p->own.stats.stash_evict++;
+            }
+            stash_start(p, s, old);
         }
-        __atomic_store_n(&s->ttbr0, old, __ATOMIC_SEQ_CST);
-        s->saved_gen = __atomic_load_n(&s->gen, __ATOMIC_SEQ_CST);
         s->used = ++p->stash_clock;
         if (m->stats_interval) p->own.stats.stash_saves++;
+        uint32_t k = 0;
+        for (uint32_t i = from; i < n; i++) {
+            uint16_t code = cpu->user_fills[i];
+            const HvTlbEntry *e = &cpu->tlb[0] + code;
+            if (user_entry(e)) k += (uint32_t)stash_put(p, s, code, e); /* the slot may hold a kernel page by now */
+        }
+        p->own.stats.stash_out += k;
     }
-    uint32_t k = 0;
+    p->live_stash = 0;
     if (n <= HV_USER_FILLS) {
         for (uint32_t i = 0; i < n; i++) {
-            uint16_t code = cpu->user_fills[i];
-            HvTlbEntry *e = &cpu->tlb[0] + code;
-            if (!user_entry(e)) continue; /* the slot may hold a kernel page by now */
-            if (s) {
-                s->slot[k] = code;
-                s->ent[k++] = *e;
-            }
-            memset(e, 0x80, sizeof *e);
+            HvTlbEntry *e = &cpu->tlb[0] + cpu->user_fills[i];
+            if (user_entry(e)) memset(e, 0x80, sizeof *e);
         }
     } else {
         for (uint32_t i = 0; i < HV_TLB_SIZE; i++)
             for (int t = 0; t < 3; t++)
                 if (user_entry(hv_tlb_ent(cpu, i, t))) memset(hv_tlb_ent(cpu, i, t), 0x80, sizeof(HvTlbEntry));
     }
-    if (s) s->n = k, p->own.stats.stash_out += k;
 
     int found = 0;
     for (int i = 0; i < HV_STASHES; i++) {
         HvTlbStash *r = &p->stash[i];
         if (r->ttbr0 != now) continue;
         found = 1;
-        int fresh = __atomic_load_n(&r->gen, __ATOMIC_SEQ_CST) == r->saved_gen;
-        __atomic_store_n(&r->ttbr0, 0, __ATOMIC_SEQ_CST); /* used up either way: the live TLB has them now */
-        if (!fresh) {
+        if (__atomic_load_n(&r->gen, __ATOMIC_SEQ_CST) != r->saved_gen) {
+            __atomic_store_n(&r->ttbr0, 0, __ATOMIC_SEQ_CST);
             if (m->stats_interval) p->own.stats.stash_stale++;
             break;
         }
@@ -1304,8 +1371,10 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
            switch instead of one per entry; every entry is in place before the fence and checked after it). */
         uint16_t pend[HV_STASH_CAP];
         uint32_t npend = 0;
+        pos_epoch_next(p);
         for (uint32_t j = 0; j < r->n; j++) {
             const HvTlbEntry *from = &r->ent[j];
+            p->stash_pos[r->slot[j]] = p->pos_epoch << 10 | j; /* a dropped one's place too: a new fill there reuses it */
             if (from->read_tag == HV_TLB_INVALID && from->write_tag == HV_TLB_INVALID && from->exec_tag == HV_TLB_INVALID)
                 continue; /* its page had a TLBI while it was put aside (stash_drop_va) */
             HvTlbEntry *e = &cpu->tlb[0] + r->slot[j];
@@ -1326,8 +1395,11 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
             if (ram && __atomic_load_n(&ram->code_pages[(uint64_t)(host - ram->host) >> HV_TLB_PAGE_BITS], __ATOMIC_RELAXED))
                 (&cpu->tlb[0] + r->slot[pend[q]])->write_tag = HV_TLB_INVALID;
         }
+        p->live_stash = (uint32_t)i + 1;
+        p->live_from = cpu->nuser_fills;
+        r->used = ++p->stash_clock;
         if (m->stats_interval) p->own.stats.stash_hits++;
-        if (m->stats_interval) p->own.stats.stash_entries += r->n;
+        if (m->stats_interval) p->own.stats.stash_entries += cpu->nuser_fills;
         break;
     }
     if (!found) p->own.stats.stash_miss++;

@@ -749,6 +749,7 @@ int main(void) {
             HvTlbStash *st = &p2->stash[0];
             st->ttbr0 = 5ull << 48 | 0x4000;
             st->n = 2;
+            memset(st->filter, 0xff, sizeof st->filter); /* any page may be in it */
             st->ent[0] = (HvTlbEntry){.read_tag = base + (40ull << 14) - HV_TLB_ADJ, .write_tag = HV_TLB_INVALID, .exec_tag = HV_TLB_INVALID};
             st->ent[1] = (HvTlbEntry){.read_tag = base + (200ull << 14) - HV_TLB_ADJ, .write_tag = HV_TLB_INVALID, .exec_tag = HV_TLB_INVALID};
             p2->nreq = 0, p2->req_flags = 0;
