@@ -16,7 +16,8 @@ final class SessionController: ObservableObject {
     @Published private(set) var framesIn: UInt64 = 0
     @Published private(set) var log: [String] = []
     @Published private(set) var started = Date()
-    @Published private(set) var bootRAM: UInt64 = 0 /* what the Mac was started with, which a save is for */
+    @Published private(set) var bootRAM: UInt64 = 0 /* what the Mac was started (or resumed) with */
+    @Published private(set) var bootCPUs = 0
     @Published private(set) var helperRunning = false
     /// Paused because storage ran short (StorageGuard), and whether there is room to run on again.
     @Published private(set) var storagePaused = false
@@ -26,6 +27,8 @@ final class SessionController: ObservableObject {
     @Published private(set) var stuck: LifecycleWatchdog.Stuck?
     /// Shut Down pressed the Mac's power button: macOS is shutting down (or asking first).
     @Published private(set) var shutdownAsked: Date?
+    /// Being started off the main thread (sizing its memory, booting or resuming): there is no power to press yet.
+    @Published private(set) var starting = false
 
     /// What the run loop asks of the view, and tells it.
     struct Hooks {
@@ -74,10 +77,33 @@ final class SessionController: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
         HardwareMouse.shared.start()
         let mac = self.mac
-        let ram = await offMain("size memory") { GuestMemory.prepare(mac, cpus: cpus) }
-        HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB")
-        guard ram >= 1024 else {
-            error = "There is not room for this Mac's memory: it needs a few GB of free storage."
+        starting = true
+        // A saved Mac goes back into the RAM and CPUs it was saved with (its file's header says which); a fresh start
+        // takes the settings within what fits now. Both read storage and the file: off the main thread.
+        let (plan, resumeAt) = await offMain("size memory") { () -> (StartShape.Plan, Date?) in
+            GuestMemory.useFile(for: mac)
+            let saved = InstantResume.enabled ? InstantResume.saved(for: mac) : nil
+            let plan = StartShape.plan(saved: saved?.shape, askedRAM: UInt64(mac.ramMB), askedCPUs: cpus,
+                                       fits: { GuestMemory.fits(mac, cpus: $0) })
+            return (plan, saved?.at)
+        }
+        HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB, start: \(plan)")
+        let shape: StartShape.Shape
+        switch plan {
+        case .resume(let s), .boot(let s):
+            shape = s
+        case .saveDoesNotFit(let saved, let fits):
+            // Kept: only the owner gives up a saved Mac (Restart Now in its settings).
+            starting = false
+            if !Task.isCancelled { error = Self.saveDoesNotFit(saved: saved, fitsMB: fits) }
+            return
+        case .noRoom:
+            starting = false
+            if !Task.isCancelled { error = "There is not room for this Mac's memory: it needs a few GB of free storage." }
+            return
+        }
+        guard !Task.isCancelled else {
+            starting = false
             return
         }
         JITBootstrap.releaseLingeringDebugger()
@@ -96,36 +122,57 @@ final class SessionController: ObservableObject {
         } else {
             henge_vm_set_identity(nil, nil, nil)
         }
-        let resumeAt = InstantResume.enabled ? InstantResume.saved(for: mac, ramMB: ram, cpus: cpus) : nil
-        let file = InstantResume.file(for: mac).path, ident = InstantResume.ident(for: mac, ramMB: ram, cpus: cpus)
+        let file = InstantResume.file(for: mac).path, ident = InstantResume.ident(for: mac)
         // A resume decompresses gigabytes and a boot opens the disk: never on the main thread.
-        let (rc, reason) = await offMain("start") { () -> (Int32, String) in
+        let (rc, reason, booted) = await offMain("start") { () -> (Int32, String, StartShape.Shape) in
             var buffer = [CChar](repeating: 0, count: 256)
             var rc: Int32 = -1
-            if let at = resumeAt {
-                HengeLog.log("resume", "picking up the Mac saved \(Int(Date().timeIntervalSince(at))) s ago")
+            var shape = shape
+            if case .resume = plan, let at = resumeAt {
+                HengeLog.log("resume", "picking up the Mac saved \(Int(Date().timeIntervalSince(at))) s ago, \(shape.ramMB) MB and \(shape.cpus) CPUs")
                 let t0 = Date()
-                rc = henge_vm_resume(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus),
-                                     file, ident, &buffer, buffer.count)
-                if rc == 0 {
+                let resumed = henge_vm_resume(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, shape.ramMB, Int32(shape.cpus),
+                                              file, ident, &buffer, buffer.count)
+                if resumed == HENGE_VM_RESUMED {
                     HengeLog.log("resume", String(format: "resumed in %.1f s", Date().timeIntervalSince(t0)))
-                } else {
+                    rc = 0
+                } else if resumed == HENGE_VM_RESUME_REFUSED {
                     HengeLog.log("resume", "could not resume (\(String(cString: buffer))); starting it from cold")
                     buffer = [CChar](repeating: 0, count: 256)
+                } else {
+                    // Of the moment (memory, no JIT): the save is the only copy of the Mac's memory, so it stays for the next try.
+                    HengeLog.log("resume", "could not resume (\(String(cString: buffer))); the save is kept")
+                    return (-1, String(cString: buffer), shape)
                 }
+                // Refused: from cold, with the settings within what fits.
+                guard case .boot(let fresh) = StartShape.plan(saved: nil, askedRAM: UInt64(mac.ramMB), askedCPUs: cpus,
+                                                              fits: { GuestMemory.fits(mac, cpus: $0) }) else {
+                    return (-1, "There is not room for this Mac's memory: it needs a few GB of free storage.", shape)
+                }
+                shape = fresh
             }
             if rc != 0 {
-                // From cold the disk moves on: a save left over (another build or settings, or turned off) is out of date.
+                // From cold the disk moves on: a save left over (another build, or turned off) is out of date.
                 InstantResume.discard(for: mac)
-                rc = henge_vm_boot(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus), &buffer, buffer.count)
+                rc = henge_vm_boot(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, shape.ramMB, Int32(shape.cpus),
+                                   &buffer, buffer.count)
             }
-            return (rc, String(cString: buffer))
+            return (rc, String(cString: buffer), shape)
+        }
+        starting = false
+        if Task.isCancelled { // the view went away while the Mac started: none runs on with nothing showing it
+            if rc == 0 {
+                HengeLog.log("session", "closed while starting: the Mac is turned off")
+                await offMain("stop") { henge_vm_stop() }
+            }
+            return
         }
         if rc != 0 {
             error = reason
             return
         }
-        bootRAM = ram
+        bootRAM = booted.ramMB
+        bootCPUs = booted.cpus
         started = Date()
         StorageGuard.holding = false
         storagePaused = false
@@ -133,8 +180,8 @@ final class SessionController: ObservableObject {
         var used = mac
         used.lastUsed = started
         Machines.shared.update(used)
-        var lastBlocks = henge_vm_blocks()
-        var lastTime = Date()
+        _ = henge_vm_blocks_per_second() // marks the start: each perf line then has the rate over its 10 s
+        var rate: Double = 0
         var lastGPUFrames = henge_vm_gpu_frames()
         var tick = 0
         var inFront: TimeInterval = 0, lastLoop = Date(), counted = false
@@ -155,10 +202,6 @@ final class SessionController: ObservableObject {
                 continue
             }
             if !userCode && henge_vm_guest_el0() != 0 { userCode = true }
-            let now = Date(), blocks = henge_vm_blocks()
-            let rate = Double(blocks &- lastBlocks) / max(now.timeIntervalSince(lastTime), 0.001)
-            lastBlocks = blocks
-            lastTime = now
             // What only Details shows is copied into the view's state only while it shows: each copy redraws the
             // session, once a second, for nothing otherwise (200 log lines among it).
             if hooks.detailsShown() {
@@ -188,6 +231,7 @@ final class SessionController: ObservableObject {
             _ = henge_vm_drop_spent_save() // the saved Mac goes once this one writes its disk
             tick += 1
             if tick % 10 == 0 {
+                rate = henge_vm_blocks_per_second()
                 let gpuFrames = henge_vm_gpu_frames()
                 HengeLog.log("perf", "blocks/s \(String(format: "%.0f", rate)), GPU frames/10s \(gpuFrames &- lastGPUFrames), "
                              + "network tx \(henge_vm_net_frames(1)), rx \(henge_vm_net_frames(0)), dns \(henge_vm_dns(0)) answered \(henge_vm_dns(2)) unanswered, "
@@ -267,29 +311,32 @@ final class SessionController: ObservableObject {
 
     /// Shuts the Mac down as a Mac does: its power button is pressed, macOS closes its apps and turns off (or asks
     /// first, on its own screen). The view closes once it is off. Not running (paused, or no power button): off at once.
-    /// true if macOS was asked, false if it was turned off.
-    @discardableResult
-    func shutDown() -> Bool {
+    /// Turned off at once, `off` runs when it is.
+    func shutDown(off: @escaping @MainActor () -> Void) {
         guard state == HENGE_VM_RUNNING, henge_vm_power_button() == 0 else {
-            forceOff()
-            return false
+            forceOff(then: off)
+            return
         }
         shutdownAsked = Date()
         HengeLog.log("session", "Shut Down: the Mac's power button is pressed")
-        return true
     }
 
-    /// Turns the Mac off at once (the view closes after).
-    func forceOff() {
+    /// Turns the Mac off at once, then runs `done` (the view closes). The stop takes its turn on InstantResume's
+    /// queue: a save running there holds the engine for seconds, and the main thread must not wait for it.
+    func forceOff(then done: @escaping @MainActor () -> Void) {
         SafeMode.macLive(false)
         StorageGuard.holding = false
         shutdownAsked = nil
         stuck = nil
-        if state == HENGE_VM_RUNNING || state == HENGE_VM_PAUSED || henge_vm_state() == HENGE_VM_PAUSED {
-            MacPreview.saveNow(for: mac)
-            henge_vm_stop()
+        let mac = self.mac, up = state == HENGE_VM_RUNNING || state == HENGE_VM_PAUSED
+        InstantResume.run("force off") {
+            if up || henge_vm_state() == HENGE_VM_PAUSED {
+                MacPreview.saveNow(for: mac)
+                henge_vm_stop()
+            }
+            InstantResume.discard(for: mac) /* turned off: nothing to pick up */
+            DispatchQueue.main.async { MainActor.assumeIsolated { done() } }
         }
-        InstantResume.discard(for: mac) /* turned off: nothing to pick up */
     }
 
     /// The owner chose to wait (or to keep the Mac running after macOS did not shut down).
@@ -297,6 +344,14 @@ final class SessionController: ObservableObject {
         if stuck == .shutdownIgnored { shutdownAsked = nil } // it runs on: no longer waiting for it to turn off
         stuck = nil
         quietUntil = Date().addingTimeInterval(LifecycleWatchdog.stopLimit)
+    }
+
+    /// The saved Mac needs more memory than fits right now: it is kept, and what the owner can do.
+    static func saveDoesNotFit(saved: StartShape.Shape, fitsMB: UInt64) -> String {
+        "This Mac was saved with \(ByteText.string(saved.ramMB << 20)) of memory, and only \(ByteText.string(fitsMB << 20)) fits "
+            + "on this \(Device.name) right now: storage or memory is short. The saved Mac is kept. Free some storage or close "
+            + "other apps, then open it again. To start it afresh instead (what was open on it is lost), lower its Memory "
+            + "in its settings and tap Restart Now."
     }
 }
 

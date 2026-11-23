@@ -96,7 +96,7 @@ static int make_unit(void) {
     if (AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f) != noErr ||
         AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) != noErr ||
         AudioUnitInitialize(unit) != noErr) {
-        fprintf(stderr, "hengevm: sound: the output device refused %u ch, format %u, %u Hz\n", want_channels, want_format, want_rate);
+        fprintf(stderr, "solstice: sound: the output device refused %u ch, format %u, %u Hz\n", want_channels, want_format, want_rate);
         AudioComponentInstanceDispose(unit);
         unit = NULL;
         return -1;
@@ -128,7 +128,7 @@ static void apply(void) {
         set_off(1);
         if (retries++ < RETRIES)
             dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)RETRY_NS), queue, (void *)(uintptr_t)generation, retry);
-        else fprintf(stderr, "hengevm: sound: the output does not start; the stream plays on silently\n");
+        else fprintf(stderr, "solstice: sound: the output does not start; the stream plays on silently\n");
         return;
     }
     retries = 0;

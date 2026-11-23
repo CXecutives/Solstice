@@ -14,8 +14,14 @@
    The disk is not in the file: it has to be exactly as it was when the file was written, so a file must be resumed at
    most once, and never after the Mac has run on without it. */
 int hv_snapshot_save(const char *path, const char *ident, char *err, size_t errlen);
+/* hv_snapshot_restore: 0 restored; -2 the file can never be resumed (none there, damaged, another ident or build, another
+   disk); -1 it failed for a reason of the moment (memory, reading) or the machine has another shape than the file
+   (hv_snapshot_shape), and the file may still be good. */
 int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t errlen);
 /* 0 if path holds a complete snapshot made with ident by this build; its size in bytes and when it was made. */
 int hv_snapshot_check(const char *path, const char *ident, uint64_t *bytes, int64_t *saved_at);
+/* The shape a snapshot made with ident needs (its RAM in bytes, its CPUs): the one place that decides, restore compares
+   the machine with it. 0, or nonzero as hv_snapshot_check. */
+int hv_snapshot_shape(const char *path, const char *ident, uint64_t *ram_bytes, uint32_t *ncpus);
 
 #endif

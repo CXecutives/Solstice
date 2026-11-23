@@ -139,41 +139,61 @@ enum Keys {
     /// F1...F12.
     static let functionKeys: [UInt16] = [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 87, 88]
 
+    /// Everything the on-screen keys send goes through here, in order: a paste waiting for the helper holds back
+    /// what is typed after it.
+    static let output = KeyQueue { henge_vm_key($0, $1 ? 1 : 0) }
+
     static func press(_ code: UInt16, shifted: Bool = false) {
         press(KeyStroke(code: code, shift: shifted))
     }
 
     /// One key with the modifiers it needs; a modifier the sticky row already holds stays held.
-    static func press(_ stroke: KeyStroke) {
+    static func press(_ stroke: KeyStroke) { output.send(keys(for: stroke)) }
+
+    private static func keys(for stroke: KeyStroke) -> [KeyQueue.Key] {
         let held = StickyKeys.shared.down
         let modifiers = [(stroke.option, option), (stroke.shift, shift)].filter { $0.0 && !held.contains($0.1) }.map { $0.1 }
-        for m in modifiers { henge_vm_key(m, 1) }
-        henge_vm_key(stroke.code, 1)
-        henge_vm_key(stroke.code, 0)
-        for m in modifiers.reversed() { henge_vm_key(m, 0) }
+        var out: [KeyQueue.Key] = modifiers.map { (code: $0, down: true) }
+        out += [(code: stroke.code, down: true), (code: stroke.code, down: false)]
+        out += modifiers.reversed().map { (code: $0, down: false) }
+        return out
+    }
+
+    private static func keys(for c: Character, layout: KeyLayout) -> [KeyQueue.Key]? {
+        layout.strokes(for: c).map { $0.flatMap { keys(for: $0) } }
     }
 
     /// A character with a modifier held, by the Mac's layout (⌘Z is where Z is on it).
     static func chord(_ modifier: UInt16, _ c: Character) {
-        let held = StickyKeys.shared.down.contains(modifier)
-        if !held { henge_vm_key(modifier, 1) }
-        type(c)
-        if !held { henge_vm_key(modifier, 0) }
+        let own = !StickyKeys.shared.down.contains(modifier)
+        var out: [KeyQueue.Key] = own ? [(code: modifier, down: true)] : []
+        out += keys(for: c, layout: .current) ?? []
+        if own { out.append((code: modifier, down: false)) }
+        output.send(out)
     }
 
-    /// One character at a time, for what the Mac has to keep up with.
+    /// One character at a time, for what the Mac has to keep up with; keys sent meanwhile come after it. Returns
+    /// once it is typed.
     @MainActor static func typeSlowly(_ text: String) async {
+        await withCheckedContinuation { done in queueSlowTyping(text) { done.resume() } }
+    }
+
+    /// typeSlowly without waiting for it.
+    static func queueSlowTyping(_ text: String, then done: @escaping @MainActor () -> Void = {}) {
         let layout = KeyLayout.current
-        for c in text {
-            type(c, layout: layout)
-            try? await Task.sleep(nanoseconds: 25_000_000)
+        output.wait { send in
+            for c in text {
+                if let keys = keys(for: c, layout: layout) { send(keys) }
+                try? await Task.sleep(nanoseconds: 25_000_000)
+            }
+            done()
         }
     }
 
     /// Types c with the keys the Mac's layout has for it; false if it has none.
     @discardableResult static func type(_ c: Character, layout: KeyLayout = .current) -> Bool {
-        guard let strokes = layout.strokes(for: c) else { return false }
-        for stroke in strokes { press(stroke) }
+        guard let keys = keys(for: c, layout: layout) else { return false }
+        output.send(keys)
         return true
     }
 
@@ -208,7 +228,7 @@ final class StickyKeys: ObservableObject {
         } else if down.contains(code) {
             if quick { latched.insert(code) } else { release(code) }
         } else {
-            henge_vm_key(code, 1)
+            Keys.output.send([(code: code, down: true)])
             down.insert(code)
         }
     }
@@ -221,13 +241,13 @@ final class StickyKeys: ObservableObject {
     /// Everything up: the session is leaving, or something else takes the keyboard.
     func releaseAll() {
         guard !down.isEmpty else { return }
-        for code in down { henge_vm_key(code, 0) }
+        Keys.output.send(down.map { (code: $0, down: false) })
         down.removeAll()
         latched.removeAll()
     }
 
     private func release(_ code: UInt16) {
-        henge_vm_key(code, 0)
+        Keys.output.send([(code: code, down: false)])
         down.remove(code)
         latched.remove(code)
     }
@@ -306,36 +326,55 @@ struct ModifierRow: View {
     }
 }
 
-/// A key that goes down when touched and up when let go, so holding it repeats as on a Mac.
+/// A key that goes down when touched and up when let go, so holding it repeats as on a Mac. It is a button, so the
+/// row it sits in still scrolls: the system's own press state follows the finger, and goes off when the scroll view
+/// takes the touch (where a drag gesture never ends). It also comes up when the row goes away or Solstice stops being
+/// active.
 private struct HeldKey: View {
     let label: String
     let code: UInt16
     var name: String?
-    @State private var down = false
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Desk.text)
-            .padding(.horizontal, 8)
-            .frame(minWidth: 40, maxHeight: .infinity)
-            .background(down ? Desk.accent : Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard !down else { return }
-                        down = true
-                        henge_vm_key(code, 1)
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    }
-                    .onEnded { _ in
-                        down = false
-                        henge_vm_key(code, 0)
-                        StickyKeys.shared.used()
-                    }
-            )
-            .accessibilityLabel(name ?? label)
+        Button {} label: {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Desk.text)
+                .padding(.horizontal, 8)
+                .frame(minWidth: 40, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(Held(code: code))
+        .accessibilityLabel(name ?? label)
+    }
+
+    private struct Held: ButtonStyle {
+        let code: UInt16
+        func makeBody(configuration: Configuration) -> some View {
+            Key(code: code, pressed: configuration.isPressed, label: configuration.label)
+        }
+    }
+
+    private struct Key: View {
+        let code: UInt16
+        let pressed: Bool
+        let label: ButtonStyleConfiguration.Label
+        @State private var down = false
+
+        var body: some View {
+            label
+                .background(down ? Desk.accent : Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .onChange(of: pressed) { hold($0) }
+                .onDisappear { hold(false) }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in hold(false) }
+        }
+
+        private func hold(_ on: Bool) {
+            guard on != down else { return }
+            down = on
+            Keys.output.send([(code: code, down: on)])
+            if on { UIImpactFeedbackGenerator(style: .light).impactOccurred() } else { StickyKeys.shared.used() }
+        }
     }
 }
 
@@ -355,15 +394,14 @@ private struct ShortcutKey: View {
         Button {
             let held = StickyKeys.shared.down
             let own = modifiers.filter { !held.contains($0) }
-            for m in own { henge_vm_key(m, 1) }
+            Keys.output.send(own.map { (code: $0, down: true) })
             switch key {
             case .code(let code):
-                henge_vm_key(code, 1)
-                henge_vm_key(code, 0)
+                Keys.output.send([(code: code, down: true), (code: code, down: false)])
             case .character(let c):
                 Keys.type(c)
             }
-            for m in own.reversed() { henge_vm_key(m, 0) }
+            Keys.output.send(own.reversed().map { (code: $0, down: false) })
             StickyKeys.shared.used()
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } label: {

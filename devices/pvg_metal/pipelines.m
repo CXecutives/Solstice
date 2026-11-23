@@ -15,7 +15,7 @@
 }
 
 - (id)makeFunction:(uint64_t)at task:(uint32_t)task {
-    if (getenv("HV_PVG_FAIL_LIBS")) { /* testing: every library refused, as an OS that cannot load them does */
+    if (hv_knob.pvg_fail_libs) { /* testing: every library refused, as an OS that cannot load them does */
         [self complain:@"library: refused (HV_PVG_FAIL_LIBS)"];
         return nil;
     }
@@ -34,12 +34,8 @@
        from then on. Stage 3 (the version metadata too) only when asked for: HV_PVG_RELABEL=3. HV_PVG_NO_RELABEL:
        never. */
     static int start_stage = -1; /* 0: as sent; 1, 2, 3: relabelled */
-    static int no_relabel = -1;
-    if (no_relabel < 0) no_relabel = getenv("HV_PVG_NO_RELABEL") != NULL;
-    if (start_stage < 0) { /* HV_PVG_RELABEL=N (testing): every library relabelled at stage N from the start */
-        const char *f = getenv("HV_PVG_RELABEL");
-        start_stage = f && atoi(f) >= 1 && atoi(f) <= 3 ? atoi(f) : 0;
-    }
+    int no_relabel = hv_knob.pvg_no_relabel;
+    if (start_stage < 0) start_stage = hv_knob.pvg_relabel; /* HV_PVG_RELABEL=N (testing): every library relabelled at stage N from the start */
     NSError *err = nil, *first_err = nil;
     id<MTLLibrary> library = nil;
     int last_stage = no_relabel ? 0 : start_stage >= 3 ? 3 : 2, loaded_at = -1;
@@ -56,7 +52,7 @@
         library = [device newLibraryWithData:data error:&err];
         if (library) loaded_at = stage;
         if (!library && !first_err) first_err = err;
-        if (library && (stage != start_stage || (stage && first_err == nil && !getenv("HV_PVG_RELABEL_QUIET")))) {
+        if (library && (stage != start_stage || (stage && first_err == nil && !hv_knob.pvg_relabel_quiet))) {
             [self complain:[NSString stringWithFormat:@"library: loaded relabelled for iOS 17 (stage %d; as sent: %@)", stage,
                                                       first_err.localizedDescription ?: @"not tried"]];
             start_stage = stage;
@@ -72,8 +68,9 @@
            HV_SHADER_DUMP=0, the first 48 that had to be relabelled (Documents/shaders, as sent): what an OS that
            refuses them was sent, for relabelling to be checked against on a Mac. */
         static int relabelled_kept = 0;
-        const char *tf = getenv("HV_PVG_TRACE_FILE"), *sd = getenv("HV_SHADER_DUMP");
-        int keep = sd ? atoi(sd) != 0 : loaded_at > 0 && relabelled_kept < 48;
+        const char *tf = hv_knob.pvg_trace_file;
+        int sd = hv_knob.shader_dump >= 0;
+        int keep = sd ? hv_knob.shader_dump != 0 : loaded_at > 0 && relabelled_kept < 48;
         if (keep && !sd) relabelled_kept++;
         if (tf && keep && (sd || hv_pvg_trace_on())) { /* only while tracing (or asked): not on every launch */
             NSString *dir = [[[NSString stringWithUTF8String:tf] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"shaders"];
@@ -127,8 +124,7 @@
    merged: re-serializing a loaded archive loses its content, and which file a pipeline came from is not known.
    HV_PVG_ARCHIVE=0: none (for A/B); HV_PVG_ARCHIVE=reset: start again. HV_PVG_ARCHIVE_MB: the cap (default 768). */
 static unsigned long long archive_cap(void) {
-    const char *mb = getenv("HV_PVG_ARCHIVE_MB");
-    return (mb && atoi(mb) > 0 ? (unsigned long long)atoi(mb) : 768ull) << 20;
+    return (unsigned long long)hv_knob.pvg_archive_mb << 20;
 }
 
 enum { ARCHIVE_FILES = 256, ARCHIVE_ROOM = 32 }; /* saved files at most; left free for a session at its start */
@@ -150,22 +146,27 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
 - (id<MTLBinaryArchive>)emptyArchive {
     NSError *err = nil;
     id<MTLBinaryArchive> a = [device newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
-    if (!a) fprintf(stderr, "hengevm: pvg-metal: saved pipelines unavailable: %s\n", err.localizedDescription.UTF8String ?: "?");
+    if (!a) fprintf(stderr, "solstice: pvg-metal: saved pipelines unavailable: %s\n", err.localizedDescription.UTF8String ?: "?");
     return a;
 }
 
 - (void)openArchive {
-    const char *opt = getenv("HV_PVG_ARCHIVE");
+    const char *opt = hv_knob.pvg_archive;
     if (opt && !strcmp(opt, "0")) {
-        fprintf(stderr, "hengevm: pvg-metal: saved pipelines off (HV_PVG_ARCHIVE=0)\n");
+        fprintf(stderr, "solstice: pvg-metal: saved pipelines off (HV_PVG_ARCHIVE=0)\n");
         return;
     }
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSURL *dir = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
+    NSURL *dir = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
         URLByAppendingPathComponent:@"Henge/Pipelines" isDirectory:YES];
+    [self openArchiveIn:dir reset:opt && !strcmp(opt, "reset")];
+}
+
+/* The saved pipelines in dir: earlier boots' files loaded (others removed), an empty archive to fill. */
+- (void)openArchiveIn:(NSURL *)dir reset:(BOOL)reset {
+    NSFileManager *fm = NSFileManager.defaultManager;
     NSError *err = nil;
     if (!dir || ![fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:&err]) {
-        fprintf(stderr, "hengevm: pvg-metal: saved pipelines: no folder: %s\n", err.localizedDescription.UTF8String ?: "?");
+        fprintf(stderr, "solstice: pvg-metal: saved pipelines: no folder: %s\n", err.localizedDescription.UTF8String ?: "?");
         return;
     }
     [dir setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil]; /* rebuilt by any boot: not worth a backup */
@@ -187,7 +188,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         NSString *name = u.lastPathComponent;
         int n = 0;
         BOOL ours = [name hasPrefix:archive_prefix] && [name hasSuffix:@".bin"] &&
-                    sscanf(name.UTF8String + archive_prefix.length, "%d.bin", &n) == 1 && !(opt && !strcmp(opt, "reset"));
+                    sscanf(name.UTF8String + archive_prefix.length, "%d.bin", &n) == 1 && !reset;
         if (!ours) { /* another build, an unfinished save, or a reset */
             [fm removeItemAtURL:u error:nil];
             continue;
@@ -210,7 +211,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         err = nil;
         id<MTLBinaryArchive> a = [device newBinaryArchiveWithDescriptor:d error:&err];
         if (!a) {
-            fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %s unreadable, removed: %s\n", name.UTF8String, err.localizedDescription.UTF8String ?: "?");
+            fprintf(stderr, "solstice: pvg-metal: saved pipelines: %s unreadable, removed: %s\n", name.UTF8String, err.localizedDescription.UTF8String ?: "?");
             [fm removeItemAtURL:u error:nil];
             unreadable++;
             continue;
@@ -223,7 +224,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     archives = loaded;
     archive_bytes = bytes;
     archive_full = archive_full_at(loaded.count, bytes, archive_cap());
-    fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %lu files, %.1f MB%s%s%s\n", (unsigned long)loaded.count, bytes / 1048576.0,
+    fprintf(stderr, "solstice: pvg-metal: saved pipelines: %lu files, %.1f MB%s%s%s\n", (unsigned long)loaded.count, bytes / 1048576.0,
             unreadable ? " (some unreadable, removed)" : "", evicted ? " (the oldest removed for room)" : "",
             archive_full ? " (full: nothing more is added)" : "");
 }
@@ -261,7 +262,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         double each = (compile_ms += (now_seconds() - t0) * 1e3) / compiled, hit_each = hit ? hit_ms / hit : 0.0;
         os_unfair_lock_unlock(&pipe_lock);
         if (compiled == 1 || compiled % 100 == 0)
-            fprintf(stderr, "hengevm: pvg-metal: pipelines: %llu compiled (%.0f ms each), %llu from the saved archives (%.1f ms each)\n",
+            fprintf(stderr, "solstice: pvg-metal: pipelines: %llu compiled (%.0f ms each), %llu from the saved archives (%.1f ms each)\n",
                     compiled, each, hit, hit_each);
         if (saving) dispatch_async(archiver, ^{ [self savePipeline:tag descriptor:descriptor]; });
     }
@@ -345,7 +346,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     os_unfair_lock_unlock(&pipe_lock);
     archive_dirty = NO;
     if (archive_full_at(archives.count, archive_bytes, archive_cap())) archive_full = YES;
-    fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %llu added in file %d (%.1f MB, %.1f MB in %lu files) in %.0f ms%s; this session %llu from the "
+    fprintf(stderr, "solstice: pvg-metal: saved pipelines: %llu added in file %d (%.1f MB, %.1f MB in %lu files) in %.0f ms%s; this session %llu from the "
                     "archives (%.1f ms each), %llu compiled (%.0f ms each), %llu not saveable\n",
             pipes_unsaved, archive_next - 1, bytes / 1048576.0, archive_bytes / 1048576.0, (unsigned long)archives.count,
             (now_seconds() - t0) * 1e3, archive_full ? " (now full)" : "", hit, hit_each, compiled, each, pipes_unsaveable);
@@ -361,8 +362,14 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     dispatch_async(compiler, ^{
         @autoreleasepool {
             NSError *err = nil;
-            id state = [self pipelineState:tag descriptor:descriptor error:&err];
-            if (!state) p->failure = [NSString stringWithFormat:@"%@: %@", what, err.localizedDescription];
+            id state = nil;
+            NSString *raised = nil;
+            @try { /* Metal raises on some descriptors: on the worker the exec's @catch took that; here nothing would */
+                state = [self pipelineState:tag descriptor:descriptor error:&err];
+            } @catch (NSException *x) {
+                raised = x.reason ?: x.name;
+            }
+            if (!state) p->failure = [NSString stringWithFormat:@"%@: %@", what, raised ?: err.localizedDescription];
             else if (name) objc_setAssociatedObject(state, "hvname", name, OBJC_ASSOCIATION_RETAIN);
             p->state = state;
             dispatch_group_leave(p->done);
@@ -385,7 +392,26 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
 - (id)makeSerialized:(uint64_t)at length:(uint32_t)size task:(uint32_t)task {
     NSMutableData *all = [NSMutableData dataWithLength:size];
     if (hv_pvg_lite_task_read(lite, task, at, all.mutableBytes, size)) return nil;
+    return [self serialized:all task:task];
+}
+
+/* The bytes each serialized object's maker reads at fixed places; a depth-stencil record's per-side parts are checked
+   where its flags say they are there. */
+static uint32_t serialized_min(uint32_t tag) {
+    switch (tag) {
+    case 3: return 28; /* {tag, size, ref, bits 64, lod min, lod max} */
+    case 4: return 16; /* {tag, size, ref, flags}, then a side of 12 bytes per stencil side */
+    default: return 4;
+    }
+}
+
+- (id)serialized:(NSData *)all task:(uint32_t)task {
+    uint32_t size = (uint32_t)all.length;
     const uint32_t *w = all.bytes;
+    if (size < 4 || size < serialized_min(w[0])) {
+        [self complain:[NSString stringWithFormat:@"serialized object tag %u: %u bytes, too short", size >= 4 ? w[0] : 0, size]];
+        return nil;
+    }
     uint32_t tag = w[0];
     if ((tag == 0xe || tag == 0x33 || tag == 0xb) && (size < 16 || w[3] > size - 16)) { /* Apple's host checks this too */
         [self complain:[NSString stringWithFormat:@"pipeline %u: %u bytes of data in a %u-byte record", tag, size >= 16 ? w[3] : 0, size]];
@@ -394,7 +420,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     if (tag == 0xe || tag == 0x33) { /* render or tile pipeline: {tag, size, ref, length, data} */
         id descriptor = [self pipelineDescriptor:tag data:all task:task];
         if (!descriptor) return nil;
-        if (tag == 0xe && getenv("HV_SHADER_DUMP") && atoi(getenv("HV_SHADER_DUMP"))) { /* m4 fork: blend state as this iOS read it */
+        if (tag == 0xe && hv_knob.shader_dump > 0) { /* m4 fork: blend state as this iOS read it */
             MTLRenderPipelineDescriptor *rp = descriptor;
             for (int i = 0; i < 4; i++) {
                 MTLRenderPipelineColorAttachmentDescriptor *c = rp.colorAttachments[i];
@@ -448,6 +474,10 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     if (tag == 4) { /* depth and stencil: {tag, size, ref, flags, front {ops, read, write}, back {...}} */
         MTLDepthStencilDescriptor *d = [MTLDepthStencilDescriptor new];
         uint32_t f = w[3];
+        if (size < ((f >> 5) & 1 ? 40u : (f >> 4) & 1 ? 28u : 16u)) {
+            [self complain:[NSString stringWithFormat:@"depth-stencil flags %x in %u bytes, too short", f, size]];
+            return nil;
+        }
         d.depthCompareFunction = (MTLCompareFunction)(f & 7);
         d.depthWriteEnabled = (f >> 3) & 1;
         for (int side = 0; side < 2; side++) {

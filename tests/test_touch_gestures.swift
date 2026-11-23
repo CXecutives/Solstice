@@ -96,6 +96,26 @@ struct TouchGesturesTests {
         _ = g.touched(count: 1, at: 0)
         _ = g.lifted(remaining: 0, at: 0.1)
         expect(g.cancel(), [.release(0), .modifiersUsed], "cancel")
+
+        // A short touch iOS takes away (an alert, a call, an edge swipe; Trackpad's touchesCancelled): no click.
+        g = TouchGestures()
+        _ = g.touched(count: 1, at: 0)
+        expect(g.cancel(), [], "cancelled touch: no click")
+        precondition(g.deadline == nil, "cancelled touch: nothing due")
+        expect(g.tick(at: timing.hold), [], "cancelled touch: no hold press later")
+        // Cancelled in a tap-and-drag's second touch: the tap's press comes up, no second click.
+        g = TouchGestures()
+        _ = g.touched(count: 1, at: 0)
+        _ = g.lifted(remaining: 0, at: 0.1)
+        _ = g.touched(count: 1, at: 0.2)
+        expect(g.cancel(), [.release(0), .modifiersUsed], "cancelled second touch: only the release")
+        // Cancelled two-finger touch: no right click.
+        g = TouchGestures()
+        _ = g.touched(count: 2, at: 0)
+        expect(g.cancel(), [], "cancelled two fingers: no right click")
+        // After a cancel the next tap is a tap again.
+        _ = g.touched(count: 1, at: 1)
+        expect(g.lifted(remaining: 0, at: 1.1), [.press(0), .haptic], "tap after a cancel")
         print("touch gestures ok")
     }
 }

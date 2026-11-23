@@ -9,6 +9,7 @@
    virtio-net device on the CPU thread (hv_net_poll), which may only take them
    when the guest has posted receive buffers. */
 #include "net_slirp.h"
+#include "knobs.h"
 #include "brand.h"
 #include "dns_proxy.h"
 #include "net_queue.h"
@@ -73,9 +74,7 @@ static void to_host_push(const uint8_t *frame, uint32_t len) {
 
 /* HV_NET_LOG: one line per frame (ethertype, IP protocol, ports). */
 static void log_frame(const char *dir, const uint8_t *p, uint32_t len) {
-    static int on = -1;
-    if (on < 0) on = getenv("HV_NET_LOG") != NULL;
-    if (!on || len < 14) return;
+    if (!hv_knob.net_log || len < 14) return;
     unsigned et = p[12] << 8 | p[13];
     if (et == 0x0800 && len >= 34) {
         unsigned ihl = (p[14] & 15) * 4, proto = p[23];
@@ -109,7 +108,7 @@ static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque) {
 
 static void guest_error(const char *msg, void *opaque) {
     (void)opaque;
-    fprintf(stderr, "hengevm: net: %s\n", msg);
+    fprintf(stderr, "solstice: net: %s\n", msg);
 }
 
 static int64_t clock_get_ns(void *opaque) {
@@ -310,19 +309,19 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
     cfg.if_mru = 1500;
     slirp = slirp_new(&cfg, &callbacks, NULL);
     if (!slirp) { hv_net_detach(); return -1; }
-    if (getenv("HV_NET_FWD")) { /* debugging: "hostport:guestport", from this Mac's loopback into the guest */
+    if (hv_knob.net_fwd) { /* debugging: "hostport:guestport", from this Mac's loopback into the guest */
         int hp, gp;
         struct in_addr h, g;
-        if (sscanf(getenv("HV_NET_FWD"), "%d:%d", &hp, &gp) == 2) {
+        if (sscanf(hv_knob.net_fwd, "%d:%d", &hp, &gp) == 2) {
             inet_pton(AF_INET, "127.0.0.1", &h);
             inet_pton(AF_INET, "10.0.2.15", &g);
-            if (slirp_add_hostfwd(slirp, 0, h, hp, g, gp) != 0) fprintf(stderr, "hengevm: no forward for port %d\n", hp);
+            if (slirp_add_hostfwd(slirp, 0, h, hp, g, gp) != 0) fprintf(stderr, "solstice: no forward for port %d\n", hp);
         }
     }
     if (share_socket[0]) { /* 10.0.2.4:80 is the shared folder and clipboard: see share.c */
         struct in_addr addr;
         inet_pton(AF_INET, HV_SHARE_ADDR, &addr);
-        if (slirp_add_unix(slirp, share_socket, &addr, 80) != 0) fprintf(stderr, "hengevm: net: no route to the shared folder\n");
+        if (slirp_add_unix(slirp, share_socket, &addr, 80) != 0) fprintf(stderr, "solstice: net: no route to the shared folder\n");
     }
     net = n;
     n->transmit = transmit;

@@ -37,6 +37,8 @@ enum JITBootstrap {
     /// 1.5 GB needs all of: more than 8 GB of memory (an 8 GB iPad's Mac, cache and records left iOS too little and it
     /// closed Henge), the memory limit, and extended-virtual-addressing (a free team cannot sign it); without it, 1 GB.
     static let jitBytes: Int = Device.profile.jitMB(chosen: UserDefaults.standard.object(forKey: SettingKey.codeCacheMB.rawValue) as? Int) << 20
+    /// The region actually held (smaller than jitBytes when that much could not be had), or jitBytes before it is.
+    static var regionBytes: Int { prewarmed ? Int(henge_ios_jit_region_bytes()) : jitBytes }
 
     /// True once the region is held. The memory budget needs this: after a
     /// prewarm the JIT is already counted in the footprint, so subtracting it
@@ -56,7 +58,7 @@ enum JITBootstrap {
             return false
         }
         HengeLog.log("jit", "claiming \(jitBytes / (1024 * 1024)) MiB of JIT memory now -- the debugger does not stay attached")
-        let ok = henge_ios_jit_prewarm(jitBytes)
+        let ok = henge_ios_jit_prewarm(jitBytes, DeviceProfile.minCodeCacheMB << 20)
         if ok {
             prewarmed = true
             lastFailure = nil
@@ -67,8 +69,16 @@ enum JITBootstrap {
                         + "requests, so no executable memory could be claimed. "
                         + "Open Solstice from the Home Screen and tap Turn On JIT."
         }
-        HengeLog.log("jit", ok ? "JIT region secured" : "JIT prewarm FAILED -- the debugger is not servicing traps")
+        HengeLog.log("jit", ok ? "JIT region secured: \(regionBytes >> 20) MiB" : "JIT prewarm FAILED -- the debugger is not servicing traps")
         return ok
+    }
+
+    /// KeepAlive's 1 s tick, until the region is held: a debugger that attached since (an external tool a moment
+    /// after Solstice became active, which bumps no attachGeneration) is noticed and the region claimed. Cheap (one
+    /// csops); a failed claim is not retried here (lastFailure), the setup flow does that.
+    static func claimIfAttached() {
+        guard !ready, lastFailure == nil, debuggedFlag else { return }
+        prewarm()
     }
 
     /// Whether Henge has JIT now: the region is held. CS_DEBUGGED alone is not enough: the debugger must also answer

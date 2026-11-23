@@ -61,10 +61,10 @@ int henge_vm_boot(const char *rom, const char *disk, const char *aux, uint64_t e
     (void)rom; (void)disk; (void)aux; (void)ecid; (void)seed; (void)cpus;
     return start(ram, err, errlen);
 }
-int henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram,
-                    int cpus, const char *path, const char *ident, char *err, size_t errlen) {
+HengeVmResume henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed,
+                              uint64_t ram, int cpus, const char *path, const char *ident, char *err, size_t errlen) {
     (void)rom; (void)disk; (void)aux; (void)ecid; (void)seed; (void)cpus; (void)path; (void)ident;
-    return start(ram, err, errlen);
+    return start(ram, err, errlen) == 0 ? HENGE_VM_RESUMED : HENGE_VM_RESUME_FAILED;
 }
 int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_t ecid, const char *ipsw,
                      const char *workdir, uint64_t ram, int cpus, char *err, size_t errlen) {
@@ -94,6 +94,11 @@ int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int6
     (void)path; (void)ident; (void)bytes; (void)saved_at;
     return -1;
 }
+int henge_vm_saved_shape(const char *path, const char *ident, uint64_t *ram, int *cpus) {
+    (void)path; (void)ident; (void)ram; (void)cpus;
+    return -1;
+}
+void henge_vm_knobs_load(void) {}
 int henge_vm_drop_spent_save(void) { return 0; }
 int henge_vm_saved_unchanged(void) { return 0; }
 void henge_vm_set_power_profile(int level) { (void)level; }
@@ -165,7 +170,14 @@ long henge_system_headroom_mb(void) { return 3072; }
 
 /* JIT (henge-ios-jit.h). */
 void henge_ios_jit_install_trap_handler(void) {}
-bool henge_ios_jit_prewarm(size_t bytes) { (void)bytes; return henge_ios_jit_is_available(); }
+static size_t jit_region;
+bool henge_ios_jit_prewarm(size_t bytes, size_t min_bytes) {
+    (void)min_bytes;
+    if (!henge_ios_jit_is_available()) return false;
+    jit_region = bytes;
+    return true;
+}
+size_t henge_ios_jit_region_bytes(void) { return jit_region; }
 void henge_ios_jit_detach(void) {}
 bool henge_ios_jit_is_available(void) { const char *v = getenv("SOLSTICE_STUB_JIT"); return !(v && strcmp(v, "0") == 0); }
 void henge_ios_jit_log_footprint(const char *tag) { (void)tag; }

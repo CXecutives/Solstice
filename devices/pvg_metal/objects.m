@@ -2,6 +2,7 @@
 
 - (HvObject *)object:(uint32_t)ref task:(uint32_t)task {
     if (!ref || task >= HV_TASKS) return nil;
+    if (!lite) return obj_known(self, task, ref); /* no guest (a test): the objects put in place */
     uint64_t list = hv_pvg_lite_task_objects(lite, task);
     uint32_t e[3];
     if (!list || task_copy(self, task, list + (uint64_t)ref * 12, e, 12)) return nil;
@@ -19,22 +20,25 @@
         if (replaced) o->retries = 0;
         if ((!o->object || replaced) && (e[0] & 0xff) == OBJ_MAPPED_TEXTURE && o->retries < 600) {
             uint32_t tries = o->retries + 1;
-            o = nil;
             HvObject *again = [HvObject new];
+            inherit_retired(again, o);
+            o = nil;
             memcpy(again->entry, e, 12);
             again->retries = tries;
             *slot = again;
             uint64_t at = (uint64_t)e[2] << 32 | e[1];
             [self makeMappedTexture:again at:at task:task];
             static int told;
-            if (again->object && told++ < 30) fprintf(stderr, "hengevm: pvg-metal: task %u ref %u: texture made on try %u%s\n", task, ref, tries, replaced ? " (surface replaced)" : "");
+            if (again->object && told++ < 30) fprintf(stderr, "solstice: pvg-metal: task %u ref %u: texture made on try %u%s\n", task, ref, tries, replaced ? " (surface replaced)" : "");
             return again;
         }
         if (!o->follows) return o;
         if (o->follows->mapped) refresh_pages(self, task, o->follows);
         if (o->follows->generation == o->follows_generation) return o;
     }
+    HvObject *before = o && !memcmp(o->entry, e, 12) ? o : nil; /* the same object made again, not a reused ref */
     o = [HvObject new];
+    inherit_retired(o, before);
     memcpy(o->entry, e, 12);
     *slot = o;
     uint32_t type = e[0] & 0xff, size = e[0] >> 8;
@@ -76,6 +80,16 @@
     HvObject *o = [self object:ref task:task];
     if (o && o->pending) [self resolve:o];
     return o ? o->object : nil;
+}
+
+/* get:, where only one kind of object will do. */
+- (id)get:(uint32_t)ref task:(uint32_t)task as:(Protocol *)kind {
+    id x = [self get:ref task:task];
+    if (x && !of_kind(x, kind)) {
+        [self complain:[NSString stringWithFormat:@"object %u is a %@, not a %s", ref, NSStringFromClass([x class]), protocol_getName(kind)]];
+        return nil;
+    }
+    return x;
 }
 
 /* The object's guest memory as a buffer, once it has some. */

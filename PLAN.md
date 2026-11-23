@@ -156,7 +156,7 @@ Leitbild: Finger bleiben ein echtes Magic Trackpad (macOS erkennt Wischen, Zoome
 ### D — Bild und Bildschirmgrößen (`DeviceProfile.swift`, `Machines.swift`, `SessionLayout`, `BootDisplay.swift`)
 | Gerät | Neu als Vorgabe | Warum |
 |---|---|---|
-| iPhone 16 Pro | **1664×864** im sicheren Bereich (heute 1536×864 mit 239 px Rand je Seite) | 7 Punkte breiter genutzt, nichts unter der Dynamic Island, +8 % Pixel; mit der neuen Skalierung deutlich schärfer |
+| iPhone 16 Pro | **1608×864** im sicheren Bereich (mit dem echten Rand von 62 Punkten; geplant waren 1664) (heute 1536×864 mit 239 px Rand je Seite) | 7 Punkte breiter genutzt, nichts unter der Dynamic Island, +8 % Pixel; mit der neuen Skalierung deutlich schärfer |
 | iPad Air 4 | **1176×816 bei exakt 2×** (heute 1280×888 bei 1,84×) | gestochen scharf statt weich, 16 % weniger Arbeit für den Mac |
 | iPad Pro M4 | **Retina** (echte Pixel) | genug Leistung, nichts zu skalieren |
 - Echte Pixeldichte je Gerät statt fest 264 ppi; Layout auf ganze Pixel; nur Bildraten anbieten, die das Gerät zeigen kann (120 Hz nicht auf dem Air 4); Eck-Maske ohne Zusatzdurchgang.

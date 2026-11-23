@@ -192,7 +192,11 @@ final class Installer: NSObject, ObservableObject {
             do {
                 try await d.run()
             } catch {
-                if Task.isCancelled || attempt == 20 { throw error }
+                if RangedDownload.storageFull(error) {
+                    HengeLog.log("install", "download stopped: storage is full (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part))))")
+                    throw message("Storage is full. Make room in Settings, General, Storage, then install again: the download goes on where it stopped.")
+                }
+                if Task.isCancelled || attempt == 20 || !RangedDownload.retryable(error) { throw error }
                 HengeLog.log("install", "download interrupted (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part)))); going on")
                 try await Task.sleep(nanoseconds: 3_000_000_000)
                 continue

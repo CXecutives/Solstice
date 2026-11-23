@@ -1,4 +1,5 @@
 #include "memop.h"
+#include "knobs.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -291,7 +292,7 @@ int hv_vmem_xfer(HvCpu *cpu, uint64_t va, void *buf, uint32_t len, int write, in
     if (write && w && w - va < len) {
         uint64_t v = 0;
         memcpy(&v, b + (w - va), len - (w - va) < 8 ? len - (w - va) : 8);
-        fprintf(stderr, "hengevm: watch: write to %llx = %llx (%u-byte store at %llx) by pc %llx x30 %llx\n",
+        fprintf(stderr, "solstice: watch: write to %llx = %llx (%u-byte store at %llx) by pc %llx x30 %llx\n",
                 (unsigned long long)w, (unsigned long long)v, len, (unsigned long long)va, (unsigned long long)pc,
                 (unsigned long long)cpu->x[30]);
     }
@@ -675,7 +676,7 @@ int hv_mem_emulate(HvCpu *cpu, uint32_t insn, uint64_t pc) {
     default:
         break;
     }
-    if (hv_knob[HV_K_PREDSTAT]) pred_stat(cpu, &op, va, pc, el);
+    if (hv_knob.predstat) pred_stat(cpu, &op, va, pc, el);
 
     int rc = 0;
     switch (op.kind) {

@@ -1,4 +1,5 @@
 #include "machine.h"
+#include "knobs.h"
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -21,47 +22,28 @@ _Static_assert(sizeof(*((HvMachine *)0)->slots) == 8, "HV_SLOT: two 8-byte words
 extern void hv_exit(void);
 extern void hv_helper_entry(void);
 extern void hv_helper_thunk(void);
-extern void hv_chain_thunk(void);
-extern void hv_ijc_thunk(void);
 extern void hv_xjump_thunk(void);
 
 static int init_rest(HvMachine *m);
 
-int hv_knob[HV_K_COUNT];
-static const char *const hv_knob_names[HV_K_COUNT] = {"HV_NO_RAS", "HV_SUPERBLOCKS", "HV_GROUPS", "HV_WFI_SPIN", "HV_FLUSH", "HV_K1", "HV_K2", "HV_K3", "HV_TLBT", "HV_JIT_CAP", "HV_RECHECK", "HV_SYNC_WAIT", "HV_SWITCH_FLUSH", "HV_RANGE_DROP", "HV_MOVIMM", "HV_PREDSTAT", "HV_WALK_LOG", "HV_HOIST_CHECK", "HV_IJC_PAGES", "HV_DNS_PROXY"};
-
-static void knobs_init(void) {
-    for (int i = 0; i < HV_K_COUNT; i++)
-        hv_knob[i] = getenv(hv_knob_names[i]) ? atoi(getenv(hv_knob_names[i])) : 0;
-    if (getenv("HV_NO_RAS") && !*getenv("HV_NO_RAS")) hv_knob[HV_K_NO_RAS] = 1;
-    /* HV_SWITCH_FLUSH (skipping the local TLBI VMALLE1 xnu issues right after a process switch) is off unless asked
-       since 2026-11-09: a checked skip on the phone found a kept user entry out of date (a stack page, no mapping),
-       the stale state that flush exists to retire (xnu reusing a hardware ASID, which can leave every process's kept
-       entries stale, not just the incoming one's). It was worth ~3% on a process-spawn loop; not worth guest memory. */
-    if (!getenv("HV_IJC_PAGES")) hv_knob[HV_K_IJCPAGES] = 1;
-    if (!getenv("HV_DNS_PROXY")) hv_knob[HV_K_DNSPROXY] = 1;
-}
-
 int hv_knob_set(HvMachine *m, const char *name, int value) {
-    for (int i = 0; i < HV_K_COUNT; i++)
-        if (!strcmp(name, hv_knob_names[i])) {
-            hv_knob[i] = value;
-            __atomic_store_n(&m->flush_pending, 1, __ATOMIC_SEQ_CST);
-            hv_machine_kick_all(m);
-            return 1;
-        }
-    return 0;
+    int *k = hv_knob_int_named(name);
+    if (!k) return 0;
+    *k = value;
+    __atomic_store_n(&m->flush_pending, 1, __ATOMIC_SEQ_CST);
+    hv_machine_kick_all(m);
+    return 1;
 }
 
 int hv_machine_init(HvMachine *m, size_t jit_bytes) {
-    knobs_init(); /* the tests and the Mac tool read the same knobs as the app */
+    hv_knobs_load(); /* each machine as the environment says now: the tests and the Mac tool read the same settings as the app */
     memset(m, 0, sizeof *m);
     if (hv_jit_region_open(&m->jit, jit_bytes) != 0) return -1;
     return init_rest(m);
 }
 
 int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes) {
-    knobs_init();
+    hv_knobs_load();
     memset(m, 0, sizeof *m);
     if (hv_jit_region_attach(&m->jit, rx, rw, jit_bytes) != 0) return -1;
     return init_rest(m);
@@ -179,32 +161,10 @@ static int init_rest(HvMachine *m) {
         pthread_mutex_init(&m->percpu[i].req_mu, NULL);
     }
     m->locks_initialized = 1;
-    /* HV_JIT_CAP (testing): MB of the region to use from the start, not only after the first full flush, so a
-       device reaches its full flushes in minutes (solstice-env.txt on iOS). */
-    if (getenv("HV_JIT_CAP")) hv_knob[HV_K_JITCAP] = atoi(getenv("HV_JIT_CAP"));
-    m->jit.limit = hv_knob[HV_K_JITCAP] > 0 ? ((size_t)hv_knob[HV_K_JITCAP] << 20) / sizeof(uint32_t) : 0;
-    /* The TLB layout (cpu.h): HV_TLBT from the environment here too, so the Mac tool and the tests can pick it. */
-    hv_knob[HV_K_TLBT] = getenv("HV_TLBT") ? atoi(getenv("HV_TLBT")) : 1; /* table-major unless asked: 9-20% faster in 5 of 6 paired rounds of the mix */
-    hv_tlb_tmajor = hv_knob[HV_K_TLBT] != 0;
-    /* HV_MOVIMM=1: constants built in registers instead of loaded from the pool (translate.c put_lit). Off: no
-       measured gain (Mac mix 24.1 s either way, 2026-11-08); the tests pass with it on (HV_MOVIMM=1 make test). */
-    hv_knob[HV_K_MOVIMM] = getenv("HV_MOVIMM") ? atoi(getenv("HV_MOVIMM")) : 0;
-    /* On unless asked: the Mac bench (2026-11-08) posted 130-400 raced remote drops/s with it against 710-1370
-       without (most walks a drop met were of other pages), and the phone's login storm waits up to 24% of a CPU. */
-    hv_knob[HV_K_WALKLOG] = getenv("HV_WALK_LOG") ? atoi(getenv("HV_WALK_LOG")) : 1;
-    if (getenv("HV_HOIST_CHECK")) hv_knob[HV_K_HOIST] = atoi(getenv("HV_HOIST_CHECK"));
-    /* On unless asked: a code change used to drop every CPU's whole branch cache (~100/s with JavaScriptCore's JIT
-       on the Mac bench, 300-390K refills/s after); now only the page's targets (Mac 2026-11-09: resets 195 -> 2/s,
-       a JIT check of 200 recompiled functions correct; bench times the same within noise). */
-    hv_knob[HV_K_IJCPAGES] = getenv("HV_IJC_PAGES") ? atoi(getenv("HV_IJC_PAGES")) : 1;
-    hv_knob[HV_K_DNSPROXY] = getenv("HV_DNS_PROXY") ? atoi(getenv("HV_DNS_PROXY")) : 1;
-    /* So the tests can run the translator these ways too (the iOS and --phone paths read them in knobs_init). */
-    if (getenv("HV_SUPERBLOCKS")) hv_knob[HV_K_SUPERBLOCKS] = atoi(getenv("HV_SUPERBLOCKS"));
-    /* The exact check for an access in a page's last 15 bytes, in the access's out-of-line path (code size only):
-       on the phone, Golden Gate's boot and login send 80-240K such accesses a second to the helper without it. It
-       costs ~13% of the code (Mac 2026-11-09: 296-300 against 259-261 bytes a block), and the phone's code cache
-       fills every 40-60 s: worth a phone A/B (HV_RECHECK 0 vs 1 over a login), not a Mac one (~7K such accesses/s). */
-    hv_knob[HV_K_RECHECK] = getenv("HV_RECHECK") ? atoi(getenv("HV_RECHECK")) : 1;
+    /* HV_JIT_CAP (testing): from the start, not only after the first full flush, so a device reaches its full flushes
+       in minutes (solstice-env.txt on iOS). */
+    m->jit.limit = hv_knob.jit_cap > 0 ? ((size_t)hv_knob.jit_cap << 20) / sizeof(uint32_t) : 0;
+    hv_tlb_tmajor = hv_knob.tlbt != 0; /* the TLB layout (cpu.h) */
     /* Records, slots and buckets for the whole region (table_counts), mapped, so what no block uses costs nothing. */
     uint32_t buckets;
     table_counts(m->jit.capacity * sizeof(uint32_t), &m->max_blocks, &m->max_slots, &buckets);
@@ -225,7 +185,7 @@ static int init_rest(HvMachine *m) {
     m->slot_xpa = (uint32_t *)(void *)s, s += n * sizeof(uint32_t);
     m->slot_xnext = (uint32_t *)(void *)s, s += n * sizeof(uint32_t);
     m->slot_xprev = (uint32_t *)(void *)s;
-    if (getenv("HV_JIT_POISON")) { /* debugging: each block's full-flush count, checked as it is entered and chained */
+    if (hv_knob.jit_poison) { /* debugging: each block's full-flush count, checked as it is entered and chained */
         m->block_jit_gen = hv_pages_alloc(((size_t)m->max_blocks + 1) * sizeof *m->block_jit_gen);
         if (!m->block_jit_gen) return -1;
     }
@@ -441,7 +401,7 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
         __atomic_store_n(&s->tlb_live, 0, __ATOMIC_SEQ_CST); /* others need not wait for this one meanwhile */
         ack_wake(s);
     }
-    int sleep = hv_knob[HV_K_SYNCWAIT], probed = !t0 || !mm->stats_deep, probed_long = probed; /* thread_info: diagnostics only */
+    int sleep = hv_knob.sync_wait, probed = !t0 || !mm->stats_deep, probed_long = probed; /* thread_info: diagnostics only */
     if (s) __atomic_store_n(&s->phase, HV_PHASE_SYNC, __ATOMIC_RELAXED);
     uint64_t watch_end = 0;
     for (uint32_t spins = 0;; spins++) {
@@ -632,7 +592,7 @@ void hv_storm_report(HvCpu *cpu) {
     s->report = 0;
     if (what & HV_STORM_BEGAN) {
         double secs = (double)s->seen.ticks / 24e6;
-        fprintf(stderr, "hengevm: interrupt storm on cpu %u: %.0f interrupts/s, %.0f WFI/s, el%u pc %llx; cntv ctl %llx cval %+lld us, "
+        fprintf(stderr, "solstice: interrupt storm on cpu %u: %.0f interrupts/s, %.0f WFI/s, el%u pc %llx; cntv ctl %llx cval %+lld us, "
                         "cntp ctl %llx cval %+lld us\n  interrupts:", cpu->index, s->seen.acks / secs, (double)s->seen.wfis / secs,
                 s->seen.el, (unsigned long long)s->seen.pc, (unsigned long long)s->seen.cntv_ctl, (long long)(s->seen.cntv_left / 24),
                 (unsigned long long)s->seen.cntp_ctl, (long long)(s->seen.cntp_left / 24));
@@ -648,7 +608,7 @@ void hv_storm_report(HvCpu *cpu) {
         fprintf(stderr, "\n");
     }
     if (what & HV_STORM_OVER)
-        fprintf(stderr, "hengevm: interrupt storm on cpu %u over after %.1f s\n", cpu->index, (double)s->lasted / 24e6);
+        fprintf(stderr, "solstice: interrupt storm on cpu %u over after %.1f s\n", cpu->index, (double)s->lasted / 24e6);
 }
 
 void hv_machine_kicker_poke(HvMachine *m) {
@@ -811,7 +771,7 @@ int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int
     r->whint = calloc(pages * HV_MAX_CPUS, sizeof *r->whint);
     r->ijc_va = hv_pages_alloc(pages * HV_IJC_VAS * sizeof *r->ijc_va); /* given back by hv_machine_trim, xhead by a full flush */
     r->xhead = hv_pages_alloc(pages * sizeof *r->xhead);
-    r->code_hash = getenv("HV_CODE_CHECK") ? calloc(pages, sizeof *r->code_hash) : NULL;
+    r->code_hash = hv_knob.code_check ? calloc(pages, sizeof *r->code_hash) : NULL;
     return r->code_pages && r->page_gen && r->whint && r->ijc_va && r->xhead ? 0 : -1;
 }
 
@@ -879,7 +839,7 @@ void hv_invalidate_code(HvMachine *m, uint64_t pa) {
        (ijc_va, read after the generation went up; a fill notes its page before checking the generation, see
        hv_ijc_fill_checked), so only those pages'; under none, only the return predictions go; under more, all. */
     uint64_t vs[HV_IJC_VAS];
-    int nv = 0, all = !hv_knob[HV_K_IJCPAGES];
+    int nv = 0, all = !hv_knob.ijc_pages;
     for (int j = 0; j < HV_IJC_VAS; j++) {
         uint64_t v = __atomic_exchange_n(&r->ijc_va[pg * HV_IJC_VAS + j], 0, __ATOMIC_SEQ_CST);
         if (v == ~0ull) all = 1;
@@ -948,7 +908,7 @@ void hv_code_check_all(HvMachine *m) {
             const uint32_t *w = (const uint32_t *)page;
             uint32_t ff = 0;
             for (uint32_t k = 0; k < (1u << HV_TLB_PAGE_BITS) / 4; k++) ff += w[k] >> 24 == 0xff;
-            fprintf(stderr, "hengevm: code check: page pa %llx changed with its translations kept (flush %llu): %u of 4096 words "
+            fprintf(stderr, "solstice: code check: page pa %llx changed with its translations kept (flush %llu): %u of 4096 words "
                             "start with ff; at +0:", (unsigned long long)(r->pa + (pg << HV_TLB_PAGE_BITS)),
                     (unsigned long long)m->stats.block_flushes, ff);
             for (int k = 0; k < 8; k++) fprintf(stderr, " %08x", w[k]);
@@ -958,7 +918,7 @@ void hv_code_check_all(HvMachine *m) {
     static uint64_t last_report;
     if (m->stats.block_flushes - last_report >= 20) {
         last_report = m->stats.block_flushes;
-        fprintf(stderr, "hengevm: code check: %llu code pages checked at flush %llu\n", (unsigned long long)checked,
+        fprintf(stderr, "solstice: code check: %llu code pages checked at flush %llu\n", (unsigned long long)checked,
                 (unsigned long long)m->stats.block_flushes);
     }
 }
@@ -1007,7 +967,7 @@ int hv_phys_write(HvMachine *m, uint64_t pa, const void *buf, unsigned len) {
         if (m->watch_pa && m->watch_pa - pa < len) {
             uint64_t v = 0;
             memcpy(&v, (const uint8_t *)buf + (m->watch_pa - pa), len - (m->watch_pa - pa) < 8 ? len - (m->watch_pa - pa) : 8);
-            fprintf(stderr, "hengevm: watch: write to pa %llx = %llx (%u bytes at pa %llx) by pc %llx\n",
+            fprintf(stderr, "solstice: watch: write to pa %llx = %llx (%u bytes at pa %llx) by pc %llx\n",
                     (unsigned long long)m->watch_pa, (unsigned long long)v, len, (unsigned long long)pa,
                     (unsigned long long)hv_access_pc(m));
         }
@@ -1043,7 +1003,7 @@ void hv_cpu_reset_index(HvCpu *cpu, HvMachine *m, uint32_t index) {
     /* Its tables before other CPUs can see it (they read them for TLBIs); made at the board's start
        (hv_machine_add_cpus) unless a test resets the CPU first. */
     if (percpu_tables(p) != 0) {
-        fprintf(stderr, "hengevm: no memory for cpu %u's tables\n", index);
+        fprintf(stderr, "solstice: no memory for cpu %u's tables\n", index);
         abort();
     }
     cpu->m = m;
@@ -1073,8 +1033,6 @@ void hv_cpu_reset_index(HvCpu *cpu, HvMachine *m, uint32_t index) {
     cpu->exit_routine = (uint64_t)hv_exit;
     cpu->helper_routine = (uint64_t)hv_helper_entry;
     cpu->helper_thunk = (uint64_t)hv_helper_thunk;
-    cpu->chain_thunk = (uint64_t)hv_chain_thunk;
-    cpu->ijc_thunk = (uint64_t)hv_ijc_thunk;
     cpu->xjump_thunk = (uint64_t)hv_xjump_thunk;
     cpu->el = 1;
     cpu->spsel = 1;

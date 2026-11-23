@@ -181,14 +181,15 @@ static int display_named(void) { return hv_pvg_lite_display_page(board.pvg) != N
 
 /* Several Macs in one launch (#183), each started after the refresh rate was changed in Settings: each is refreshed at
    the rate its display says (HV_HZ when it starts), not the first one's. The first poll after the guest names its
-   display page starts the refreshes: the next is one period away. */
+   display page starts the refreshes: the next is one period away. A rate outside 30..120 is refused as the replay
+   refuses it (60), so the guest is never told a rate the screen is not refreshed at. */
 static void test_refresh_rate_per_start(void) {
     const char *was = getenv("HV_HZ");
     char *saved = was ? strdup(was) : NULL;
-    static const unsigned rates[] = {60, 120, 30};
-    for (int i = 0; i < 3; i++) {
+    static const unsigned asked[] = {60, 120, 30, 240, 24}, rates[] = {60, 120, 30, 60, 60};
+    for (int i = 0; i < 5; i++) {
         char hz[8];
-        snprintf(hz, sizeof hz, "%u", rates[i]);
+        snprintf(hz, sizeof hz, "%u", asked[i]);
         setenv("HV_HZ", hz, 1);
         HvCfgParams cfg = {.nr_cpus = 2};
         if (hv_machine_init(&machine, 4 << 20) ||
@@ -231,11 +232,12 @@ static void test_refresh_rate_per_start(void) {
     }
     if (saved) setenv("HV_HZ", saved, 1); else unsetenv("HV_HZ");
     free(saved);
-    puts("refresh rate: 60, 120 and 30 Hz Macs one after the other, each refreshed at its own rate");
+    puts("refresh rate: 60, 120 and 30 Hz Macs one after the other, each refreshed at its own rate; 240 and 24 at 60");
 }
 
 int main(void) {
     alarm(60);
+    setenv("HV_PVG_ARCHIVE", "0", 1); /* not the saved pipelines of whoever runs this */
     test_refresh_rate_per_start();
     for (int cycle = 0; cycle < 6; cycle++) @autoreleasepool {
         HvCfgParams cfg = {.nr_cpus = 2};

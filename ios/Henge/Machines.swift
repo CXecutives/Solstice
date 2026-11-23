@@ -57,18 +57,28 @@ enum GuestMemory {
     /// Guest RAM is reserved first, in one piece, then the engine's tables (host/vm.c): the largest piece of address
     /// space must leave room for those (sized from the code cache and the CPUs) and for the app.
     static func prepare(_ mac: VirtualMac, cpus: Int) -> UInt64 {
-        let file = mac.directory.appendingPathComponent("ram.tmp")
-        setenv("HV_RAM_FILE", file.path, 1)
+        useFile(for: mac)
+        return min(UInt64(mac.ramMB), fits(mac, cpus: cpus)) / StartShape.stepMB * StartShape.stepMB
+    }
+
+    /// Points the engine at the Mac's RAM file.
+    static func useFile(for mac: VirtualMac) {
+        setenv("HV_RAM_FILE", mac.directory.appendingPathComponent("ram.tmp").path, 1)
+    }
+
+    /// The most RAM that fits now for this many CPUs, whatever the Mac's setting: storage for its file, the address
+    /// space beside the engine's tables and the app, the device's cap. In MB.
+    static func fits(_ mac: VirtualMac, cpus: Int) -> UInt64 {
         let free = (try? mac.directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
             .volumeAvailableCapacityForImportantUsage ?? 0
         let room = free > 0 ? UInt64(max(free - (2 << 30), 0)) >> 20 : UInt64.max
         let reach = henge_largest_mapping_mb()
         let tables = henge_engine_tables_mb(Int32(cpus)), keep = tables + appRoomMB
         // What boots beside the engine and iOS on this device (DeviceProfile's table).
-        let fits = Device.profile.guestCapMB ?? UInt64.max
-        let ram = min(UInt64(mac.ramMB), room, reach > keep ? reach - keep : 0, fits) / 512 * 512
-        HengeLog.log("session", "guest RAM \(ram) MB (asked \(mac.ramMB), disk room \(room), largest mapping \(reach), engine tables \(tables), this device fits \(fits == UInt64.max ? "any" : String(fits)))")
-        return ram
+        let cap = Device.profile.guestCapMB ?? UInt64.max
+        let fits = min(room, reach > keep ? reach - keep : 0, cap)
+        HengeLog.log("session", "guest RAM fits \(fits) MB with \(cpus) CPUs (set \(mac.ramMB), disk room \(room), largest mapping \(reach), engine tables \(tables), this device fits \(cap == UInt64.max ? "any" : String(cap)))")
+        return fits
     }
 }
 

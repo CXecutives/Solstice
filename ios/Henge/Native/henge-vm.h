@@ -37,9 +37,21 @@ int henge_vm_pause(char *err, size_t errlen);
 int henge_vm_trim(void);
 int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_continue(void);
-int henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
-                    int cpus, const char *path, const char *ident, char *err, size_t errlen);
+/* What henge_vm_resume did. REFUSED: the file can never be resumed (damaged, another ident or build, the disk moved on);
+   it is deleted and the Mac may start from cold. FAILED: something of the moment (memory, no JIT region, reading), or
+   another shape than henge_vm_saved_shape; the file is kept, and a cold boot stays safe (it moves the disk on, and the
+   moved disk refuses the file). */
+typedef enum HengeVmResume {
+    HENGE_VM_RESUME_REFUSED = -2,
+    HENGE_VM_RESUME_FAILED = -1,
+    HENGE_VM_RESUMED = 0
+} HengeVmResume;
+HengeVmResume henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed,
+                              uint64_t ram_mb, int cpus, const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int64_t *saved_at);
+/* The shape a whole saved Mac for ident goes back into: its RAM in MB and its CPUs. A resume has to use exactly these
+   (another shape is HENGE_VM_RESUME_FAILED, the file kept), so ident need not name them. 0, or nonzero if no such save. */
+int henge_vm_saved_shape(const char *path, const char *ident, uint64_t *ram_mb, int *cpus);
 /* A saved Mac is kept while the disk is as it was saved: after a resume (or running on after a save) the file goes
    once the Mac writes its disk, or a new save replaces it. Call now and then while it runs; 1 if the file was deleted
    now. A stop deletes it too if the disk moved. */
@@ -72,8 +84,10 @@ int henge_vm_exit_outcome(void);
 void henge_vm_stop(void);
 /* Presses the Mac's power button: macOS shuts down properly (or asks first). 0, or -1 if no Mac runs. */
 int henge_vm_power_button(void);
-/* Testing: sets a translation knob (core/machine.h) in the running machine; nonzero if it exists. */
+/* Testing: sets a whole-number engine setting (core/knobs.def) in the running machine; nonzero if it exists. */
 int henge_vm_knob(const char *name, int value);
+/* The engine settings read again from the environment (EngineTuning.apply, after it sets them). */
+void henge_vm_knobs_load(void);
 /* The power profile (PowerPolicy.swift), live and kept for the Macs started later: 0 normal; 1 (Low Power Mode) an
    idle CPU sleeps at once (no HV_WFI_SPIN); 2 (a serious thermal state) also at most HV_SAVING_HZ frames a second go
    to the screen (macOS is still refreshed at its mode's rate); 3 (critical) is the same here, the app pauses the Mac. */

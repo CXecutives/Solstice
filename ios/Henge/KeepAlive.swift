@@ -38,7 +38,7 @@ enum KeepAlive {
     static func start() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            MainActor.assumeIsolated { update(); MemoryRelief.sample(); PowerPolicy.shared.tick() }
+            MainActor.assumeIsolated { update(); MemoryRelief.sample(); PowerPolicy.shared.tick(); JITBootstrap.claimIfAttached() }
         }
         PowerPolicy.shared.start()
         let center = NotificationCenter.default

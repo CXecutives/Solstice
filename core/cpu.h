@@ -90,15 +90,13 @@ typedef struct HvCpu {
     uint64_t host_sp;        /* 0x410: the host's stack while blocks run: they keep the guest SP in the SP register */
     uint64_t lines_ptr;      /* 0x418: &pc_state->irq_line (irq, then fiq: one 8-byte load sees both) */
     uint64_t helper_thunk;   /* 0x420: hv_helper_thunk (blocks reach it through a register: it may be out of BL range) */
-    uint64_t chain_thunk;    /* 0x428: hv_chain_thunk */
-    uint64_t ijc_thunk;      /* 0x430: hv_ijc_thunk */
-    uint64_t refill_ret;     /* 0x438: where it goes back to */
+    uint64_t xjump_thunk;    /* 0x428: hv_xjump_thunk (hv_chain_thunk and hv_ijc_thunk: through a chunk's trampoline) */
+    uint64_t cntvoff;        /* 0x430: the virtual counter is the host's less this (m->cntvoff), read inline */
+    uint64_t refill_ret;     /* 0x438: where hv_ijc_thunk and hv_xjump_thunk go back to after their C call */
     uint64_t ijc_tab[16];    /* 0x440: each flags value's branch-cache table (ijc + flags * table size) */
     uint64_t gaddend[4];     /* 0x4c0: host addends of the pages groups of accesses on one base register were checked in (translate_mem) */
-    uint64_t xjump_thunk;    /* 0x4e0: hv_xjump_thunk */
-    uint64_t tcr_el1;        /* 0x4e8: here, in reach of one load, for translated MRS (xnu reads it ~17K times a second at login) */
-    uint64_t par_el1;        /* 0x4f0: likewise, read after each AT */
-    uint64_t cntvoff;        /* 0x4f8: the virtual counter is the host's less this (m->cntvoff), read inline */
+    uint64_t tcr_el1;        /* 0x4e0: here, in reach of one load, for translated MRS (xnu reads it ~17K times a second at login) */
+    uint64_t par_el1;        /* 0x4e8: likewise, read after each AT */
     /* 0x500: what tags in the return tables (ret_tab) are xored with, [0] user, [1] kernel.
        Bits 63..48, as ijc_salt; a new value empties that half of the tables. */
     uint64_t ret_salt[2] __attribute__((aligned(128)));
@@ -214,8 +212,8 @@ typedef struct HvCpu {
 #define HV_CPU_HOST_SP     0x410
 #define HV_CPU_LINES_PTR   0x418
 #define HV_CPU_HELPER_THUNK 0x420
-#define HV_CPU_CHAIN_THUNK 0x428
-#define HV_CPU_IJC_THUNK   0x430
+#define HV_CPU_XJUMP_THUNK 0x428
+#define HV_CPU_CNTVOFF     0x430
 #define HV_CPU_REFILL_RET  0x438
 #define HV_CPU_SPSEL       0x3fc
 #define HV_CPU_SP_EL1      0x398
@@ -223,10 +221,8 @@ typedef struct HvCpu {
 #define HV_CPU_TLB         0x580
 #define HV_CPU_RET_SALT    0x500
 #define HV_CPU_GADDEND     0x4c0
-#define HV_CPU_XJUMP_THUNK 0x4e0
-#define HV_CPU_TCR_EL1     0x4e8
-#define HV_CPU_PAR_EL1     0x4f0
-#define HV_CPU_CNTVOFF     0x4f8
+#define HV_CPU_TCR_EL1     0x4e0
+#define HV_CPU_PAR_EL1     0x4e8
 #define HV_CPU_SLOW_INFO   0x518
 
 /* Indirect-branch cache: one table per block-flags value, 64K entries of 16 bytes,
@@ -269,8 +265,7 @@ _Static_assert(offsetof(HvCpu, excl_val) == HV_CPU_EXCL_VAL, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, host_sp) == HV_CPU_HOST_SP, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, lines_ptr) == HV_CPU_LINES_PTR, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, helper_thunk) == HV_CPU_HELPER_THUNK, "HvCpu layout");
-_Static_assert(offsetof(HvCpu, chain_thunk) == HV_CPU_CHAIN_THUNK, "HvCpu layout");
-_Static_assert(offsetof(HvCpu, ijc_thunk) == HV_CPU_IJC_THUNK, "HvCpu layout");
+_Static_assert(offsetof(HvCpu, refill_ret) == HV_CPU_REFILL_RET, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, spsel) == HV_CPU_SPSEL, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, sp_el1) == HV_CPU_SP_EL1, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, ijc_tab) == HV_CPU_IJC_TAB, "HvCpu layout");

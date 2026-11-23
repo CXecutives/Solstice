@@ -5,13 +5,14 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev) return NULL;
         if (![dev respondsToSelector:@selector(newRenderPipelineDescriptorWithSerializedData:deserializationContext:)]) {
-            fprintf(stderr, "hengevm: pvg-metal: this Metal cannot read serialized pipelines; no drawing\n");
+            fprintf(stderr, "solstice: pvg-metal: this Metal cannot read serialized pipelines; no drawing\n");
             return NULL;
         }
         Protocol *proto = objc_getProtocol("MTLDeserializationContext");
         if (proto) class_addProtocol([HvContext class], proto);
         HvReplay *r = [HvReplay new];
         r->lite = lite;
+        r->task_pages = hv_pvg_lite_task_pages, r->guest_page = hv_pvg_lite_page;
         r->completions = dispatch_group_create();
         r->device = dev;
         r->queue = [dev newCommandQueueWithMaxCommandBufferCount:64];
@@ -21,12 +22,10 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->pipe_lock = OS_UNFAIR_LOCK_INIT;
         r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->cursor_queue = dispatch_queue_create("hengevm.cursor", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
-        const char *hz = getenv("HV_HZ");
-        int rate = hz && atoi(hz) >= 30 && atoi(hz) <= 120 ? atoi(hz) : 60;
-        r->present_every = 1.0 / rate;
+        r->present_every = 1.0 / hv_knob.hz;
         r->overlay_matched = -1;
         /* Screenshots of the drawable (the GPU test) want the pointer in it. */
-        r->overlay_never = getenv("HV_PVG_GPU_TEST") != NULL;
+        r->overlay_never = hv_knob.pvg_gpu_test;
         r->screen_lock = OS_UNFAIR_LOCK_INIT;
         r->walk_epoch = 1;
         r->mapped_textures = [NSMutableDictionary new];
@@ -35,14 +34,14 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->planar_uses = [NSMutableDictionary new];
         r->planar_hashes = [NSMutableDictionary new];
         r->complaints = [NSMutableSet new];
-        r->shot = getenv("HV_PVG_SHOT");
+        r->shot = hv_knob.pvg_shot;
         [r openArchive];
 #if !TARGET_OS_IPHONE
-        if (getenv("HV_PVG_GPU_TEST")) r->layer = [CAMetalLayer layer];
+        if (hv_knob.pvg_gpu_test) r->layer = [CAMetalLayer layer];
 #endif
 #if !TARGET_OS_IPHONE
         if (r->shot) {
-            double every = getenv("HV_PVG_SHOT_SECS") ? atof(getenv("HV_PVG_SHOT_SECS")) : 5;
+            double every = hv_knob.pvg_shot_secs;
             dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, r->worker);
             dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(every * NSEC_PER_SEC)), (uint64_t)(every * NSEC_PER_SEC), NSEC_PER_SEC / 10);
             HvReplay *__weak weak = r;
@@ -51,7 +50,7 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
             r->shot_timer = timer;
         }
 #endif
-        fprintf(stderr, "hengevm: pvg-metal: drawing on %s\n", dev.name.UTF8String);
+        fprintf(stderr, "solstice: pvg-metal: drawing on %s\n", dev.name.UTF8String);
         return (HvPvgMetal *)CFBridgingRetain(r);
     }
 }
@@ -108,6 +107,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
     HvReplay *r = (__bridge HvReplay *)m;
     dispatch_async(r->worker, ^{
         @autoreleasepool {
+            if (atomic_load_explicit(&r->gpu_poisoned, memory_order_relaxed)) [r recoverGPU:now_seconds()];
             new_command(r);
             uint32_t op = cmd[0] & 0xffff, skip = (cmd[0] >> 16) * 8; /* the barriers come first */
             const uint32_t *args = (const uint32_t *)((const uint8_t *)cmd + 12 + skip);
@@ -146,7 +146,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                        flag in bit 0 (Apple's host: -[PGFIFO CmdDeleteTask] passes p[0] to deleteTaskID: as it is). Shifted here,
                        an ended process kept its objects and the next one given its id got its functions wherever an object-list
                        entry read the same: a vertex function in a fragment slot, and the GPU driver died (issue 102). */
-                    if (args[0] < HV_TASKS) obj_clear(&r->task_objs[args[0]]);
+                    if (args[0] < HV_TASKS) obj_clear(&r->task_objs[args[0]]), r->told_kept[args[0]] = nil;
                 } else {
                     hv_pvg_lite_command(lite, cmd, len);
                     if (op == 8 && n >= 16) {
@@ -159,7 +159,7 @@ void hv_pvg_metal_submit(HvPvgMetal *m, HvPvgLite *lite, uint32_t ch, uint32_t *
                         os_unfair_lock_lock(&r->screen_lock);
                         r->cursor_shown = args[1] & 1;
                         os_unfair_lock_unlock(&r->screen_lock);
-                        if (getenv("HV_PVG_CURSOR_LOG")) fprintf(stderr, "pvgcursor show %u\n", args[1]);
+                        if (hv_knob.pvg_cursor_log) fprintf(stderr, "pvgcursor show %u\n", args[1]);
                         [r drawCursor];
                     }
                 }
@@ -344,7 +344,7 @@ void hv_pvg_metal_quiesce(HvPvgMetal *m) {
                 [cb commit];
                 [cb waitUntilCompleted];
             }
-            fprintf(stderr, "hengevm: pvg-metal: quiesced, %u GPU-only objects copied to guest memory\n", copied);
+            fprintf(stderr, "solstice: pvg-metal: quiesced, %u GPU-only objects copied to guest memory\n", copied);
         });
         dispatch_group_wait(r->completions, DISPATCH_TIME_FOREVER);
     }
@@ -409,5 +409,5 @@ void hv_pvg_metal_set_display_state(HvPvgMetal *m, const void *in, size_t len) {
             [r drawCursor];
         }
     });
-    fprintf(stderr, "hengevm: pvg-metal: screen %llu and a %ux%u pointer restored\n", (unsigned long long)d.on_screen, d.cursor_w, d.cursor_h);
+    fprintf(stderr, "solstice: pvg-metal: screen %llu and a %ux%u pointer restored\n", (unsigned long long)d.on_screen, d.cursor_w, d.cursor_h);
 }

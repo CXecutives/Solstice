@@ -82,7 +82,7 @@ static IOSurfaceRef make_iosurface(HvObject *to, const uint8_t *desc, uint64_t a
         static int logged;
         if (planes >= 2 && logged++ < 4)
             for (uint32_t i = 0; i < planes && i < IOSurfaceGetPlaneCount(made) && i < 4; i++)
-                fprintf(stderr, "hengevm: video plane %u guest off %llu row %llu h %llu; host row %zu h %zu\n",
+                fprintf(stderr, "solstice: video plane %u guest off %llu row %llu h %llu; host row %zu h %zu\n",
                         i, (unsigned long long)to->plane_from[i], (unsigned long long)to->plane_row[i],
                         (unsigned long long)to->plane_h[i], IOSurfaceGetBytesPerRowOfPlane(made, i),
                         IOSurfaceGetHeightOfPlane(made, i));
@@ -90,13 +90,14 @@ static IOSurfaceRef make_iosurface(HvObject *to, const uint8_t *desc, uint64_t a
     return made;
 }
 
-/* Guest bytes sampled to tell whether a surface's pixels changed: one 8-byte word every SURFACE_SAMPLE bytes. One every
-   64 bytes read every cache line of a 4K video frame (27 MB) for every exec that named the surface; a decoded frame
-   changes nearly every word, so a sparser sample still sees each new one. */
-enum { SURFACE_SAMPLE = 1024 };
+/* Guest bytes sampled to tell whether a surface's pixels changed: one 8-byte word every SURFACE_SAMPLE bytes, in
+   every cache line up to SURFACE_DENSE bytes (a 1080p plane), so a small change (a pointer, a subtitle, a caret) is
+   seen; one every SURFACE_SPARSE above, as reading every cache line of a 4K frame (27 MB) for every exec that named it
+   cost too much, and a decoded frame changes nearly every word. */
+enum { SURFACE_SAMPLE = 64, SURFACE_SPARSE = 1024, SURFACE_DENSE = 4 << 20 };
 static uint64_t hash_bytes(const uint8_t *from, uint64_t len) {
-    uint64_t hash = 0xcbf29ce484222325ull;
-    for (uint64_t i = 0; i + 8 <= len; i += SURFACE_SAMPLE) {
+    uint64_t hash = 0xcbf29ce484222325ull, step = len <= SURFACE_DENSE ? SURFACE_SAMPLE : SURFACE_SPARSE;
+    for (uint64_t i = 0; i + 8 <= len; i += step) {
         uint64_t v;
         memcpy(&v, from + i, 8);
         hash = (hash ^ v) * 0x100000001b3ull;
@@ -125,20 +126,14 @@ static MTLPixelFormat copy_format(size_t bpe) {
     }
 }
 
-/* Debugging, read once: HV_PVG_HOST_DUMP=prefix, the host surface as it is just before the guest's pixels go over it
+/* Debugging: HV_PVG_HOST_DUMP=prefix, the host surface as it is just before the guest's pixels go over it
    (the first few multi-plane surfaces, with its layout in a .txt beside it: did the GPU draw something here that this
    copy throws away?); HV_PVG_SURFACE_DUMP=prefix, the guest's bytes copied. */
 static const char *host_dump_prefix(void) {
-    static const char *p;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ p = getenv("HV_PVG_HOST_DUMP"); });
-    return p;
+    return hv_knob.pvg_host_dump;
 }
 static const char *surface_dump_prefix(void) {
-    static const char *p;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ p = getenv("HV_PVG_SURFACE_DUMP"); });
-    return p;
+    return hv_knob.pvg_surface_dump;
 }
 
 static void dump_host_surface(HvObject *s) {
@@ -274,7 +269,7 @@ static void dump_host_surface(HvObject *s) {
         surface->planar_key = pk;
         planar_uses[pk] = @(planar_uses[pk].unsignedIntValue + 1);
         static int told;
-        if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: surface %llu shares the host surface of the same guest memory (%s)\n", mapping, pk.UTF8String);
+        if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: surface %llu shares the host surface of the same guest memory (%s)\n", mapping, pk.UTF8String);
         return;
     }
     surface->iosurface = made;
@@ -330,7 +325,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
        macOS 14's driver writes a compact one: u32 allocation at 0x10, width and height << 8 at 0x14 and 0x18, u32 row
        at 0x1c, bytes per pixel at 0x20 (BGRA 1920x1080: 007ec000 00078080 00043880 00001e00 00000004); one plane. */
     BOOL compact = hv_pvg_lite_old_driver(lite) != 0;
-    if (getenv("HV_PVG_DESC_DUMP")) {
+    if (hv_knob.pvg_desc_dump) {
         fprintf(stderr, "surface-desc %llu:", mapping);
         for (int i = 0; i < 0x200; i += 4) fprintf(stderr, "%s%08x", i % 32 ? " " : "\n  ", *(const uint32_t *)(desc + i));
         fprintf(stderr, "\n");
@@ -392,9 +387,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
            first) by WindowServer came back from the guest's pages as never drawn, alpha 0: a blank page. A copy
            is still made for a view that cannot sit on the pages (newIOSurface). HV_PVG_PLANAR_COPY=1 (testing):
            the copy for every one, as before. */
-        static int copy_all = -1;
-        if (copy_all < 0) copy_all = getenv("HV_PVG_PLANAR_COPY") != NULL;
-        if (copy_all || !surface->mapping_in_buffer) [self newIOSurface:surface mapping:mapping];
+        if (hv_knob.pvg_planar_copy || !surface->mapping_in_buffer) [self newIOSurface:surface mapping:mapping];
     }
     if (hv_pvg_trace_on()) fprintf(stderr, "trace: surface %llu: %llux%llu, row %llu, %llu KB, fourcc %c%c%c%c planes %u\n", mapping, (unsigned long long)sw, (unsigned long long)sh, row, alloc >> 10, desc[7], desc[6], desc[5], desc[4], planes);
         return surface;
@@ -444,7 +437,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
     MTLTextureSwizzleChannels sw = t.swizzle;
     if (sw.red != MTLTextureSwizzleRed || sw.green != MTLTextureSwizzleGreen || sw.blue != MTLTextureSwizzleBlue || sw.alpha != MTLTextureSwizzleAlpha) {
         static int told;
-        if (told++ < 3) fprintf(stderr, "hengevm: pvg-metal: surface %llu asked for swizzle %u %u %u %u; drawing it unswizzled\n", h.mapping, sw.red, sw.green, sw.blue, sw.alpha);
+        if (told++ < 3) fprintf(stderr, "solstice: pvg-metal: surface %llu asked for swizzle %u %u %u %u; drawing it unswizzled\n", h.mapping, sw.red, sw.green, sw.blue, sw.alpha);
         t.swizzle = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleGreen, MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha);
     }
     o->surface = surface;
@@ -454,9 +447,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
        made over plane 0 left plane 1 empty, so chroma read back as zero (all green) and alpha as zero (blank pages). */
     uint16_t plane;
     memcpy(&plane, h.d + (h.tag == 0x39 ? 0x28 : 0x20), 2);
-    static int plane0 = -1; /* HV_PVG_PLANE0 (testing): every view on plane 0, as before this was read */
-    if (plane0 < 0) plane0 = getenv("HV_PVG_PLANE0") != NULL;
-    if (plane0) plane = 0;
+    if (hv_knob.pvg_plane0) plane = 0; /* HV_PVG_PLANE0 (testing): every view on plane 0, as before this was read */
     if (surface->planar_desc && !surface->iosurface) {
         if (plane >= surface->plane_count) {
             [self complain:[NSString stringWithFormat:@"surface %llu: texture on plane %u of %u; using plane 0", h.mapping, plane, surface->plane_count]];
@@ -468,7 +459,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
             o->object = [pages newTextureWithDescriptor:t offset:at_plane bytesPerRow:surface->plane_row[plane]];
         if (o->object) {
             static int told;
-            if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: surface %llu: %lux%lu format %lu on plane %u, on its pages at %llu, rows of %llu\n",
+            if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: surface %llu: %lux%lu format %lu on plane %u, on its pages at %llu, rows of %llu\n",
                                     h.mapping, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, plane,
                                     (unsigned long long)at_plane, (unsigned long long)surface->plane_row[plane]);
             if (!plane) mapped_textures[@(h.mapping)] = o->object;
@@ -485,7 +476,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
     }
     if (plane) {
         static int told;
-        if (told++ < 8) fprintf(stderr, "hengevm: pvg-metal: surface %llu: texture %lux%lu format %lu on plane %u\n", h.mapping,
+        if (told++ < 8) fprintf(stderr, "solstice: pvg-metal: surface %llu: texture %lux%lu format %lu on plane %u\n", h.mapping,
                                 (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, plane);
     }
     if (surface->iosurface) {

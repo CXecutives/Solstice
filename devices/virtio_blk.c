@@ -1,4 +1,5 @@
 #include "virtio_blk.h"
+#include "knobs.h"
 #include "brand.h"
 
 #include <pthread/qos.h>
@@ -152,8 +153,8 @@ static void *worker(void *opaque) {
        scheduling that a phone under load parks on its slowest cores. */
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
     /* HV_BLK_STATS: requests, bytes, flushes and how busy this worker was, every 10 s. */
-    int stats = getenv("HV_BLK_STATS") != NULL;
-    uint64_t every = stats && atoi(getenv("HV_BLK_STATS")) > 0 ? (uint64_t)atoi(getenv("HV_BLK_STATS")) * 1000000 : 10000000;
+    int stats = hv_knob.blk_stats >= 0;
+    uint64_t every = hv_knob.blk_stats > 0 ? (uint64_t)hv_knob.blk_stats * 1000000 : 10000000;
     uint64_t t_last = now_us(), busy = 0, reqs = 0, bytes = 0, flushes = 0, flush_us = 0;
     for (;;) {
         pthread_mutex_lock(&b->mu);
@@ -332,7 +333,7 @@ HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int a
        restore through, but a freshly installed Mac's first boot (Spotlight
        indexing while Setup Assistant starts) still saw page-in ENOMEM; with 8
        it boots to Setup Assistant cleanly. */
-    uint32_t seg_max = getenv("HV_BLK_SEG_MAX") ? (uint32_t)atoi(getenv("HV_BLK_SEG_MAX")) : 8;
+    uint32_t seg_max = (uint32_t)hv_knob.blk_seg_max;
     if (seg_max < 1 || seg_max > HV_VIRTQ_MAX_SEGS - 2) seg_max = 8;
     uint32_t blk_size = 512, apple_type = (uint32_t)apple_variant;
     uint16_t num_queues = 1;

@@ -1,4 +1,5 @@
 #include "pvg.h"
+#include "knobs.h"
 #include "brand.h"
 
 #include <sys/resource.h>
@@ -59,7 +60,7 @@ static atomic_ulong frames;
 static uint32_t width = 1920, height = 1080;
 static const char *shot_path;
 static double last_shot;
-static double shot_every = 5; /* seconds between named screenshots (HV_SHOT_SECS, for timing a boot) */
+static double shot_every; /* seconds between named screenshots (HV_SHOT_SECS, for timing a boot) */
 
 /* ---- guest memory for the framework: every RAM region, by physical address ---- */
 
@@ -253,7 +254,7 @@ static double trace_t0;
 
 static void trace(const char *dev, int write, uint64_t off, uint64_t v, unsigned size) {
     if (pvg_trace < 0) {
-        pvg_trace = getenv("HV_PVG_TRACE") ? atoi(getenv("HV_PVG_TRACE")) : 0;
+        pvg_trace = hv_knob.pvg_trace;
         trace_t0 = [NSDate timeIntervalSinceReferenceDate];
     }
     if (!pvg_trace) return;
@@ -453,7 +454,7 @@ static void swap_handlers(const char *name, uint64_t (*rd)(void *, uint64_t, uns
 int hv_pvg_attach(HvVmapple *b, const char *screenshot) {
     board = b;
     shot_path = screenshot;
-    if (getenv("HV_SHOT_SECS")) shot_every = atof(getenv("HV_SHOT_SECS"));
+    shot_every = hv_knob.shot_secs;
     attach_time = [NSDate timeIntervalSinceReferenceDate];
     @autoreleasepool {
         mtl = MTLCreateSystemDefaultDevice();
@@ -495,7 +496,7 @@ int hv_pvg_attach(HvVmapple *b, const char *screenshot) {
         };
         dd.modeChangeHandler = ^(PGDisplayCoord_t size, OSType format) {
             (void)format;
-            if (board->m->log) fprintf(stderr, "hengevm: pvg: display mode %ux%u\n", size.x, size.y);
+            if (board->m->log) fprintf(stderr, "solstice: pvg: display mode %ux%u\n", size.x, size.y);
             if (size.x < 320 || size.y < 240) return; /* a pointer glyph passed off as a mode: not the screen */
             width = size.x;
             height = size.y;

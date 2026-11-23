@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "dispatch.h"
+#include "knobs.h"
 #include "machine.h"
 #include "mmu.h"
 #include "sysreg.h"
@@ -138,7 +139,7 @@ static void remap_test(void) {
     uint32_t *gen = (uint32_t *)(void *)data;
     uint64_t *page = (uint64_t *)(void *)(data + 64);
     for (int round = 0; round < 2; round++) {
-        hv_knob[HV_K_SYNCWAIT] = round; /* waiting for acknowledgements: spinning, then sleeping */
+        hv_knob.sync_wait = round; /* waiting for acknowledgements: spinning, then sleeping */
         *gen = 0;
         for (int i = 0; i < 3; i++) {
             page[i] = ADDR(data) + 16384 * (uint64_t)(i + 1);
@@ -200,7 +201,7 @@ static void remap_test(void) {
                round, last, (unsigned long long)rc[1].x[24], (unsigned long long)rc[2].x[24], (unsigned long long)rc[3].x[24],
                (unsigned long long)s.syncs, (unsigned long long)s.translations, (unsigned long long)s.retranslated);
     }
-    hv_knob[HV_K_SYNCWAIT] = 0;
+    hv_knob.sync_wait = 0;
     hv_machine_free(&rm);
     free(data);
     free(rt_pt);
@@ -832,8 +833,8 @@ int main(void) {
         hv_ijc_switch(&cpu);
         HvCpu *self = hv_self;
         hv_self = &cpu;
-        int knob = hv_knob[HV_K_IJCPAGES];
-        hv_knob[HV_K_IJCPAGES] = 1;
+        int knob = hv_knob.ijc_pages;
+        hv_knob.ijc_pages = 1;
         HvRam *r = &m.ram[0];
         const uint64_t P = 0x100004000ull, Q = 0x100008000ull, R = 0x10000c000ull;
         static HvBlock fb[3];
@@ -884,7 +885,7 @@ int main(void) {
             }
             hv_invalidate_code(&m, pa);
         }
-        hv_knob[HV_K_IJCPAGES] = knob;
+        hv_knob.ijc_pages = knob;
         hv_self = self;
     }
 
@@ -931,7 +932,7 @@ int main(void) {
         const uint64_t base = 0x100000000ull;
         const int32_t ks[6] = {0, 1, 32, 63, 64, 100};
         for (int knob = 1; knob >= 0; knob--) {
-            hv_knob[HV_K_RANGEDROP] = knob ? 1024 : 0;
+            hv_knob.range_drop = knob ? 1024 : 0;
             hv_tlb_flush(&cpu2);
             for (int k = 0; k < 6; k++) {
                 uint64_t va = base + ((uint64_t)ks[k] << 14);
@@ -973,7 +974,7 @@ int main(void) {
             }
             st->ttbr0 = 0, st->n = 0;
         }
-        hv_knob[HV_K_RANGEDROP] = 0;
+        hv_knob.range_drop = 0;
         /* A target in the middle of a page walk (of a page in the range): raced, so it is queued instead. */
         hv_tlb_flush(&cpu2);
         p2->walk_page[(p2->walk_seq >> 1) & 7] = base + (3ull << 14);
@@ -998,7 +999,7 @@ int main(void) {
             {"a tagged walk of the page", 0x5a00000000000000ull | P, 1, 0, 0},
         };
         for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
-            hv_knob[HV_K_WALKLOG] = cases[c].knob;
+            hv_knob.walk_log = cases[c].knob;
             uint32_t seq = __atomic_load_n(&p3->walk_seq, __ATOMIC_SEQ_CST) & ~1u;
             uint64_t pg = cases[c].walked == ~0ull ? ~0ull : cases[c].walked & 0x00ffffffffffc000ull;
             p3->walk_page[(seq >> 1) & 7] = pg;
@@ -1011,7 +1012,7 @@ int main(void) {
                 failures++;
             }
         }
-        hv_knob[HV_K_WALKLOG] = 1;
+        hv_knob.walk_log = 1;
     }
 
     switch_does_requests(&m);

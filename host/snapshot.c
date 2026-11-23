@@ -98,6 +98,8 @@ static int fail(char *err, size_t n, const char *fmt, ...) {
     }
     return -1;
 }
+/* A file that can never be resumed (hv_snapshot_restore's -2): fail's message, and -2. */
+#define refuse(...) (fail(__VA_ARGS__), -2)
 
 /* The layouts this build saves: a file from a build where any of them differs is refused. */
 static uint64_t fingerprint(void) {
@@ -630,7 +632,7 @@ int hv_snapshot_save(const char *path, const char *ident, char *err, size_t errl
         CpuState s;
         cpu_get(hv_vm_cpu(i), &s);
         w_section(&w, TAG('C', 'P', 'U', ' '), &s, sizeof s);
-        if (s.cntp_ctl & 1) fprintf(stderr, "hengevm: snapshot: cpu %d has its physical timer on (host counter based)\n", i);
+        if (s.cntp_ctl & 1) fprintf(stderr, "solstice: snapshot: cpu %d has its physical timer on (host counter based)\n", i);
     }
     save_devices(&w, b);
     uint64_t stored = 0;
@@ -650,7 +652,7 @@ int hv_snapshot_save(const char *path, const char *ident, char *err, size_t errl
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double secs = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
-    fprintf(stderr, "hengevm: snapshot: saved %d CPUs and %llu MB of RAM (%llu pages with data) in %llu MB, %.2f s "
+    fprintf(stderr, "solstice: snapshot: saved %d CPUs and %llu MB of RAM (%llu pages with data) in %llu MB, %.2f s "
                     "(compressing %.2f s alongside writing %.2f s; %.2f s waiting for compression)\n", ncpus, (unsigned long long)(b->ram_size >> 20),
             (unsigned long long)stored, (unsigned long long)(t.total >> 20), secs, pack_secs, write_secs, wait_secs);
     return 0;
@@ -682,6 +684,18 @@ int hv_snapshot_check(const char *path, const char *ident, uint64_t *bytes, int6
     return r;
 }
 
+int hv_snapshot_shape(const char *path, const char *ident, uint64_t *ram_bytes, uint32_t *ncpus) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    SnapHeader h;
+    int r = read_header(fd, &h, ident, NULL);
+    close(fd);
+    if (r) return r;
+    if (ram_bytes) *ram_bytes = h.ram_size;
+    if (ncpus) *ncpus = h.ncpus;
+    return 0;
+}
+
 int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t errlen) {
     HvMachine *m = hv_vm_machine();
     HvVmapple *b = hv_vm_board();
@@ -690,23 +704,31 @@ int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t e
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     int fd = open(path, O_RDONLY);
-    if (fd < 0) return fail(err, errlen, "No saved Mac: %s", strerror(errno));
+    if (fd < 0) {
+        int e = errno;
+        return e == ENOENT ? refuse(err, errlen, "No saved Mac.") : fail(err, errlen, "Cannot open the saved Mac: %s", strerror(e));
+    }
     fcntl(fd, F_NOCACHE, 1);
     SnapHeader h;
     int hr = read_header(fd, &h, ident, NULL);
     if (hr) {
         close(fd);
-        return fail(err, errlen, hr == -2 ? "The saved Mac is from another build of " SOLSTICE_NAME " or another disk." : "The saved Mac is incomplete or damaged.");
+        return refuse(err, errlen, hr == -2 ? "The saved Mac is from another build of " SOLSTICE_NAME " or another disk." : "The saved Mac is incomplete or damaged.");
     }
     char disk_now[256];
     h.disk[sizeof h.disk - 1] = 0;
-    if (hv_vm_disk_identity(disk_now, sizeof disk_now) != 0 || strcmp(disk_now, h.disk)) {
+    if (hv_vm_disk_identity(disk_now, sizeof disk_now) != 0) {
         close(fd);
-        fprintf(stderr, "hengevm: snapshot: the disk changed since the save (%s, now %s)\n", h.disk, disk_now);
-        return fail(err, errlen, "The Mac's disk has changed since it was saved.");
+        return fail(err, errlen, "Cannot read the Mac's disk.");
+    }
+    if (strcmp(disk_now, h.disk)) {
+        close(fd);
+        fprintf(stderr, "solstice: snapshot: the disk changed since the save (%s, now %s)\n", h.disk, disk_now);
+        return refuse(err, errlen, "The Mac's disk has changed since it was saved.");
     }
     if (h.ncpus != (uint32_t)ncpus || h.nram != (uint32_t)m->nram || h.ram_size != b->ram_size) {
         close(fd);
+        /* The file is fine, the machine is the wrong shape (hv_snapshot_shape says the right one): it is kept. */
         return fail(err, errlen, "The saved Mac had %u CPUs and %llu MB of RAM; this one is set up differently.", h.ncpus,
                     (unsigned long long)(h.ram_size >> 20));
     }
@@ -742,7 +764,7 @@ int hv_snapshot_restore(const char *path, const char *ident, char *err, size_t e
     hv_gicv3_update(b->gic);
     if (b->snd) hv_virtio_snd_resume(b->snd);
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    fprintf(stderr, "hengevm: snapshot: restored a Mac saved %lld s ago, in %.2f s (reading RAM %.2f s, decompressing %.2f s alongside)\n",
+    fprintf(stderr, "solstice: snapshot: restored a Mac saved %lld s ago, in %.2f s (reading RAM %.2f s, decompressing %.2f s alongside)\n",
             (long long)(time(NULL) - h.saved_at), (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9,
             read_secs, unpack_secs);
     return 0;

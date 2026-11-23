@@ -1,5 +1,6 @@
 /* The engine's measurements: the stats line, the --profile summary, and rates read by the app (stats.h). */
 #include "stats.h"
+#include "knobs.h"
 
 #include <dlfcn.h>
 #include <mach/mach.h>
@@ -42,8 +43,7 @@ static void print_profile(HvMachine *m) {
             outside++;
             Dl_info di;
             const char *name = dladdr(pc, &di) && di.dli_sname ? di.dli_sname : "?";
-            static const char *detail;
-            if (!detail) detail = getenv("HV_PROF_FN") ? getenv("HV_PROF_FN") : "run";
+            const char *detail = hv_knob.prof_fn;
             if (!strcmp(name, detail)) { /* per-offset detail for one function (HV_PROF_FN, default the dispatcher loop) */
                 uint32_t off = (uint32_t)((uint8_t *)pc - (uint8_t *)di.dli_saddr);
                 int r = 0;
@@ -76,7 +76,7 @@ static void print_profile(HvMachine *m) {
         fprintf(stderr, " %s %.1f%%", fn[best].name, 100.0 * fn[best].n / total);
         fn[best].n = 0;
     }
-    fprintf(stderr, "\n  %s+:", getenv("HV_PROF_FN") ? getenv("HV_PROF_FN") : "run");
+    fprintf(stderr, "\n  %s+:", hv_knob.prof_fn);
     for (int k = 0; k < 12; k++) {
         int best = -1;
         for (int i = 0; i < nrun; i++)
@@ -138,12 +138,14 @@ static void print_stats(HvCpu *cpu) {
         const HvCodeCache *cc = &m->cc;
         fprintf(stderr, "  code cache: %u segments of %llu KB; %llu evictions (%llu tenured), %.0f ms of work, %llu blocks dropped, "
                         "%llu exits unchained; %llu waits for room (%.0f ms); %llu tenured translations, %llu redone; "
-                        "branch caches caught up: %llu scanned (%.0f ms, %llu entries dropped), %llu reset\n",
+                        "branch caches caught up: %llu scanned (%llu more than one epoch behind; %.0f ms, %llu entries dropped), "
+                        "%llu reset; %llu second chances\n",
                 cc->nseg, (unsigned long long)(4ull << cc->seg_shift) >> 10, (unsigned long long)cc->evictions,
                 (unsigned long long)cc->evict_tenured, (double)cc->evict_ticks / 24e3, (unsigned long long)cc->evict_blocks,
                 (unsigned long long)cc->evict_unchained, (unsigned long long)cc->waits, (double)cc->wait_ticks / 24e3,
-                (unsigned long long)s->cc_tenured, (unsigned long long)cc->stale, (unsigned long long)cc->ijc_scans,
-                (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped, (unsigned long long)cc->ijc_resets);
+                (unsigned long long)s->cc_tenured, (unsigned long long)cc->stale, (unsigned long long)cc->ijc_scans, (unsigned long long)cc->ijc_behind,
+                (double)cc->ijc_scan_ticks / 24e3, (unsigned long long)cc->ijc_dropped, (unsigned long long)cc->ijc_resets,
+                (unsigned long long)cc->second_chances);
     }
     {
         double tot = 0;

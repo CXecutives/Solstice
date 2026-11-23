@@ -183,6 +183,9 @@ static double overshoot_us(qos_class_t qos, uint64_t ticks) {
    cap) cannot tell that from a lost timer, so it is only made when the host itself did not stall. */
 static _Atomic int stall_watch;
 static double stall_worst_us;
+/* With stall_period_us set: how many such periods those stalls spanned (a wait that comes back later than a period
+   took that many deadlines with it, and one more for the one it was in). */
+static double stall_period_us, stall_periods;
 static void *watch_stalls(void *arg) {
     (void)arg;
     pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -197,6 +200,7 @@ static void *watch_stalls(void *arg) {
         uint64_t dt = mach_absolute_time() - t0;
         double late = dt > ticks ? (double)(dt - ticks) / 24.0 : 0;
         if (late > stall_worst_us) stall_worst_us = late;
+        if (stall_period_us > 0 && late > stall_period_us) stall_periods += late / stall_period_us + 1;
     }
     return NULL;
 }
@@ -251,7 +255,7 @@ static void refresh_and_idle(void) {
     const uint64_t period = 24000000 / 60;
     double slack_kicker = overshoot_us(QOS_CLASS_USER_INTERACTIVE, HV_POLL_BUSY), slack_wfi = overshoot_us(QOS_CLASS_DEFAULT, period);
     /* What the host's timed waits allow: one refresh per wakeup at most, one wakeup per period plus how late it comes. */
-    double want_asleep = 1e6 / ((double)period / 24.0 + slack_wfi), want_polls = 1e6 / ((double)HV_POLL_BUSY / 24.0 + slack_kicker);
+    double want_asleep = 1e6 / ((double)period / 24.0 + slack_wfi);
     if (want_asleep > 60) want_asleep = 60;
     printf("refresh: this host's timed waits come back %.0f us late after 1 ms (kicker), %.0f us after 16.7 ms (CPU threads)\n",
            slack_kicker, slack_wfi);
@@ -267,9 +271,20 @@ static void refresh_and_idle(void) {
         usleep(300000); /* settled */
         uint64_t r0 = atomic_load(&refreshes), p0 = atomic_load(&polls), k0 = kicker_wakes(), w0 = wfis();
         uint64_t kp0 = __atomic_load_n(&m.stats.kicker_polls, __ATOMIC_RELAXED);
+        /* The host's own stalls over the same second: a refresh whose deadline passed while every thread stood still
+           is the host's, not the engine's. */
+        pthread_t watcher;
+        stall_worst_us = stall_periods = 0;
+        stall_period_us = (double)period / 24.0;
+        atomic_store(&stall_watch, 1);
+        pthread_create(&watcher, NULL, watch_stalls, NULL);
         uint64_t t0 = mach_absolute_time();
         usleep(1000000);
         double dt = (double)(mach_absolute_time() - t0) / 24e6;
+        atomic_store(&stall_watch, 0);
+        pthread_join(watcher, NULL);
+        stall_period_us = 0;
+        double stalled = stall_periods / dt;
         double r = (double)(atomic_load(&refreshes) - r0) / dt, p = (double)(atomic_load(&polls) - p0) / dt;
         double k = (double)(kicker_wakes() - k0) / dt, w = (double)(wfis() - w0) / dt;
         double kp = (double)(__atomic_load_n(&m.stats.kicker_polls, __ATOMIC_RELAXED) - kp0) / dt;
@@ -277,8 +292,8 @@ static void refresh_and_idle(void) {
                what[phase], r, p, kp, k, w);
         char msg[200];
         if (phase < 2) { /* kicked at each refresh deadline */
-            snprintf(msg, sizeof msg, "refresh, cpu 0 %s: every 60 Hz refresh came (%.1f/s)", what[phase], r);
-            check(msg, r >= 57 && r <= 61.5);
+            snprintf(msg, sizeof msg, "refresh, cpu 0 %s: every 60 Hz refresh came (%.1f/s; this host's stalls spanned %.1f)", what[phase], r, stalled);
+            check(msg, r >= 57 - stalled && r <= 61.5);
         }
         if (phase == 0) { /* nothing waits for a poll: the kicker asks for none, CPU 0 polls at its refreshes */
             snprintf(msg, sizeof msg, "refresh, cpu 0 spinning: no poll asked by the kicker (%.0f/s), polls at the refreshes (%.0f/s)", kp, p);
@@ -286,8 +301,11 @@ static void refresh_and_idle(void) {
         } else if (phase == 1) {
             /* How often the kicker gets to run is the host's call (a busy CI VM gave 84/s against 181 it promised a
                moment before), so check what the engine decides: a poll at each kicker wakeup, not just at refreshes. */
-            snprintf(msg, sizeof msg, "refresh, cpu 0 spinning, unsignalled work: devices polled at each kicker wakeup (%.0f/s, %.0f wakeups/s; %.0f allowed by this host)", p, k, want_polls);
-            check(msg, p >= 0.9 * k && p > r && kp > 0);
+            snprintf(msg, sizeof msg, "refresh, unsignalled work: a poll asked at each kicker wakeup but the refreshes' (%.0f/s of %.0f; %.0f polls/s)", kp, k, p);
+            /* The kicker wakes for CPU 0's refresh deadlines too, and asks for no poll then unless a poll period has
+               passed. How many of the polls it asks for CPU 0 gets to make is again the host's call (asked twice while
+               its thread stood still is one poll), so what is checked is the asking. */
+            check(msg, kp >= 0.9 * (k - r - 5) && kp > 0 && p > r);
         } else { /* asleep until each refresh deadline: one refresh per wakeup */
             snprintf(msg, sizeof msg, "refresh, cpu 0 asleep: a refresh at each deadline (%.1f/s; %.1f allowed by this host)", r, want_asleep);
             check(msg, r >= 0.85 * want_asleep - 1 && r <= 61.5);

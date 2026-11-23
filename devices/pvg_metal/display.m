@@ -43,7 +43,7 @@ static const uint8_t *half_to_byte(void) {
     cursor_tex = glyph;
     cursor_seq++;
     os_unfair_lock_unlock(&screen_lock);
-    if (getenv("HV_PVG_CURSOR_LOG")) fprintf(stderr, "pvgcursor glyph %ux%u hot %d,%d stride %u first alpha %u\n", w, h, hx, hy, (uint32_t)stride, bits[(size_t)(h / 2) * stride + (size_t)(w / 2) * 4 + 3]);
+    if (hv_knob.pvg_cursor_log) fprintf(stderr, "pvgcursor glyph %ux%u hot %d,%d stride %u first alpha %u\n", w, h, hx, hy, (uint32_t)stride, bits[(size_t)(h / 2) * stride + (size_t)(w / 2) * 4 + 3]);
     [self drawCursor];
 }
 
@@ -67,7 +67,7 @@ static const uint8_t *half_to_byte(void) {
     const uint8_t *page = hv_pvg_lite_display_page(lite);
     if (!page || !cursor || !(cursor_shown || page[0xe04])) return;
     uint32_t where = __atomic_load_n((const uint32_t *)(page + 0xe00), __ATOMIC_ACQUIRE);
-    if (getenv("HV_PVG_CURSOR_LOG")) {
+    if (hv_knob.pvg_cursor_log) {
         static uint32_t last;
         if (where != last) fprintf(stderr, "pvgcursor at %u,%u shown %d flag %d\n", where & 0xffff, where >> 16, cursor_shown, page[0xe04]);
         last = where;
@@ -106,12 +106,12 @@ static const uint8_t *half_to_byte(void) {
         [CATransaction setDisableActions:YES];
         target.device = device;
         target.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        target.framebufferOnly = !getenv("HV_PVG_GPU_TEST"); /* the GPU test copies the drawable out */
+        target.framebufferOnly = !hv_knob.pvg_gpu_test; /* the GPU test copies the drawable out */
         target.allowsNextDrawableTimeout = YES;
         target.maximumDrawableCount = 3;
         [CATransaction commit];
         prepared_layer = target;
-        fprintf(stderr, "hengevm: pvg-metal: half-float display surfaces are shown %s (HV_PVG_HALF=%s)\n",
+        fprintf(stderr, "solstice: pvg-metal: half-float display surfaces are shown %s (HV_PVG_HALF=%s)\n",
                 hv_half_mode_get() == 1 ? "as LINEAR light with an sRGB encode" : "as display-encoded values, passed through", hv_half_mode_get() == 1 ? "linear" : "encoded/default");
     }
     return YES;
@@ -155,7 +155,7 @@ static const uint8_t *half_to_byte(void) {
     if (!surface) { [self complain:[NSString stringWithFormat:@"swap to unknown surface %llu", mapping]]; return; }
     on_screen = mapping;
     BOOL half = surface->fourcc == 'RGhA';
-    if (!screen_tex) fprintf(stderr, "hengevm: display scanout format %s (%ux%u)\n",
+    if (!screen_tex) fprintf(stderr, "solstice: display scanout format %s (%ux%u)\n",
                              half ? "RGBA16Float" : "BGRA8Unorm", surface->surface_w, surface->surface_h);
     if (!surface->scanout) {
         MTLTextureDescriptor *t = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:half ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm
@@ -411,6 +411,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
         BOOL pointer_in_frame = !cursor_layer_ok, hold = overlay_hold; /* else its layer shows it */
         BOOL same_target = layer_generation == generation && layer == target;
         BOOL same_size = screen_w == W && screen_h == H;
+        id<MTLCommandQueue> q = queue; /* a new one after a GPU fault (recoverGPU) */
         if (same_target && same_size) {
             screen_dirty = NO;
             drawable_retry_deadline = 0;
@@ -422,7 +423,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
             os_unfair_lock_unlock(&screen_lock);
             continue;
         }
-        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLCommandBuffer> cb = [q commandBuffer];
         id<MTLTexture> out = drawable.texture; /* its size, not OW x OH: the layout may have changed since */
         uint32_t TW = (uint32_t)out.width, TH = (uint32_t)out.height;
         HvFit fit = screen_fit(TW, TH, W, H);
@@ -455,7 +456,7 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
         }
         [e endEncoding];
 #if !TARGET_OS_IPHONE
-        if (getenv("HV_PVG_GPU_TEST")) { /* the same pixels for a screenshot: this is the path a phone runs */
+        if (hv_knob.pvg_gpu_test) { /* the same pixels for a screenshot: this is the path a phone runs */
             NSUInteger bytes = (NSUInteger)TW * TH * 4;
             if (!test_readback || test_readback.length < bytes) test_readback = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
             id<MTLBuffer> rb = test_readback;

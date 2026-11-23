@@ -9,6 +9,7 @@
    not understand, or one whose lookup cannot even start, goes to libslirp as before; so do .local names (asking for
    those on iOS brings up the local network privacy prompt). */
 #include "dns_proxy.h"
+#include "knobs.h"
 #include "machine.h"
 
 #include <dns_sd.h>
@@ -248,9 +249,9 @@ static void *lookup(void *arg) {
         if (!atomic_load(&stopping)) {
             if (!q->done || q->failed) {
                 atomic_fetch_add(&timed_out, 1);
-                if (atomic_fetch_add(&unanswered_in_a_row, 1) + 1 == GIVE_UP && hv_knob[HV_K_DNSPROXY]) {
-                    hv_knob[HV_K_DNSPROXY] = 0; /* not hv_knob_set: no translation depends on it */
-                    fprintf(stderr, "hengevm: dns: %d lookups in a row unanswered by the system resolver: libslirp answers from now on\n", GIVE_UP);
+                if (atomic_fetch_add(&unanswered_in_a_row, 1) + 1 == GIVE_UP && hv_knob.dns_proxy) {
+                    hv_knob.dns_proxy = 0; /* not hv_knob_set: no translation depends on it */
+                    fprintf(stderr, "solstice: dns: %d lookups in a row unanswered by the system resolver: libslirp answers from now on\n", GIVE_UP);
                 }
             } else {
                 atomic_store(&unanswered_in_a_row, 0);
@@ -265,7 +266,7 @@ static void *lookup(void *arg) {
 }
 
 int hv_dns_proxy_on(void) {
-    return hv_knob[HV_K_DNSPROXY] != 0; /* HV_DNS_PROXY, on unless 0 (machine.c) */
+    return hv_knob.dns_proxy != 0; /* HV_DNS_PROXY, on unless 0 (machine.c) */
 }
 
 int hv_dns_proxy_take(const uint8_t *p, uint32_t len, HvDnsSend send) {
