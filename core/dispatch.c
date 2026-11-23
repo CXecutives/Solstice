@@ -732,7 +732,7 @@ static void chain(HvCpu *cpu, uint64_t *slot, HvBlock *b) {
     uint32_t idx = HV_SLOT_INDEX(m, slot);
     uint32_t *code = hv_block_code(m, b);
     if (m->gen_checks && (hv_block_jit_gen(m, b) != m->jit_gen || (m->slot_site[idx] && (uint64_t)(m->slot_site[idx] - 1) >= m->jit.used)))
-        fprintf(stderr, "hengevm: chain slot %u site rx+%llx to rx+%llx va %llx: block gen %u now %u\n", idx, (unsigned long long)m->slot_site[idx] * 4, (unsigned long long)b->code_off * 4, (unsigned long long)b->va, hv_block_jit_gen(m, b), m->jit_gen);
+        fprintf(stderr, "hengevm: chain slot %u site rx+%llx to rx+%llx va %llx: block gen %u now %u\n", idx, (unsigned long long)(m->slot_site[idx] ? m->slot_site[idx] - 1 : 0) * 4 /* stored as word offset + 1 */, (unsigned long long)b->code_off * 4, (unsigned long long)b->va, hv_block_jit_gen(m, b), m->jit_gen);
     uint64_t xa = m->slot_xa[idx];
     HvRam *ram = hv_block_ram(m, b);
     uint64_t page_pa = b->pa & ~((1ull << HV_TLB_PAGE_BITS) - 1);
