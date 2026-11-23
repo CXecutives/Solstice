@@ -3,6 +3,9 @@
 #include <mach/mach_time.h>
 #include <stdlib.h>
 
+#include "light.h"
+#include "mmu.h"
+
 DECLARE_PROGRAM(p_svc);
 DECLARE_PROGRAM(p_brk_undef);
 DECLARE_PROGRAM(p_dabt);
@@ -14,6 +17,7 @@ DECLARE_PROGRAM(p_fptrap);
 DECLARE_PROGRAM(p_psci);
 DECLARE_PROGRAM(p_smc);
 DECLARE_PROGRAM(p_smc_nomaint);
+DECLARE_PROGRAM(p_el0_svc);
 extern const char exc_programs_begin[], exc_programs_finish[];
 
 #define ACK_PA 0x20000000ull
@@ -47,6 +51,43 @@ static int run(const TestProgram *p, HvCpu *cpu, uint64_t x9) {
 }
 
 #define ADDR(sym) ((uint64_t)(uintptr_t)(sym))
+
+/* Page tables for p_el0_svc (16 KB granule, 48-bit VAs in both halves): the programs where they are (TTBR0, read-only
+   and executable at EL0 and EL1), the stack (TTBR0, read/write at both) and the programs again at KVA + their
+   address (TTBR1, EL1 only), so its vectors are at a kernel address, as xnu's. */
+#define KVA 0xffff000000000000ull
+#define PT_BYTES (16u * 16384)
+static uint8_t *pt;
+static uint32_t pt_used;
+static uint64_t root0, root1;
+
+static uint64_t pt_alloc(void) {
+    uint8_t *t = pt + pt_used;
+    pt_used += 16384;
+    memset(t, 0, 16384);
+    return ADDR(t);
+}
+
+static void map_page(uint64_t root, uint64_t va, uint64_t pa, uint64_t ap) {
+    uint64_t table = root, v = va & ((1ull << 48) - 1);
+    for (int level = 0; level < 3; level++) {
+        uint64_t *e = (uint64_t *)(uintptr_t)table + ((v >> (14 + 11 * (3 - level))) & 0x7ff);
+        if (!(*e & 1)) *e = pt_alloc() | 3;
+        table = *e & 0x0000ffffffffc000ull;
+    }
+    ((uint64_t *)(uintptr_t)table)[(v >> 14) & 0x7ff] = pa | 3 | 3u << 8 | 1u << 10 | ap << 6;
+}
+
+static uint64_t el0_sp;
+static void mmu_on(HvCpu *cpu) {
+    cpu->mair_el1 = 0xff;
+    cpu->tcr_el1 = 16 | 2u << 14 | 16u << 16 | 1u << 30 | 5ull << 32; /* T0SZ, T1SZ 16; TG0, TG1 16K; 48-bit PAs */
+    cpu->ttbr0_el1 = root0;
+    cpu->ttbr1_el1 = root1;
+    cpu->sctlr_el1 |= 1 | 1u << 2 | 1u << 12;
+    cpu->x[9] = el0_sp;
+    hv_tlb_flush(cpu);
+}
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -192,6 +233,59 @@ int main(void) {
         TestProgram copy = {p->name, NULL, code, code + ((const char *)p->end - (const char *)p->start)};
         if (!run(&copy, &c, 0)) check(p->name, "1 then 2 after patching", c.x[1], 3);
     }
+
+    /* EL0 SVCs into a kernel at a kernel address and ERETs back (A1): both take the light path, straight to the next
+       block (no full helper, no dispatcher), and the guest sees what the full path gave it: ESR, ELR, SPSR, its NZCV and
+       registers back, SIMD registers untouched (the light path never saves them). */
+    pt = aligned_alloc(16384, PT_BYTES);
+    hv_machine_add_ram(&m, ADDR(pt), PT_BYTES, pt, 0);
+    root0 = pt_alloc();
+    root1 = pt_alloc();
+    for (uint64_t pa = ADDR(exc_programs_begin); pa < ADDR(exc_programs_finish); pa += 16384) {
+        map_page(root0, pa, pa, 3); /* read-only at EL0 and EL1 */
+        map_page(root1, KVA | pa, pa, 0);
+    }
+    for (uint64_t pa = ADDR(stack); pa < ADDR(stack) + 65536; pa += 16384) map_page(root0, pa, pa, 1);
+    el0_sp = ADDR(stack) + 8192;
+    const uint64_t svcs = 2000;
+    static const TestProgram es = TEST_PROGRAM(p_el0_svc);
+    static HvCpu esi;
+    seed_cpu(&esi, 7, ADDR(stack) + 32768);
+    esi.x[7] = svcs;
+    esi.x[19] = ACK_PA;
+    m.stats_interval = 1000000;
+    HvStats e0, e1;
+    hv_stats_total(&m, &e0);
+    uint32_t rings0 = m.percpu[0].own.stats.nelchg;
+    if (run_jit(&m, &es, &esi, &c, mmu_on)) failures++;
+    else {
+        hv_stats_total(&m, &e1);
+        check("el0 svc", "SVCs taken", c.x[24], svcs);
+        check("el0 svc", "times NZCV or x13 came back changed", c.x[14], 0);
+        check("el0 svc", "ESR", c.x[20], 0x56000077);
+        check("el0 svc", "ELR", c.x[22], c.x[17]);
+        check("el0 svc", "SPSR: the last SVC's NZCV, EL0t", c.x[23], 1u << 28);
+        check("el0 svc", "vector (lower EL)", c.x[25], 0x400);
+        check("el0 svc", "still at EL0", c.el, 0);
+        check("el0 svc", "SP at EL0", c.x[10], el0_sp);
+        check("el0 svc", "SP_EL1 banked", c.sp_el1, esi.sp);
+        static const int kept[] = {1, 2, 3, 4, 5, 6, 15, 18, 19, 27, 28, 29, 30};
+        uint64_t changed = 0;
+        for (size_t i = 0; i < sizeof kept / sizeof kept[0]; i++) changed += c.x[kept[i]] != esi.x[kept[i]];
+        for (int i = 0; i < 32; i++) changed += c.v[i] != esi.v[i];
+        check("el0 svc", "registers the programs leave alone, q0-q31 too, changed", changed, 0);
+        check("el0 svc", "exceptions counted", e1.exceptions - e0.exceptions, svcs);
+        check("el0 svc", "exception entries and returns in the CPU's ring", (uint32_t)(m.percpu[0].own.stats.nelchg - rings0), 2 * svcs + 1);
+        uint64_t fast = e1.fast_resumes - e0.fast_resumes, entries = e1.blocks - e0.blocks;
+        printf("el0 svc: %llu SVCs, %llu went straight to their block, %llu dispatcher entries (host clock %u, light flags %x)\n",
+               (unsigned long long)svcs, (unsigned long long)fast, (unsigned long long)entries, hv_light_clock, hv_light_flags);
+        /* The first SVC and ERET find their block not made yet: they leave, and the dispatcher makes and caches it. */
+        check("el0 svc", "SVCs and ERETs straight to their block", fast >= 2 * svcs - 4, 1);
+        check("el0 svc", "none of them through the full helper",
+              e1.helper[HV_OP_EXCEPTION] - e0.helper[HV_OP_EXCEPTION] + e1.helper[HV_OP_ERET] - e0.helper[HV_OP_ERET], 0);
+        check("el0 svc", "nor through the dispatcher", entries < 32, 1);
+    }
+    m.stats_interval = 0;
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;

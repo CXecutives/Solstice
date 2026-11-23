@@ -128,6 +128,37 @@ PROGRAM p_el0
     mrs x18, tpidr_el0
 END p_el0
 
+// EL0 SVCs into the vectors at their kernel address and ERETs back, with the MMU on: test_exc.c maps these programs
+// in TTBR0 where they are and in TTBR1 at 0xffff000000000000 + their address, so both ways go through the light path.
+// x7 SVCs, each with the count's low four bits in NZCV and the count in x13: x14 counts the times either came back
+// changed. x9: the EL0 stack.
+PROGRAM p_el0_svc
+    mov x24, #0
+    adr x8, vectors
+    orr x8, x8, #0xffff000000000000
+    msr vbar_el1, x8
+    msr sp_el0, x9
+    adr x0, 1f
+    msr elr_el1, x0
+    msr spsr_el1, xzr       // EL0t, interrupts unmasked
+    eret
+1:  mov x14, #0
+    mov x11, x7
+2:  ubfiz x12, x11, #28, #4
+    msr nzcv, x12
+    mov x13, x11
+    svc #0x77
+3:  mrs x16, nzcv
+    cmp x16, x12
+    cinc x14, x14, ne
+    cmp x13, x11
+    cinc x14, x14, ne
+    subs x11, x11, #1
+    b.ne 2b
+    adr x17, 3b
+    mov x10, sp
+END p_el0_svc
+
 PROGRAM p_sysregs
     SETUP
     msr tpidr_el1, x1

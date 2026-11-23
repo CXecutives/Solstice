@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "classify.h"
+#include "light.h"
 #include "memop.h"
 #include "mmu.h"
 #include "operands.h"
@@ -1594,11 +1595,9 @@ static int translate_msr_inline(Emit *e, uint32_t insn, uint64_t pc) {
    does; its virtual counter is that less the CPU's CNTVOFF (the count when the
    machine started). EL0 reads check CNTKCTL_EL1's enables and trap through the
    helper when they are off. */
-#define COMMPAGE_TIMEBASE_OFFSET 0xfffffc088ull
-#define COMMPAGE_TIMEBASE_TYPE   0xfffffc090ull
 static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
     static int type = -1;
-    if (type < 0) type = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
+    if (type < 0) type = *(volatile uint8_t *)(uintptr_t)HV_COMMPAGE_TIMEBASE_TYPE;
     if (type == 0) return 0; /* the kernel's own path: leave it to the helper */
     int rt = insn & 0x1f;
     if (rt == 31) return 1;
@@ -1612,7 +1611,7 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
     int r = is_stolen(rt) ? 15 : rt;
     if (type == 1) put(e, 0xd5033fdfu);                                  /* isb; then CNTVCT_EL0 */
     put(e, (type == 1 ? 0xd53be040u : type == 2 ? 0xd53be0c0u : 0xd53cfac0u) | (uint32_t)r);
-    put_lit(e, 6, COMMPAGE_TIMEBASE_OFFSET);
+    put_lit(e, 6, HV_COMMPAGE_TIMEBASE_OFFSET);
     put(e, LDR_X(6, 6, 0));
     put(e, ADD_LSL(r, r, 6, 0));
     if (!physical) {
@@ -1912,21 +1911,21 @@ static int translate_one(Emit *e, uint32_t insn, uint64_t pc) {
     }
     case HV_INSN_WAIT:
         if (((insn >> 5) & 7) == 3 || ((insn >> 12) & 0xf) == 1) put_helper(e, pc, insn, HV_OP_WFI); /* WFI, WFIT, WFET */
-        else { /* WFE: waiting for another CPU; the helper waits for the monitored word, then the block goes on */
-            put_helper(e, pc, insn, HV_OP_WFE);
+        else { /* WFE: waiting for another CPU; the light path waits for the monitored word, then the block goes on */
+            put_helper(e, pc, insn, HV_OP_WFE | HV_OP_LIGHT);
             if (e->no_ijc) put_exit(e, pc + 4);
             else put_branch_exit(e, pc + 4, 0); /* checks exit_req: the wait may have ended for a request */
             return 1;
         }
         put_exit(e, pc + 4);
         return 1;
-    case HV_INSN_EXCEPTION:
-        put_helper(e, pc, insn, HV_OP_EXCEPTION);
+    case HV_INSN_EXCEPTION: /* SVC takes the light path (hv_light); HVC, BRK and the rest the full helper */
+        put_helper(e, pc, insn, HV_OP_EXCEPTION | ((insn & 0xffe0001fu) == 0xd4000001u ? HV_OP_LIGHT : 0));
         if ((insn & 0xffe0001f) == 0xd4000002 && (e->flags & HV_BLOCK_EL1)) return 0; /* HVC returns like a call */
         put_exit(e, pc + 4);
         return 1;
     case HV_INSN_ERET:
-        put_helper(e, pc, insn, HV_OP_ERET);
+        put_helper(e, pc, insn, HV_OP_ERET | HV_OP_LIGHT);
         put_exit(e, pc + 4);
         return 1;
     case HV_INSN_UNDEFINED:

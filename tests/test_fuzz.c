@@ -879,6 +879,30 @@ static int one(int seq, uint64_t seed, Conf *c, int report) {
     return bad ? 2 : 0;
 }
 
+/* What HV_HOIST_CHECK costs in code: the same n programs translated without and with it (each run checked against
+   the native one as usual). Returns the runs that differed. */
+static int hoist_cost(uint64_t seed0, int n) {
+    static Conf off = {"hoist off", 0, 0, HV_K_HOIST, 0, 0, 0, 0}, on = {"hoist on", 0, 0, HV_K_HOIST, 1, 0, 0, 0};
+    uint64_t hot[2] = {0, 0}, all[2] = {0, 0}, insns[2] = {0, 0};
+    int bad = 0;
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < 2; k++) {
+            HvXlateCounts a = hv_xlate_counts;
+            bad += one(-1, seed0 + 1000000 + (uint64_t)i, k ? &on : &off, 0) == 2;
+            HvXlateCounts b = hv_xlate_counts;
+            hot[k] += b.hot - a.hot;
+            all[k] += b.hot + b.cold + b.pool - a.hot - a.cold - a.pool;
+            insns[k] += b.insns - a.insns;
+            progress++;
+        }
+    double h0 = (double)hot[0] / ((double)insns[0] + 1e-9), h1 = (double)hot[1] / ((double)insns[1] + 1e-9);
+    double w0 = (double)all[0] / ((double)insns[0] + 1e-9), w1 = (double)all[1] / ((double)insns[1] + 1e-9);
+    printf("hoisted checks (HV_HOIST_CHECK), the same %d programs: code per guest instruction %.3f words without, %.3f with "
+           "(%+.2f%%; hot part %.3f, %.3f, %+.2f%%), %d failures\n",
+           n, w0, w1, 100 * (w1 / (w0 + 1e-9) - 1), h0, h1, 100 * (h1 / (h0 + 1e-9) - 1), bad);
+    return bad;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (check_encoders()) {
@@ -959,6 +983,8 @@ int main(void) {
     hv_stats_total(&m, &tot);
     printf("slow paths: %llu helper accesses, %llu refills, %llu chained\n", (unsigned long long)hv_stat_slow_mem(&m),
            (unsigned long long)tot.refills, (unsigned long long)tot.chained);
+    if (only < 0) failed += hoist_cost(seed0, 300);
+    memcpy(hv_knob, base_knob, sizeof hv_knob);
     printf("%d sequences in %.1f s, %d failures (%d of them the native run's)\n", ran, dt, failed, native_bad);
     return failed != 0;
 }

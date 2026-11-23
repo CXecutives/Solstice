@@ -47,6 +47,13 @@ void hv_pstate_set(HvCpu *cpu, uint64_t spsr) {
 }
 
 void hv_take_exception(HvCpu *cpu, int type, uint32_t esr, uint64_t far, int set_far, uint64_t ret) {
+    if (cpu->m->trace || cpu->m->log >= 2)
+        fprintf(stderr, "exception type %d esr %08x far %llx from pc %llx el%u\n", type, esr, (unsigned long long)far,
+                (unsigned long long)ret, cpu->el);
+    hv_exception_enter(cpu, type, esr, far, set_far, ret);
+}
+
+void hv_exception_enter(HvCpu *cpu, int type, uint32_t esr, uint64_t far, int set_far, uint64_t ret) {
     HvStats *st = &HV_ST(cpu);
     if (type == HV_EXC_SYNC) st->exceptions++;
     else st->interrupts++;
@@ -56,9 +63,6 @@ void hv_take_exception(HvCpu *cpu, int type, uint32_t esr, uint64_t far, int set
         st->elchg[k].from = ret, st->elchg[k].spsr = spsr, st->elchg[k].kind = (uint32_t)type, st->elchg[k].el = cpu->el;
         st->elchg[k].to = esr;
     }
-    if (cpu->m->trace || cpu->m->log >= 2)
-        fprintf(stderr, "exception type %d esr %08x far %llx from pc %llx el%u\n", type, esr, (unsigned long long)far,
-                (unsigned long long)ret, cpu->el);
     uint64_t offset = cpu->el == 0 ? 0x400 : cpu->spsel ? 0x200 : 0x000;
     cpu->spsr_el1 = spsr;
     cpu->elr_el1 = ret;

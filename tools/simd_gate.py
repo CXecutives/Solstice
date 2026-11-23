@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """SIMD gate: the engine paths that run from translated code with the guest's q0-q31 still live.
 
-host/enter.S's helper thunks save only x0-x17 and NZCV before calling hv_tlb_refill and
-hv_ijc_resolve. Anything those reach must not touch SIMD/FP registers, and must not call into
+host/enter.S's helper thunks save only x0-x17 and NZCV before calling hv_tlb_refill,
+hv_ijc_resolve and hv_light (SVC, ERET, WFE). Anything those reach must not touch SIMD/FP registers, and must not call into
 libc (memset, memcpy, calloc ... use SIMD). This walks the call graph of the built iOS objects
 from those roots (calls by name, and by address to static functions in the same object) and
 fails on any external call not in tools/simd_gate.allow, or on any SIMD register in a reached
@@ -11,7 +11,7 @@ function. Run after `make ios-lib`:  python3 tools/simd_gate.py build/ios
 import re, subprocess, sys
 from pathlib import Path
 
-ROOTS = ["_hv_tlb_refill", "_hv_ijc_resolve"]
+ROOTS = ["_hv_tlb_refill", "_hv_ijc_resolve", "_hv_light"]
 LINE = re.compile(r"^([0-9a-f]{8,16})\s+(\S+)\s*(.*)$")
 LABEL = re.compile(r"^(_?[A-Za-z0-9_$.]+):\s*$")
 SIMD = re.compile(r"(?<![\w.])[vqdsbh](?:[0-9]|[12][0-9]|3[01])(?![\w])")

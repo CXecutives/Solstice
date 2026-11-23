@@ -37,6 +37,8 @@
 #define CPU_TLB 0x580
 #define TLB_ADJ 15
 #define IJC_BITS 18
+#define OP_LIGHT_BIT 8            // HV_OP_LIGHT in HvHelperInfo.op (translate.h)
+#define LIGHT_LEAVE 1             // HV_LIGHT_LEAVE (light.h)
 
     .text
     .p2align 2
@@ -52,7 +54,8 @@
     .globl _hv_fp_leave
 
 // Not x6, x7, x15: guest x6, x7 and x15 live in the HvCpu, the host registers are scratch.
-.macro SAVE_X2_X29
+// x2-x17: what C may clobber besides x0 and x1; x19-x29: what it keeps.
+.macro SAVE_X2_X17
     stp x2, x3, [x28, #16]
     stp x4, x5, [x28, #32]
     stp x8, x9, [x28, #64]
@@ -60,6 +63,9 @@
     stp x12, x13, [x28, #96]
     str x14, [x28, #112]
     stp x16, x17, [x28, #128]
+.endm
+
+.macro SAVE_X19_X29
     stp x19, x20, [x28, #152]
     stp x21, x22, [x28, #168]
     stp x23, x24, [x28, #184]
@@ -68,10 +74,12 @@
     str x29, [x28, #232]
 .endm
 
-// Uses x0 as a temporary, so x0 must already be saved.
-.macro SAVE_FLAGS_FP
-    mrs x0, nzcv
-    str x0, [x28, #CPU_NZCV]
+.macro SAVE_X2_X29
+    SAVE_X2_X17
+    SAVE_X19_X29
+.endm
+
+.macro SAVE_FP
     stp q0, q1, [x28, #320]
     stp q2, q3, [x28, #352]
     stp q4, q5, [x28, #384]
@@ -88,6 +96,13 @@
     stp q26, q27, [x28, #736]
     stp q28, q29, [x28, #768]
     stp q30, q31, [x28, #800]
+.endm
+
+// Uses x0 as a temporary, so x0 must already be saved.
+.macro SAVE_FLAGS_FP
+    mrs x0, nzcv
+    str x0, [x28, #CPU_NZCV]
+    SAVE_FP
 .endm
 
 // Uses x0 and x1 as temporaries. FPCR and FPSR are not here: reading or writing
@@ -114,8 +129,7 @@
     msr nzcv, x0
 .endm
 
-.macro LOAD_X1_X30
-    ldr x1, [x28, #8]
+.macro LOAD_X2_X17
     ldp x2, x3, [x28, #16]
     ldp x4, x5, [x28, #32]
     ldp x8, x9, [x28, #64]
@@ -123,6 +137,11 @@
     ldp x12, x13, [x28, #96]
     ldr x14, [x28, #112]
     ldp x16, x17, [x28, #128]
+.endm
+
+.macro LOAD_X1_X30
+    ldr x1, [x28, #8]
+    LOAD_X2_X17
     ldp x19, x20, [x28, #152]
     ldp x21, x22, [x28, #168]
     ldp x23, x24, [x28, #184]
@@ -204,8 +223,10 @@ _hv_helper_entry:
     LOAD_X1_X30
     ldr x0, [x28, #CPU_SP]
     mov sp, x0
-    // Back into the block, or (after an SVC or ERET) to the start of the next
-    // one, which wants guest x0 live as well; host x15 is scratch.
+    // Back into the block, or (after an exception or ERET) to the start of the next
+    // one, which wants guest x0 live as well; host x15 is scratch. A next block from
+    // this CPU's branch cache needs no ISB: hv_helper then set helper_came_from to it
+    // as well (see hv_resume).
     cbnz x15, 1f
     ldr x15, [x28, #CPU_HELPER_RET]
     ldr x0, [x28]
@@ -222,9 +243,61 @@ _hv_helper_entry:
 // hv_helper_thunk: a helper call. The site did `str x30, [x28, #x30]`, `adr x6, info`
 // and `blr`; x6 is its HvHelperInfo, x30 where the block resumes (`ldr x0, [x28]` there
 // reloads guest x0). Everything that goes back to the block goes by RET, popping what
-// the BLR pushed on the CPU's own stack of return addresses.
+// the BLR pushed on the CPU's own stack of return addresses. SVC, ERET and WFE (op bit
+// HV_OP_LIGHT) take the light path first.
 _hv_helper_thunk:
     stp x0, x1, [x28]
+    ldr w15, [x6, #12]            // the op
+    tbnz w15, #OP_LIGHT_BIT, Llight
+    mov x0, x6
+    b _hv_helper_entry
+
+// The light path: hv_light(cpu, info, where the block goes on) with only what C may clobber
+// saved (x2-x17 here, x0 and x1 above, NZCV, SP), as hv_ijc_thunk does, so the guest's
+// q0-q31 stay in their registers and nothing hv_light reaches may use SIMD or libc
+// (core/light.c, tools/simd_gate.py). It returns the code to go on at (bit 0 set: after an
+// ISB); LIGHT_LEAVE: the state changed but the next block is not cached, so out to the
+// dispatcher with every register saved, as hv_exit does; or 0: it did nothing, and the full
+// helper does it all.
+Llight:
+    SAVE_X2_X17
+    stp x6, x30, [x28, #CPU_SPILL0 + 16] // spill[2..3]: free at the block's end, where these are
+    mrs x15, nzcv
+    str x15, [x28, #CPU_NZCV]
+    mov x15, sp
+    str x15, [x28, #CPU_SP]
+    ldr x15, [x28, #CPU_HOST_SP]
+    mov sp, x15
+    mov x0, x28
+    mov x1, x6
+    mov x2, x30
+    bl _hv_light
+    cmp x0, #LIGHT_LEAVE
+    b.ls 2f
+    mov x15, x0
+    ldr x0, [x28, #CPU_SP]        // an exception or ERET may have switched SP and NZCV
+    mov sp, x0
+    ldr x0, [x28, #CPU_NZCV]
+    msr nzcv, x0
+    LOAD_X2_X17
+    ldr x1, [x28, #8]
+    ldr x30, [x28, #240]
+    ldr x0, [x28]
+    tbnz x15, #0, 1f
+    ret x15
+1:  sub x15, x15, #1
+    isb                           // a block found only now may be one another CPU just wrote (see hv_enter)
+    ret x15
+2:  cbz x0, 3f
+    SAVE_X19_X29                  // leave: pc, SP and NZCV are in the HvCpu already
+    SAVE_FP
+    b Lrestore_host
+3:  ldr x0, [x28, #CPU_NZCV]      // the full helper, with every register as the block left it
+    msr nzcv, x0
+    LOAD_X2_X17
+    ldp x6, x30, [x28, #CPU_SPILL0 + 16]
+    ldr x0, [x28, #CPU_SP]
+    mov sp, x0
     mov x0, x6
     b _hv_helper_entry
 
