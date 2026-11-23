@@ -37,7 +37,7 @@ struct DeviceProfile: Equatable {
     /// 12-16 GB: 1.5 GB of code cache where the signing allows it; 16 GB: room for a 6 GB Mac.
     static let rows: [Row] = [
         Row(belowMB: 5_000, ramGB: 2, maxCPUs: 2, codeCacheMB: 384, headroomMB: 340...700, guestCapMB: 2048, lean: true),
-        Row(belowMB: 6_701, ramGB: 3, maxCPUs: 4, codeCacheMB: 1024, headroomMB: 600...1100, guestCapMB: 2048, lean: false),
+        Row(belowMB: 6_701, ramGB: 2, maxCPUs: 4, codeCacheMB: 1024, headroomMB: 600...1100, guestCapMB: 2048, lean: false),
         Row(belowMB: 8_701, ramGB: 3, maxCPUs: 4, codeCacheMB: 1024, headroomMB: 600...1100, guestCapMB: 3072, lean: false),
         // No device has this much: kept so the table gives what the earlier thresholds gave.
         Row(belowMB: 9_000, ramGB: 3, maxCPUs: 4, codeCacheMB: 1024, headroomMB: 600...1100, guestCapMB: nil, lean: false),
