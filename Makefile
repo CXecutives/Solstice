@@ -23,7 +23,7 @@ METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -frame
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
         $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
-        $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory
+        $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 
@@ -71,8 +71,8 @@ $(B)/henge-agent.gz: $(B)/henge-agent
 $(B)/share.o: host/share.c host/share.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(B)/hengevm: host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libhengerestore.a
-	$(CC) $(CFLAGS) host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libhengerestore.a -lz -lcompression -framework Foundation -framework CFNetwork -framework Security -framework SystemConfiguration -framework IOKit $(SLIRP_LIBS) -framework AudioToolbox -framework ParavirtualizedGraphics -framework Metal -framework IOSurface \
+$(B)/hengevm: host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libhengerestore.a
+	$(CC) $(CFLAGS) host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libhengerestore.a -lz -lcompression -framework Foundation -framework CFNetwork -framework Security -framework SystemConfiguration -framework IOKit $(SLIRP_LIBS) -framework AudioToolbox -framework ParavirtualizedGraphics -framework Metal -framework IOSurface \
 	    -framework Foundation -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -framework CoreFoundation \
 	    -framework AppKit -framework QuartzCore -o $@
 
@@ -113,7 +113,7 @@ $(B)/test_shutdown: tests/test_shutdown.c $(ENGINE)
 $(B)/test_dns_lifecycle: tests/test_dns_lifecycle.c $(B)/dns_proxy.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(B)/test_vm_lifecycle: tests/test_vm_lifecycle.c ios/Henge/Native/henge-vm.c $(ENGINE) $(DEV) $(B)/vm.o $(B)/snapshot.o $(B)/audio_mac.o $(B)/net_slirp.o $(B)/dns_proxy.o $(B)/share.o $(B)/usb_host.o
+$(B)/test_vm_lifecycle: tests/test_vm_lifecycle.c ios/Henge/Native/henge-vm.c $(ENGINE) $(DEV) $(B)/vm.o $(B)/snapshot.o $(B)/audio_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/usb_host.o
 	$(CC) $(CFLAGS) -Iios/Henge/Native $^ $(SLIRP_LIBS) $(METAL_LIBS) -framework AudioToolbox -lcompression -o $@
 
 test-vm-lifecycle: $(B)/test_vm_lifecycle
@@ -140,6 +140,9 @@ $(B)/test_memory: tests/test_memory.c tests/codecache_programs.S tests/harness.S
 # The device-tree identity rewrite, on crafted blobs (no machine needed).
 $(B)/test_dt_fixup: tests/test_dt_fixup.c host/dt_fixup.c host/dt_fixup.h | $(B)
 	$(CC) $(CFLAGS) tests/test_dt_fixup.c host/dt_fixup.c -o $@
+# The frame queue between the network thread and the CPU (no libslirp needed).
+$(B)/test_net_queue: tests/test_net_queue.c host/net_queue.c host/net_queue.h | $(B)
+	$(CC) $(CFLAGS) tests/test_net_queue.c host/net_queue.c -o $@
 $(B)/test_%: tests/test_%.c tests/%_programs.S tests/harness.S tests/harness.h $(ENGINE)
 	$(CC) $(CFLAGS) -Itests tests/test_$*.c tests/$*_programs.S tests/harness.S $(ENGINE) -o $@
 
@@ -168,7 +171,7 @@ clean:
 IOS_SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
 # A14 is the oldest supported chip: LSE atomics instead of LL/SC loops in the engine's C (the default target is apple-a7).
 IOS_CPU ?= -mcpu=apple-a14
-IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 $(IOS_CPU) -isysroot $(IOS_SDK)
+IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=26.0 $(IOS_CPU) -isysroot $(IOS_SDK)
 # ios/deps/include/slirp first when it holds libslirp's headers (they are all the engine takes from there).
 IOS_DEPS ?= $(if $(wildcard ios/deps/include/slirp/libslirp.h),$(CURDIR)/ios/deps,$(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot)
 IOS_CFLAGS = -std=c11 -Wall -Wextra -O2 -g -Icore -Ihost -Idevices -I$(IOS_DEPS)/include/slirp
@@ -176,7 +179,7 @@ IOS_CFLAGS = -std=c11 -Wall -Wextra -O2 -g -Icore -Ihost -Idevices -I$(IOS_DEPS)
 # live (NOSIMD, enter.S) stay plain objects: the SIMD gate reads them, and nothing is inlined into them.
 IOS_LTO ?= -flto=thin
 IB = build/ios
-IOS_SRC = $(wildcard core/*.c) host/prof_ios.c host/jit_region.c host/disk.c host/vm.c host/snapshot.c host/dt_fixup.c host/net_slirp.c host/dns_proxy.c host/share.c host/audio_mac.c host/hvsparse.c host/usb_host.c \
+IOS_SRC = $(wildcard core/*.c) host/prof_ios.c host/jit_region.c host/disk.c host/vm.c host/snapshot.c host/dt_fixup.c host/net_slirp.c host/net_queue.c host/dns_proxy.c host/share.c host/audio_mac.c host/hvsparse.c host/usb_host.c \
           $(filter-out devices/pvg_mac.m,$(wildcard devices/*.c))
 IOS_OBJ = $(patsubst %.c,$(IB)/%.o,$(IOS_SRC)) $(IB)/host/enter.o $(IB)/devices/pvg_metal.o
 
@@ -195,58 +198,8 @@ $(IB)/host/enter.o: host/enter.S
 $(IB)/libhengevm.a: $(IOS_OBJ)
 	rm -f $@
 	xcrun --sdk iphoneos libtool -static -o $@ $(IOS_OBJ)
-# The translation layer (tl/) for the app's experimental Mac apps: its loader and disk-image reader, not the toy AppKit.
-TL_SRC = tl/loader/tl_loader.c tl/loader/tl_bundle.m tl/loader/tl_stubs.m tl/loader/tl_tlv.S tl/dmg/udif.c tl/dmg/volume.c tl/dmg/hfsplus.c tl/dmg/apfs.c tl/dmg/appinfo.c
-TL_IOS_OBJ = $(patsubst %,$(IB)/%.o,$(TL_SRC))
-# Henge's AppKit, for Mac apps with windows, and the table of its C symbols (made from these objects).
-TL_SHIM = $(wildcard tl/shim/appkit/*.m)
-TL_SHIM_IOS_OBJ = $(patsubst %,$(IB)/%.o,$(TL_SHIM))
-$(IB)/tl/%.o: tl/% tl/loader/*.h tl/dmg/*.h tl/shim/appkit/*.h
-	@mkdir -p $(dir $@)
-	$(IOS_CC) -O2 -g -Wall -Wno-unused-parameter -fblocks $(if $(filter %.m,$<),-fobjc-arc) -c $< -o $@
-$(IB)/tl/shim/hk_symbols.c: $(TL_SHIM_IOS_OBJ) tl/shim/tools/hk_symbols.sh
-	@mkdir -p $(dir $@)
-	tl/shim/tools/hk_symbols.sh $@ $(TL_SHIM_IOS_OBJ)
-$(IB)/tl/shim/hk_symbols.o: $(IB)/tl/shim/hk_symbols.c
-	$(IOS_CC) -c $< -o $@
-$(IB)/libhengetl.a: $(TL_IOS_OBJ) $(TL_SHIM_IOS_OBJ) $(IB)/tl/shim/hk_symbols.o
-	rm -f $@
-	xcrun --sdk iphoneos libtool -static -o $@ $(TL_IOS_OBJ) $(TL_SHIM_IOS_OBJ) $(IB)/tl/shim/hk_symbols.o
-ios-lib: $(IB)/libhengevm.a $(IB)/libhengetl.a
+ios-lib: $(IB)/libhengevm.a
 .PHONY: ios-lib
-
-# The app's glue to it (ios/Henge/Native/henge-tl.c) on the Mac: import a disk image, describe what it holds, run a program.
-$(B)/test_tl_glue: tests/test_tl_glue.c ios/Henge/Native/henge-tl.c $(TL_SRC) host/jit_region.c | $(B)
-	$(CC) $(CFLAGS) -fblocks -Iios/Henge/Native tests/test_tl_glue.c ios/Henge/Native/henge-tl.c $(filter-out %.m,$(TL_SRC)) host/jit_region.c \
-	  -x objective-c -fobjc-arc tl/loader/tl_bundle.m tl/loader/tl_stubs.m -framework Foundation -lz -lbz2 -lcompression -o $@
-# The glue for Mac apps with windows (ios/Henge/Native/henge-tl-app.m) on the Mac, against Henge's AppKit as tl/
-# builds it: test_tl_app APP SNAPDIR [SECONDS] runs the app and draws its windows to PNG files.
-$(B)/test_tl_app: tests/test_tl_app.m ios/Henge/Native/henge-tl-app.m ios/Henge/Native/henge-tl.c $(TL_SRC) host/jit_region.c tl/shim/appkit/*.m tl/shim/appkit/*.h | $(B)
-	$(MAKE) -C tl build/tlios
-	$(CC) $(CFLAGS) -fblocks -Iios/Henge/Native tests/test_tl_app.m -x objective-c -fobjc-arc ios/Henge/Native/henge-tl-app.m -x none \
-	  ios/Henge/Native/henge-tl.c $(filter-out %.m,$(TL_SRC)) host/jit_region.c -x objective-c -fobjc-arc tl/loader/tl_bundle.m tl/loader/tl_stubs.m -x none \
-	  tl/build/shim/*.o tl/build/shim/hk_symbols.c -framework Foundation -framework QuartzCore -framework Metal -framework CoreGraphics \
-	  -framework CoreText -framework ImageIO -framework IOSurface -framework CoreVideo -framework UniformTypeIdentifiers \
-	  -lz -lbz2 -lcompression -o $@
-# Sample Mac programs for the app's Mac apps screen, as a disk image (read by the same import path as anyone's).
-$(B)/tl-samples.dmg: tests/tl/exit3.c tl/tests/hello.c tl/tests/fnd.m tl/tests/swifty.swift tl/tests/cxx.cpp tl/tests/fw.m tl/tests/fwapp.m | $(B)
-	env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET $(MAKE) -C tl build/hello build/fnd build/swifty build/cxx build/FW.app/Contents/MacOS/fwapp # Mac programs: not under Xcode's iOS SDKROOT
-	rm -rf $(B)/tl-samples $@ && mkdir -p $(B)/tl-samples
-	cp tl/build/hello "$(B)/tl-samples/Hello (C)"
-	cp tl/build/fnd "$(B)/tl-samples/Foundation sample"
-	cp tl/build/swifty "$(B)/tl-samples/Swift sample"
-	cp tl/build/cxx "$(B)/tl-samples/C++ sample"
-	ditto tl/build/FW.app "$(B)/tl-samples/Framework sample.app"
-	hdiutil create -quiet -srcfolder $(B)/tl-samples -volname "Henge Samples" -fs HFS+ -format UDZO $@
-	xattr -c $@ # codesign refuses an app holding a file with Finder information
-
-$(B)/tl-exit3: tests/tl/exit3.c | $(B)
-	$(CC) -target arm64-apple-macos13 -O1 $< -o $@
-test-tl-glue: $(B)/test_tl_glue $(B)/tl-exit3
-	make -C tl all test-dmg >/dev/null
-	$(B)/test_tl_glue
-	$(B)/test_tl_glue exit3
-.PHONY: test-tl-glue
 
 # The restore stack, built from the same sources and with the same stand-ins as iOS.
 $(B)/mac-restore/libhengerestore.a: tools/build_ios_restore.sh host/libusb_shim.c host/install.c host/curl_shim.m $(wildcard third_party/*/src/*.c) $(wildcard third_party/libirecovery/src/*.c)
@@ -289,7 +242,7 @@ $(B)/test_external_screen_plan: ios/Henge/ExternalScreenPlan.swift tests/test_ex
 $(B)/test_legacy_external_display: ios/Henge/LegacyExternalDisplay.swift ios/Henge/ExternalScreenPlan.swift ios/Henge/MacPresentation.swift ios/Henge/DisplayRouter.swift ios/Henge/DisplayTargetSelection.swift tests/test_legacy_external_display.swift tests/display_engine_stub.h | $(B)
 	xcrun --sdk macosx swiftc -import-objc-header tests/display_engine_stub.h $(filter %.swift,$^) -o $@
 
-# Info.plist must declare the external display scene role with ExternalDisplaySceneDelegate, or iOS 17-26 never offer the display.
+# Info.plist must declare the external display scene role with ExternalDisplaySceneDelegate, or iPadOS 26 never offers the display.
 $(B)/test_scene_manifest: tests/test_scene_manifest.swift | $(B)
 	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
 
@@ -317,7 +270,23 @@ test-identity: $(B)/test_device_identity
 	$(B)/test_device_identity
 .PHONY: test-identity
 
+# The device table: memory classes, CPUs, code cache and guest RAM cap from values passed in.
+$(B)/test_device_profile: ios/Henge/DeviceProfile.swift tests/test_device_profile.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-device-profile: $(B)/test_device_profile
+	$(B)/test_device_profile
+.PHONY: test-device-profile
+
+# A physical mouse's right/middle swap, kept from press to release.
+$(B)/test_physical_mouse_buttons: ios/Henge/PhysicalMouseButtons.swift tests/test_physical_mouse_buttons.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
+	$(B)/test_physical_mouse_buttons
+.PHONY: test-physical-mouse-buttons
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
-SWIFT_TESTS = test-display-routing test-jit-advice test-identity
+SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-physical-mouse-buttons
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

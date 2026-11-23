@@ -52,7 +52,7 @@ struct BootDisplay: View {
                     gpuLive = false
                     image = nil
                 }
-                if state == 2 || state == 3 {
+                if state == HENGE_VM_STOPPED || state == HENGE_VM_STARTING_OR_STOPPING {
                     stopped = true
                     image = nil
                     gpuLive = false

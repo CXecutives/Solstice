@@ -203,6 +203,11 @@ static void test_refresh_rate_per_start(void) {
             memcpy(blob + at, &pa, 8);
             hv_pvg_lite_set_state(board.pvg, blob, size);
             hv_pvg_lite_poll(board.pvg);
+            /* The refreshes are CPU 0's deadline only while the guest listens (event 8 in its mask at +0x104). */
+            uint32_t *mask = (uint32_t *)(hv_pvg_lite_display_page(board.pvg) + 0x104);
+            *mask &= ~8u;
+            check("masked: no refresh deadline", hv_pvg_lite_next_vblank(board.pvg) == 0, 1);
+            *mask |= 8;
             uint64_t period = 24000000ull / rates[i], next = hv_pvg_lite_next_vblank(board.pvg);
             uint64_t away = next - mach_absolute_time();
             check("refreshed at this start's rate", away <= period && away > period * 3 / 4, 1);

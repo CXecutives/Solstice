@@ -2,7 +2,7 @@ import Foundation
 import UIKit
 
 /// A macOS restore image Apple publishes for virtual Macs (VirtualMac2,1).
-struct MacOSRelease: Identifiable, Hashable {
+struct MacOSRelease {
     let id: String        // build
     let name: String
     let url: URL
@@ -16,14 +16,10 @@ struct MacOSRelease: Identifiable, Hashable {
     /// time at display +0x68, #161, is what macOS 15 reads there; macOS 27 uses that offset for something else).
     /// Apple's catalog (mesu.apple.com) only lists the newest; this is the same image from Apple's CDN, and Apple
     /// still signs it for virtual Macs.
-    static let all: [MacOSRelease] = [
-        MacOSRelease(id: "24G90", name: "macOS Sequoia 15.6.1",
-                     url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
-                     bytes: 16_035 << 20, note: "The version Solstice is built and tuned for."),
-    ]
-
-    /// Selected in the Install tab when nothing is downloaded yet: the one Henge is tested with most.
-    static let recommended = all.first { $0.id == "24G90" } ?? all[0]
+    static let current = MacOSRelease(
+        id: "24G90", name: "macOS Sequoia 15.6.1",
+        url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
+        bytes: 16_035 << 20, note: "The version Solstice is built and tuned for.")
 }
 
 /// Downloads a restore image and installs it on a new virtual Mac, on the
@@ -134,7 +130,7 @@ final class Installer: NSObject, ObservableObject {
             } catch {
                 HengeLog.log("install", "failed: \(error.localizedDescription)")
                 // The restore machine goes first (#183 releases it), so a retry can start in this launch.
-                if henge_vm_state() == 1 { await Task.detached { henge_vm_stop() }.value }
+                if henge_vm_state() == HENGE_VM_RUNNING { await Task.detached { henge_vm_stop() }.value }
                 // A half-installed Mac is no use, and its disk can be many gigabytes. The download stays.
                 if let made { try? FileManager.default.removeItem(at: made.directory) }
                 phase = .failed(error.localizedDescription)
@@ -251,7 +247,7 @@ final class Installer: NSObject, ObservableObject {
             stepProgress = henge_install_progress()
             if step == 100 { break }
             if step == 101 { throw message("The restore failed. The log (Settings, or Documents/henge.log) says why.") }
-            if henge_vm_state() == 2 && step < 100 {
+            if henge_vm_state() == HENGE_VM_STOPPED && step < 100 {
                 // The restore ends with the machine restarting, and idevicerestore finishes a
                 // little after; a stop with no result after that is a failure.
                 for _ in 0..<90 where henge_install_step() < 100 { try await Task.sleep(nanoseconds: 1_000_000_000) }
@@ -265,7 +261,7 @@ final class Installer: NSObject, ObservableObject {
         Machines.shared.add(mac)
         HengeLog.log("install", "\(mac.name): restore finished, added to the Macs")
         // Off the main thread: a stop that takes long there is a hang to iOS, which closes apps that hang.
-        if henge_vm_state() == 1 { await Task.detached { henge_vm_stop() }.value }
+        if henge_vm_state() == HENGE_VM_RUNNING { await Task.detached { henge_vm_stop() }.value }
         try? FileManager.default.removeItem(at: work)
     }
 

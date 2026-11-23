@@ -145,6 +145,12 @@ static void board_poll(void) {
     if (net_on) hv_net_poll();
 }
 
+/* The stats printer's lines for the network and the sound. */
+static void io_stats(double seconds) {
+    if (net_on) hv_net_stats(seconds);
+    if (sound_on) hv_virtio_snd_stats(board.snd, seconds);
+}
+
 static int fail(char *err, size_t n, const char *msg) {
     if (err && n) snprintf(err, n, "%s", msg);
     return -1;
@@ -310,6 +316,7 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     if (sound_on) hv_audio_attach(board.snd);
     pause_state = 0;
     board.poll = board_poll;
+    hv_stats_io = io_stats;
     if (board.vusb && getenv("HV_VUSB_PROBE")) hv_usb_probe_start(board.vusb);
     // The setter and publication share this lock: an older preboot target can
     // never overwrite a monitor change made while the board was being built.

@@ -82,7 +82,9 @@ static void hv_gicv3_update_body(HvGic *g) {
         int raised = (irq && !p->irq_line) || (fiq && !p->fiq_line);
         p->irq_line = irq;
         p->fiq_line = fiq;
-        if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]); /* it may be asleep in WFI, or running */
+        /* It may be asleep in WFI, or running. Only woken: no device poll (CPU 0 polls when a device asks for it,
+           hv_machine_wake; before, every interrupt raised for CPU 0, its own timer's included, polled all devices). */
+        if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]);
     }
 }
 
@@ -124,6 +126,12 @@ static uint64_t acknowledge(HvGic *g, int c, int grp) {
     return (uint64_t)i;
 }
 
+/* An acknowledged interrupt, for the storm detector (machine.h). */
+static uint64_t storm(HvCpu *cpu, uint64_t intid) {
+    if (intid != SPURIOUS) hv_storm_irq(cpu, (uint32_t)intid);
+    return intid;
+}
+
 static void end_of_interrupt(HvGic *g, int c, int intid) {
     if (intid >= HV_GIC_NUM_IRQS) return;
     HvGicCpu *k = &g->cpu[c];
@@ -139,8 +147,8 @@ static uint64_t icc_read_body(HvMachine *m, HvCpu *cpu, uint32_t reg) {
     int h;
     switch (reg) {
     case R(3, 0, 4, 6, 0): return k->pmr;
-    case R(3, 0, 12, 12, 0): return acknowledge(g, c, 1);              /* IAR1 */
-    case R(3, 0, 12, 8, 0): return acknowledge(g, c, 0);               /* IAR0 */
+    case R(3, 0, 12, 12, 0): return storm(cpu, acknowledge(g, c, 1)); /* IAR1 */
+    case R(3, 0, 12, 8, 0): return storm(cpu, acknowledge(g, c, 0));  /* IAR0 */
     case R(3, 0, 12, 12, 2):                                           /* HPPIR1 */
         h = hppi(g, c, 0);
         return h != SPURIOUS && F(g, c, group, h) == 1 ? (uint64_t)h : SPURIOUS;

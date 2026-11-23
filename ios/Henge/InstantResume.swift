@@ -48,7 +48,7 @@ enum InstantResume {
     /// rest()'s balloon first (the guest needs seconds for it, and Henge may be in the background, its GPU gone, by
     /// then); suspend() gives the engine's memory back instead, and a saved Mac loses nothing if iOS closes Henge.
     static func pause() {
-        guard enabled, henge_vm_state() == 1 else { return }
+        guard enabled, henge_vm_state() == HENGE_VM_RUNNING else { return }
         queue.async {
             var buffer = [CChar](repeating: 0, count: 256)
             if henge_vm_pause(&buffer, buffer.count) != 0 { HengeLog.log("resume", "not paused: \(String(cString: buffer))") }
@@ -60,19 +60,19 @@ enum InstantResume {
     /// this and saves it too. First the Mac is asked for about 1 GB of its memory (MemoryRelief), for up to 3 s:
     /// its idle pages and file cache then do not sit in Henge's memory while iOS weighs what to close.
     @MainActor static func rest() {
-        guard !enabled, KeepAlive.enabled, henge_vm_state() == 1 else { return }
+        guard !enabled, KeepAlive.enabled, henge_vm_state() == HENGE_VM_RUNNING else { return }
         let asked = MemoryRelief.beforeBackgroundPause()
         queue.async {
             if let asked {
                 let t0 = Date()
                 var got = henge_vm_balloon(-1)
-                while got >= 0, got + 64 < asked, Date().timeIntervalSince(t0) < 3, henge_vm_state() == 1 {
+                while got >= 0, got + 64 < asked, Date().timeIntervalSince(t0) < 3, henge_vm_state() == HENGE_VM_RUNNING {
                     usleep(100_000)
                     got = henge_vm_balloon(-1)
                 }
                 HengeLog.log("memory", "before the background pause the Mac handed over \(max(got, 0)) of \(asked) MB in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
             }
-            guard henge_vm_state() == 1 else { return }
+            guard henge_vm_state() == HENGE_VM_RUNNING else { return }
             var buffer = [CChar](repeating: 0, count: 256)
             let rc = henge_vm_pause(&buffer, buffer.count)
             HengeLog.log("keepalive", rc == 0 ? "the Mac waits, paused, while Henge is in the background" : "the Mac was not paused: \(String(cString: buffer))")
@@ -91,7 +91,7 @@ enum InstantResume {
 
     /// Henge is in the background: write the paused Mac out, in case iOS closes Henge. It stays paused.
     static func suspend(_ mac: VirtualMac, ramMB: UInt64, cpus: Int) {
-        guard enabled, henge_vm_state() == 1 || henge_vm_state() == 4 else { return }
+        guard enabled, henge_vm_state() == HENGE_VM_RUNNING || henge_vm_state() == HENGE_VM_PAUSED else { return }
         // Paused for want of storage: a save of its memory is what would fill the device.
         guard !StorageGuard.holding else {
             HengeLog.log("resume", "not saved: storage is almost full")
@@ -107,7 +107,7 @@ enum InstantResume {
             let t0 = Date()
             var buffer = [CChar](repeating: 0, count: 256)
             /* Paused already, unless Henge went straight to the background. */
-            var rc = henge_vm_state() == 4 ? 0 : henge_vm_pause(&buffer, buffer.count)
+            var rc = henge_vm_state() == HENGE_VM_PAUSED ? 0 : henge_vm_pause(&buffer, buffer.count)
             if rc == 0 { trim() } // before the save: its buffers then meet the memory the engine had
             if rc == 0 { rc = henge_vm_save(path, id, &buffer, buffer.count) }
             let took = String(format: "%.1f", Date().timeIntervalSince(t0))
@@ -133,7 +133,7 @@ enum InstantResume {
         guard !StorageGuard.holding else { return }
         let hot = PowerPolicy.shared.keepsPaused()
         queue.async {
-            guard henge_vm_state() == 4, PowerPolicy.inFront else { return } // away again before this ran: stays paused, its save good
+            guard henge_vm_state() == HENGE_VM_PAUSED, PowerPolicy.inFront else { return } // away again before this ran: stays paused, its save good
             discard(for: mac)
             if hot {
                 HengeLog.log("resume", "back: the Mac stays paused until the device cools")
@@ -148,7 +148,7 @@ enum InstantResume {
     static func holdForStorage(_ done: @escaping @MainActor (Bool) -> Void) {
         queue.async {
             var buffer = [CChar](repeating: 0, count: 256)
-            let rc = henge_vm_state() == 1 ? henge_vm_pause(&buffer, buffer.count) : -1
+            let rc = henge_vm_state() == HENGE_VM_RUNNING ? henge_vm_pause(&buffer, buffer.count) : -1
             HengeLog.log("storage", rc == 0 ? "storage almost full: the Mac is paused" : "storage almost full, but the Mac was not paused: \(String(cString: buffer))")
             DispatchQueue.main.async { MainActor.assumeIsolated { done(rc == 0) } }
         }
@@ -157,7 +157,7 @@ enum InstantResume {
     /// The user resumes it, with room again.
     static func releaseStorageHold() {
         queue.async {
-            guard henge_vm_state() == 4 else { return }
+            guard henge_vm_state() == HENGE_VM_PAUSED else { return }
             HengeLog.log("storage", henge_vm_continue() == 0 ? "room again: the Mac runs on" : "room again, but the Mac could not run on")
         }
     }

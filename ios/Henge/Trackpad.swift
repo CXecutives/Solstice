@@ -6,12 +6,9 @@ import UIKit
 /// the fingers: two scroll, three swipe between Spaces and to Mission Control, four
 /// show the session's hidden controls.
 ///
-/// Clicking depends on the input mode (Settings > Trackpad):
-///  - Touchscreen: the surface itself clicks. A quick tap is a left click, a quick
-///    two-finger tap is a right click, and touching then holding presses the button
-///    down so moving drags. These go out as mouse buttons alongside the pad's fingers.
-///  - Volume buttons: the surface only points and gestures; the clicks live on the
-///    volume keys (VolumeClicks), so a tap here does nothing.
+/// The surface itself clicks. A quick tap is a left click, a quick two-finger tap is a
+/// right click, and touching then holding presses the button down so moving drags.
+/// These go out as mouse buttons alongside the pad's fingers.
 /// Only fingers count: a real trackpad or mouse goes through HardwareMouse.
 struct Trackpad: UIViewRepresentable {
     /// Four fingers tapped together: the session shows its hidden controls.
@@ -37,11 +34,10 @@ struct Trackpad: UIViewRepresentable {
         private var mostFingers = 0
         private var touchesLogged = 0
 
-        /* Touchscreen-mode clicking. */
+        /* Clicking. */
         private var holding = false
         private var holdTimer: Timer?
         private let buzz = UIImpactFeedbackGenerator(style: .medium)
-        private var tapsClick: Bool { VolumeClicks.inputMode == .touchscreen }
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -83,7 +79,7 @@ struct Trackpad: UIViewRepresentable {
                 started = Date()
                 travelled = 0
                 mostFingers = 0
-                if tapsClick { buzz.prepare() }
+                buzz.prepare()
             }
             for t in touches {
                 guard let id = freeIds.min() else { break }
@@ -97,7 +93,6 @@ struct Trackpad: UIViewRepresentable {
                 }
             }
             mostFingers = max(mostFingers, fingers.count)
-            guard tapsClick else { return }
             if fingers.count >= 2 {
                 cancelHold()
                 if holding { /* a drag becomes a multi-finger gesture */
@@ -123,7 +118,7 @@ struct Trackpad: UIViewRepresentable {
                 moved = true
             }
             /* Moving means pointing or a gesture, not a tap or a press-to-drag. */
-            if tapsClick && travelled >= Self.tapDistance && !holding { cancelHold() }
+            if travelled >= Self.tapDistance && !holding { cancelHold() }
             /* One frame with every finger that moved, so the guest sees a gesture's
                fingers move together rather than one at a time. */
             if moved { henge_vm_touch_frame(ts) }
@@ -145,17 +140,15 @@ struct Trackpad: UIViewRepresentable {
             for id in lifted { henge_vm_touch(id, 2, 0, 0, ts) }
             guard fingers.isEmpty else { return } /* fingers still down: the gesture goes on */
             /* The whole gesture is over. */
-            if tapsClick {
-                cancelHold()
-                let quick = Date().timeIntervalSince(started) < Self.tapTime
-                let still = travelled < Self.tapDistance
-                if holding {
-                    holding = false
-                    henge_vm_mouse_button(0, 0) /* let go of the drag */
-                } else if quick && still {
-                    if mostFingers == 1 { click(0) }      /* a tap is a left click */
-                    else if mostFingers == 2 { click(1) } /* a two-finger tap is a right click */
-                }
+            cancelHold()
+            let quick = Date().timeIntervalSince(started) < Self.tapTime
+            let still = travelled < Self.tapDistance
+            if holding {
+                holding = false
+                henge_vm_mouse_button(0, 0) /* let go of the drag */
+            } else if quick && still {
+                if mostFingers == 1 { click(0) }      /* a tap is a left click */
+                else if mostFingers == 2 { click(1) } /* a two-finger tap is a right click */
             }
             if mostFingers >= 4, travelled < Self.tapDistance * 3, Date().timeIntervalSince(started) < Self.tapTime * 2 {
                 NotificationCenter.default.post(name: Trackpad.revealTap, object: nil)

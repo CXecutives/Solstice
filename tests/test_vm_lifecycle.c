@@ -19,17 +19,8 @@ static HvJitRegion jit;
 static HengeDualMapping mapping;
 static int failures;
 static _Atomic int reader_done;
-static int memory_prepared, memory_preparations, installer_started;
-void henge_ios_jit_prepare_vm_memory(void) {
-    memory_prepared = 1;
-    memory_preparations++;
-}
+static int installer_started;
 HengeDualMapping *henge_ios_jit_get_mapping(void) {
-    if (!memory_prepared) {
-        fprintf(stderr, "FAIL: native VM must release unused address reservations before using JIT\n");
-        failures++;
-    }
-    memory_prepared = 0;
     return &mapping;
 }
 void hv_prof_ios_start(void) {}
@@ -117,7 +108,7 @@ int main(void) {
     /* Missing ROM fails after disks, RAM and device workers were created. */
     for (int i = 0; i < 3; i++) {
         check("failed boot reports an error", henge_vm_boot(rom, disk, aux, 1, 0, 64, 4, error, sizeof error) != 0);
-        check("failed boot allows retry", henge_vm_state() == 0 && henge_vm_can_start());
+        check("failed boot allows retry", henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
         check("failed boot closes files", fds() == initial_fds);
         check("failed boot joins workers", threads() == initial_threads);
     }
@@ -137,9 +128,9 @@ int main(void) {
             henge_vm_mouse_button(1, 0);
             henge_vm_stop();
         }
-        for (int n = 0; n < 3000 && henge_vm_state() != 2; n++) usleep(1000);
-        check("terminal state is published after cleanup", henge_vm_state() == 2);
-        if (henge_vm_state() != 2) exit(1);
+        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
+        check("terminal state is published after cleanup", henge_vm_state() == HENGE_VM_STOPPED);
+        if (henge_vm_state() != HENGE_VM_STOPPED) exit(1);
         check("power outcome preserved", henge_vm_exit_outcome() == outcome);
         check("start is available again", henge_vm_can_start());
         check("new generation", henge_vm_generation() == (uint64_t)i + 1);
@@ -166,19 +157,19 @@ int main(void) {
         usleep(50000);
         rc = henge_vm_suspend(snap, "test", error, sizeof error);
         if (rc) fprintf(stderr, "suspend: %s\n", error);
-        check("suspend saves", rc == 0 && henge_vm_state() == 4 && access(snap, F_OK) == 0);
+        check("suspend saves", rc == 0 && henge_vm_state() == HENGE_VM_PAUSED && access(snap, F_OK) == 0);
         volatile uint64_t *count = (volatile uint64_t *)hv_vm_board()->ram;
         uint64_t c1 = *count;
         usleep(20000);
         check("paused: the counter stands still", c1 > 0 && *count == c1);
-        check("continue runs it on", henge_vm_continue() == 0 && henge_vm_state() == 1);
+        check("continue runs it on", henge_vm_continue() == 0 && henge_vm_state() == HENGE_VM_RUNNING);
         for (int n = 0; n < 1000 && *count == c1; n++) usleep(1000);
         check("continued: the counter moves", *count > c1);
         rc = henge_vm_suspend(snap, "test", error, sizeof error);
         uint64_t c2 = *count;
         check("second suspend saves", rc == 0 && c2 > c1);
         henge_vm_stop();
-        check("a paused Mac stops", henge_vm_state() == 2 && hv_vm_board()->ram == NULL);
+        check("a paused Mac stops", henge_vm_state() == HENGE_VM_STOPPED && hv_vm_board()->ram == NULL);
         uint64_t bytes = 0;
         check("the save is whole", henge_vm_saved_ok(snap, "test", &bytes, NULL) == 0 && bytes > 0);
         check("another ident is refused", henge_vm_saved_ok(snap, "other", NULL, NULL) != 0);
@@ -193,15 +184,15 @@ int main(void) {
         henge_vm_stop();
         rc |= henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
         if (rc) fprintf(stderr, "resume: %s\n", error);
-        check("resume starts the saved Mac", rc == 0 && henge_vm_state() == 1);
+        check("resume starts the saved Mac", rc == 0 && henge_vm_state() == HENGE_VM_RUNNING);
         check("the file is used once", access(snap, F_OK) != 0);
         count = (volatile uint64_t *)hv_vm_board()->ram;
         check("resumed: the counter is where it was", *count >= c2);
         for (int n = 0; n < 1000 && *count == c2; n++) usleep(1000);
         check("resumed: the counter moves on", *count > c2);
         henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != 2; n++) usleep(1000);
-        check("resumed Mac stops", henge_vm_state() == 2);
+        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
+        check("resumed Mac stops", henge_vm_state() == HENGE_VM_STOPPED);
         /* A disk written after the save: the saved Mac must not come back over it. */
         rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         usleep(30000);
@@ -213,7 +204,7 @@ int main(void) {
         check("save before the disk changes", rc == 0);
         rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
         check("a changed disk refuses the saved Mac", rc != 0 && strstr(error, "disk has changed") != NULL);
-        check("refused, it can start from cold", henge_vm_state() == 0 && henge_vm_can_start());
+        check("refused, it can start from cold", henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
         unlink(snap);
     }
     /* A device install: when its machine stops, the restore tools let go of its USB port and the machine is
@@ -225,33 +216,32 @@ int main(void) {
         check("failed install start reports an error",
               henge_vm_install(rom, disk, aux, 1, "none.ipsw", dir, 64, 2, error, sizeof error) != 0);
         check("failed install detaches the restore tools and allows a start",
-              detached == 1 && henge_vm_state() == 0 && henge_vm_can_start());
+              detached == 1 && henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
         install_ok = 1;
         int rc = henge_vm_install(rom, disk, aux, 1, "none.ipsw", dir, 64, 2, error, sizeof error);
         if (rc) fprintf(stderr, "install: %s\n", error);
-        check("install starts", rc == 0 && henge_vm_state() == 1);
+        check("install starts", rc == 0 && henge_vm_state() == HENGE_VM_RUNNING);
         check("nothing else starts while it runs", !henge_vm_can_start());
         henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != 2; n++) usleep(1000);
-        check("install's machine stops", henge_vm_state() == 2);
+        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
+        check("install's machine stops", henge_vm_state() == HENGE_VM_STOPPED);
         check("restore tools detached", detached == 2);
         check("install's machine released", hv_vm_board()->ram == NULL && hv_vm_board()->vusb == NULL);
         check("a device can start after an install", henge_vm_can_start());
         rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         check("a device boots after an install without quitting", rc == 0);
         henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != 2; n++) usleep(1000);
-        check("and stops", henge_vm_state() == 2);
+        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
+        check("and stops", henge_vm_state() == HENGE_VM_STOPPED);
     }
     hv_vm_destroy();
     atomic_store(&reader_done, 1);
     pthread_join(reader, NULL);
-    int before_install = memory_preparations, started_before = installer_started;
+    int started_before = installer_started;
     install_ok = 0;
-    check("installer reaches restore after memory preparation",
+    check("installer reaches restore",
           henge_vm_install(rom, disk, aux, 1, "unused", dir, 64, 2, error, sizeof error) != 0
           && installer_started == started_before + 1 && strstr(error, "installer could not start") != NULL);
-    check("installer prepares VM memory", memory_preparations == before_install + 1);
     /* The installer stub owns no USB workers, so the test can release its board. */
     hv_vm_destroy();
     hv_jit_region_close(&jit);

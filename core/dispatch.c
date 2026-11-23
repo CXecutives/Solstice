@@ -429,11 +429,11 @@ static int wait_for_interrupt(HvCpu *cpu) {
         __asm__ volatile("clrex" ::: "memory");
     }
     pthread_mutex_lock(&p->wake_mu);
-    if (!p->wake_pending && wait_ticks) {
+    if (!__atomic_load_n(&p->wake_pending, __ATOMIC_SEQ_CST) && wait_ticks) { /* after park(): see hv_cpu_wake */
         struct timespec ts = {(time_t)(wait_ticks / 24000000), (long)(wait_ticks % 24000000) * 1000 / 24};
         pthread_cond_timedwait_relative_np(&p->wake_cv, &p->wake_mu, &ts);
     }
-    p->wake_pending = 0;
+    __atomic_store_n(&p->wake_pending, 0, __ATOMIC_SEQ_CST);
     pthread_mutex_unlock(&p->wake_mu);
     unpark(cpu);
     hv_big_lock(m);
@@ -516,6 +516,8 @@ static void print_profile(HvMachine *m) {
         top[best].n = 0;
     }
 }
+
+void (*hv_stats_io)(double seconds);
 
 static void print_stats(HvCpu *cpu, int force) {
     static uint64_t last_t, start_t;
@@ -697,6 +699,7 @@ static void print_stats(HvCpu *cpu, int force) {
                 100 * RATE(why[3]) / tot, 100 * RATE(why[4]) / tot, 100 * RATE(why[5]) / tot);
     }
 #undef RATE
+    if (hv_stats_io) hv_stats_io(dt);
     if (m->prof) print_profile(m);
     /* The busiest system registers or SYS operations (reads + writes) this interval: deep stats only (the table's
        512 KB are written only then). */
@@ -799,7 +802,7 @@ static void wait_while_off(HvCpu *cpu) {
     pthread_mutex_lock(&p->wake_mu);
     __atomic_store_n(&cpu->parked_off, 1, __ATOMIC_SEQ_CST);
     while (__atomic_load_n(&cpu->off, __ATOMIC_ACQUIRE) && !cpu->halted) {
-        p->wake_pending = 0;
+        __atomic_store_n(&p->wake_pending, 0, __ATOMIC_SEQ_CST);
         pthread_cond_wait(&p->wake_cv, &p->wake_mu);
     }
     __atomic_store_n(&cpu->parked_off, 0, __ATOMIC_SEQ_CST);

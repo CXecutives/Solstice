@@ -30,7 +30,8 @@ eingecheckt): `HANDOFF.local.md`.
 - Nichts außer `origin` (CXecutives/Solstice) wird beschrieben; keine Releases.
 - Nur Sequoia 15.6.1 als Gast, bis eine Versions-Weiche gebaut ist (der vBlank-Zeitstempel aus #161 gilt nur für macOS 15).
   Geräte ab A14, iOS/iPadOS ab 26.
-- Engine-Standardwerte nur in `ios/Henge/EngineTuning.swift`, Gerätewerte nur in der Gerätetabelle.
+- Engine-Standardwerte nur in `ios/Henge/EngineTuning.swift`, Gerätewerte nur in der Gerätetabelle
+  `ios/Henge/DeviceProfile.swift` (reines Foundation, Test `tests/test_device_profile.swift`).
 - Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`/`hv_light` heraus kein
   libc-Aufruf und kein SIMD (Dateien in `NOSIMD` im Makefile; CI-Gate `tools/simd_gate.py`). Resets großer Tabellen nur im
   Dispatcher.

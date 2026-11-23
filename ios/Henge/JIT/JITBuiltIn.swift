@@ -45,12 +45,6 @@ enum HengeBuiltInJIT {
 #if targetEnvironment(simulator)
         return "Built-in JIT is available only on a physical device."
 #else
-        guard #available(iOS 26.0, *) else {
-            return "Built-in JIT needs iOS 26 or later. Use StikDebug instead."
-        }
-        if getenv("LC_HOME_PATH") != nil {
-            return "Built-in JIT is unavailable inside LiveContainer. Use StikDebug instead."
-        }
         return nil
 #endif
     }
@@ -76,7 +70,7 @@ enum HengeBuiltInJIT {
         }
         guard let identifier = helperIdentifier else {
             fail(2, "Henge's JIT helper is missing from this installation. Reinstall Henge, and keep "
-                  + "its app extensions if your sideloader asks, or use StikDebug.")
+                  + "its app extensions if your sideloader asks.")
             return
         }
         if NSClassFromString("NSExtension") == nil {
