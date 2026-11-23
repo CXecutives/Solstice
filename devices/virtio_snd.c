@@ -238,8 +238,13 @@ void hv_virtio_snd_poll(HvVirtioSnd *d) {
             d->clock_start_ns = now;
             d->clock_start_consumed = w;
         }
-        if (target > atomic_load(&d->consumed)) atomic_store(&d->consumed, target);
+        /* Only forward, as the pull: a render callback of a player just started again may have moved it past. */
+        uint64_t cur = atomic_load(&d->consumed);
+        while (target > cur && !atomic_compare_exchange_weak(&d->consumed, &cur, target)) {}
     }
+    /* Nothing signals the clock's progress: while it drains, the kicker has CPU 0 poll every millisecond, so the
+       guest's buffers go back at their pace and not in 20 ms bursts. */
+    if (clock != d->clock_on) hv_machine_unsignalled(v->m, HV_UNSIG_SND_CLOCK, clock);
     d->clock_on = clock;
     take_tx(d);
     uint64_t c = atomic_load_explicit(&d->consumed, memory_order_acquire);

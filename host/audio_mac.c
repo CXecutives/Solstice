@@ -122,6 +122,8 @@ static void apply(void) {
     }
     UInt32 running = 0, size = sizeof running;
     if (AudioUnitGetProperty(unit, kAudioOutputUnitProperty_IsRunning, kAudioUnitScope_Global, 0, &running, &size) != noErr) running = 0;
+    /* Off the clock before the first render callback, so no poll drains by the clock while the player plays. */
+    if (!running) set_off(0);
     if (!running && AudioOutputUnitStart(unit) != noErr) {
         set_off(1);
         if (retries++ < RETRIES)
