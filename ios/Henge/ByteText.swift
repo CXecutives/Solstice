@@ -1,5 +1,6 @@
 import Foundation
 
+/// Byte counts as text, in MB and GB.
 enum ByteText {
     static func string(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()

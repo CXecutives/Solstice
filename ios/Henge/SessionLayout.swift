@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Where a session's screen, trackpad and controls go, and the zoomed view that follows the pointer.
 extension SessionView {
     // MARK: Layout
 
