@@ -1,3 +1,5 @@
+/* Heaps, buffers and textures, and the texture descriptions they are made from (part of pvg_metal.m). */
+
 static void set_framebuffer_only(MTLTextureDescriptor *t, BOOL on) {
     SEL sel = sel_registerName("setFramebufferOnly:");
     if ([t respondsToSelector:sel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(t, sel, on);

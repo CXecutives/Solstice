@@ -1,3 +1,5 @@
+/* Objects by ref and the guest task memory under them (part of pvg_metal.m, which includes it). */
+
 /* The slot for a task's ref, made if asked for; NULL for a ref past OBJ_REFS (or no memory). Slots never move once
    made, so one stays valid while making its object looks up others. */
 static HvObject *__strong *obj_slot(HvTaskObjects *t, uint32_t ref, BOOL make) {

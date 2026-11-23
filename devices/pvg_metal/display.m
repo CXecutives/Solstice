@@ -1,3 +1,5 @@
+/* The pointer and the screen: presenter, pointer layer, frames by the CPU (part of pvg_metal.m). */
+
 /* Every possible half-float value to a display byte, as the screen would show it in the current mode (see hv_half_mode). */
 static const uint8_t *half_to_byte(void) {
     static uint8_t *tables[2];

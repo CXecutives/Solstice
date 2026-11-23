@@ -1,3 +1,5 @@
+/* The hv_pvg_metal_* functions the device and the app call (part of pvg_metal.m). */
+
 HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();

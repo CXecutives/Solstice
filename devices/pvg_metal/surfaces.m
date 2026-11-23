@@ -1,3 +1,5 @@
+/* Surfaces (the guest's IOSurfaces), their host copies and the textures over them (part of pvg_metal.m). */
+
 /* A multi-plane surface as a real IOSurface, laid out as the guest laid it out.
    Planes are in the descriptor from +0x80, 0x80 apart: offset +8, size +0x18,
    width +0x20, height +0x28, row +0x30, bytes per element +0x38. */

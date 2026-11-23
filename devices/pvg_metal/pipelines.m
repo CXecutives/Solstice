@@ -1,3 +1,5 @@
+/* Functions, pipelines, the saved-pipeline archives and the other serialized objects (part of pvg_metal.m). */
+
 /* A kernel that does nothing. Metal's deserializer aborts the whole app when a compute pipeline's function is nil, which
    happens when this OS cannot load the library macOS sent ("This library format is not supported on this platform", seen on
    iPadOS 17 with macOS 15). The lookup has failed either way, so makeSerialized drops the pipeline: a missing effect, not a

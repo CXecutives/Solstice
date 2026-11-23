@@ -1,3 +1,5 @@
+/* An exec: its resources, its command buffers and their completion (part of pvg_metal.m). */
+
 /* One exec: {task, resources, buffers}, {ref, flags} per resource, {offset, length} per buffer. */
 /* Commits without waiting: the next batch can be encoded while the GPU does this one. */
 - (void)commit:(id<MTLCommandBuffer>)cb channel:(uint32_t)ch stamp:(uint32_t)stamp complete:(BOOL)complete {

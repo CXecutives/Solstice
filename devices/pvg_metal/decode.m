@@ -1,3 +1,5 @@
+/* The serialized calls: render, compute, blit and object queries, each record checked (part of pvg_metal.m). */
+
 /* A record's bytes, as a pointer into the buffer's private copy. */
 typedef struct {
     const uint8_t *p;

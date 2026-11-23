@@ -1,3 +1,5 @@
+/* A ref's object made at first use; the guest's and the GPU's copies kept in step (part of pvg_metal.m). */
+
 - (HvObject *)object:(uint32_t)ref task:(uint32_t)task {
     if (!ref || task >= HV_TASKS) return nil;
     uint64_t list = hv_pvg_lite_task_objects(lite, task);
