@@ -44,6 +44,10 @@
 #define SMALL_BODY_MAX (16 * 1024 * 1024) /* a clipboard, or a request's XML */
 #define TEMP_PREFIX ".henge-put-"
 
+/* Seconds a clipboard request without X-Henge-Token (a helper from before the key) is held before its 403: that
+   helper retries at once on an answer, so an immediate one would have it loop nonstop. */
+static int keyless_hold_seconds = 25;
+
 static char root[PATH_MAX];
 static char agent_path[PATH_MAX];
 
@@ -864,6 +868,22 @@ static int host_ok(const Request *r) {
     return r->host[n] == 0 || strcmp(r->host + n, ":80") == 0;
 }
 
+/* Holds a key-less clipboard request for keyless_hold_seconds, as long as a long-poll waits, and says once per run
+   that the helper in the Mac is too old to have a key. */
+static void hold_keyless(void) {
+    static int told;
+    if (!__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED))
+        fprintf(stderr, "solstice: share: the clipboard helper in the Mac is from an older version: run Set Up again in the Mac\n");
+    struct timespec until;
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    until.tv_sec = now.tv_sec + keyless_hold_seconds;
+    until.tv_nsec = now.tv_usec * 1000;
+    pthread_mutex_lock(&clip_mu);
+    while (pthread_cond_timedwait(&clip_cond, &clip_mu, &until) != ETIMEDOUT) {}
+    pthread_mutex_unlock(&clip_mu);
+}
+
 static int serve_henge(Conn *c, Request *r) {
     const char *what = r->path + strlen("/.henge/");
     if (!strcmp(what, "token") && !strcmp(r->method, "GET")) {
@@ -873,6 +893,7 @@ static int serve_henge(Conn *c, Request *r) {
     }
     if (!strcmp(what, "clipboard") && !token_ok(r)) {
         if (body_discard(c, r) != 0) return -1;
+        if (!r->token[0]) hold_keyless();
         return respond_empty(c, r, 403, "Forbidden");
     }
     if (!strcmp(what, "install") && !strcmp(r->method, "GET")) {

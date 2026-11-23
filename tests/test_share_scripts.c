@@ -48,6 +48,12 @@ static const char *exchange(const char *req, size_t piece) {
     return out;
 }
 
+static double seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
 static int status_is(const char *resp, int status) {
     int got = 0;
     return sscanf(resp, "HTTP/1.1 %d", &got) == 1 && got == status;
@@ -71,10 +77,19 @@ static void test_server(void) {
     if (body) snprintf(key, sizeof key, "%s", body + 4);
     check("the key is 32 hex digits", strlen(key) == 32 && strspn(key, "0123456789abcdef") == 32);
     check("the key is the server's", strcmp(key, share_token()) == 0);
+    /* A helper from before the key sends none and asks again as soon as it is answered: it is held as long as a
+       long-poll, then refused. A wrong key is refused at once. */
+    keyless_hold_seconds = 1;
+    double t0 = seconds();
     check("clipboard without the key: refused",
           status_is(exchange("GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 403));
+    check("clipboard without the key: held first", seconds() - t0 >= 0.9);
+    t0 = seconds();
     check("clipboard with a wrong key: refused",
           status_is(exchange("PUT /.henge/clipboard HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: 0123\r\nContent-Length: 1\r\n\r\nx", 0), 403));
+    check("clipboard GET with a wrong key: refused",
+          status_is(exchange("GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: 0123\r\n\r\n", 0), 403));
+    check("a wrong key: refused at once", seconds() - t0 < 0.5);
     char req[512];
     snprintf(req, sizeof req, "GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\n\r\n", key);
     const char *r = exchange(req, 0);
