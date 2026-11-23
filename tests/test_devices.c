@@ -220,6 +220,10 @@ static void test_unsignalled_poll(void) {
     m.tick(&m, &cpu);
     check("flagged: polled when it was due", HV_ST(&cpu).dev_polls, polls + 1);
 
+    /* That poll cleared the bit (pvg_lite owns it: no channel waits here); a channel waiting again sets it. */
+    check("polled: the bit follows the channels", __atomic_load_n(&m.dev_unsignalled, __ATOMIC_SEQ_CST), 0);
+    hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, 1);
+
     int ncpus = m.ncpus;
     m.ncpus = 2;
     __atomic_store_n(&m.percpu[0].poll_req, 0, __ATOMIC_SEQ_CST);
