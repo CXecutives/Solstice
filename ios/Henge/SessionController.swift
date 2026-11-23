@@ -284,29 +284,32 @@ final class SessionController: ObservableObject {
 
     /// Shuts the Mac down as a Mac does: its power button is pressed, macOS closes its apps and turns off (or asks
     /// first, on its own screen). The view closes once it is off. Not running (paused, or no power button): off at once.
-    /// true if macOS was asked, false if it was turned off.
-    @discardableResult
-    func shutDown() -> Bool {
+    /// Turned off at once, `off` runs when it is.
+    func shutDown(off: @escaping @MainActor () -> Void) {
         guard state == HENGE_VM_RUNNING, henge_vm_power_button() == 0 else {
-            forceOff()
-            return false
+            forceOff(then: off)
+            return
         }
         shutdownAsked = Date()
         HengeLog.log("session", "Shut Down: the Mac's power button is pressed")
-        return true
     }
 
-    /// Turns the Mac off at once (the view closes after).
-    func forceOff() {
+    /// Turns the Mac off at once, then runs `done` (the view closes). The stop takes its turn on InstantResume's
+    /// queue: a save running there holds the engine for seconds, and the main thread must not wait for it.
+    func forceOff(then done: @escaping @MainActor () -> Void) {
         SafeMode.macLive(false)
         StorageGuard.holding = false
         shutdownAsked = nil
         stuck = nil
-        if state == HENGE_VM_RUNNING || state == HENGE_VM_PAUSED || henge_vm_state() == HENGE_VM_PAUSED {
-            MacPreview.saveNow(for: mac)
-            henge_vm_stop()
+        let mac = self.mac, up = state == HENGE_VM_RUNNING || state == HENGE_VM_PAUSED
+        InstantResume.run("force off") {
+            if up || henge_vm_state() == HENGE_VM_PAUSED {
+                MacPreview.saveNow(for: mac)
+                henge_vm_stop()
+            }
+            InstantResume.discard(for: mac) /* turned off: nothing to pick up */
+            DispatchQueue.main.async { MainActor.assumeIsolated { done() } }
         }
-        InstantResume.discard(for: mac) /* turned off: nothing to pick up */
     }
 
     /// The owner chose to wait (or to keep the Mac running after macOS did not shut down).

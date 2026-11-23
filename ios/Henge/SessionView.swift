@@ -188,8 +188,8 @@ struct SessionView: View {
         .defersSystemGestures(on: .all) // a swipe from an edge is the Mac's first; a second one goes to iOS
         .sheet(isPresented: $showDetails) { details }
         .confirmationDialog("Shut down \(mac.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("Shut Down") { if !session.shutDown() { close() } } // macOS shuts down; the view closes once it is off
-            Button("Force Off", role: .destructive) { session.forceOff(); close() }
+            Button("Shut Down") { session.shutDown(off: close) } // macOS shuts down; the view closes once it is off
+            Button("Force Off", role: .destructive) { session.forceOff(then: close) }
         } message: {
             Text("Shut Down asks macOS to close its apps and turn off. Force Off turns it off at once; anything not saved on it is lost.")
         }
