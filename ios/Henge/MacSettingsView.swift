@@ -19,6 +19,10 @@ struct MacSettingsView: View {
         self.start = start
     }
 
+    /// When what a Mac starts with takes effect: a Mac Instant Resume saved goes back into what it had (Restart Now
+    /// starts it afresh at once).
+    private static let appliesAt = "Applies the next time this Mac starts afresh, not when it picks up where it was saved."
+
     /// Settings the Mac only takes when it starts.
     private var startChanged: Bool {
         mac.ramMB != startedWith.ramMB || mac.cpus != startedWith.cpus || mac.preset != startedWith.preset
@@ -38,10 +42,14 @@ struct MacSettingsView: View {
                 }
                 ScreenSettings(mac: $mac, save: save)
                 memory
-                Section("Processors") {
+                Section {
                     Stepper(value: Binding(get: { mac.cpus }, set: { mac.cpuCount = $0; save() }), in: DeviceProfile.cpuChoices) {
                         LabeledContent("CPUs", value: "\(mac.cpus)")
                     }
+                } header: {
+                    Text("Processors")
+                } footer: {
+                    Text(Self.appliesAt)
                 }
                 about
                 if canRestart {
@@ -88,7 +96,7 @@ struct MacSettingsView: View {
         let choices = Device.memoryChoices
         let gb = min(max(mac.ramMB / 1024, choices.lowerBound), choices.upperBound)
         let cap = Device.profile.guestCapMB == nil ? nil : "Up to \(choices.upperBound) GB starts on this \(Device.name)."
-        let note = [cap, Device.memoryNote(gb)].compactMap { $0 }.joined(separator: " ")
+        let note = [cap, Device.memoryNote(gb), Self.appliesAt].compactMap { $0 }.joined(separator: " ")
         return Section {
             Stepper(value: Binding(get: { gb }, set: { mac.ramMB = $0 * 1024; save() }), in: choices) {
                 LabeledContent("Memory", value: "\(gb) GB")
@@ -118,7 +126,7 @@ struct MacSettingsView: View {
                     + (mac.reportHostModelID == true ? " \(Device.snappedModelIdentifier(forOS: mac.osName)) gives a matching icon; experimental, as macOS keys some hardware decisions off the model." : "")
                     + "\n\n"
                   : "")
-                 + "Applies the next time this Mac starts.")
+                 + Self.appliesAt)
         }
     }
 

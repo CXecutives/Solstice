@@ -207,7 +207,7 @@ struct SessionView: View {
             HardwareKeys.releaseAll()
             HardwareMouse.shared.releaseButtons()
             if phase == .inactive { InstantResume.pause() }
-            if phase == .background && bootRAM > 0 { InstantResume.suspend(mac, ramMB: bootRAM, cpus: cpus) }
+            if phase == .background && bootRAM > 0 { InstantResume.suspend(mac) }
             if phase == .background { InstantResume.rest(mac) }
         }
         .onChange(of: showDetails) { showing in
@@ -416,7 +416,7 @@ struct SessionView: View {
         NavigationStack {
             List {
                 Section(phase) {
-                    LabeledContent("CPUs on", value: "\(cpusOn) of \(cpus)")
+                    LabeledContent("CPUs on", value: "\(cpusOn) of \(session.bootCPUs > 0 ? session.bootCPUs : cpus)")
                     LabeledContent("Temperature", value: PowerPolicy.label(power.thermal))
                     LabeledContent("Translated blocks", value: String(format: "%.1f M/s", blocksPerSecond / 1e6))
                     LabeledContent("Network frames", value: "\(framesOut) out, \(framesIn) in")

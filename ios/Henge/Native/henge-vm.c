@@ -223,6 +223,16 @@ int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int6
     return hv_snapshot_check(path, ident, bytes, saved_at);
 }
 
+int henge_vm_saved_shape(const char *path, const char *ident, uint64_t *ram_mb, int *cpus) {
+    uint64_t bytes = 0;
+    uint32_t n = 0;
+    int r = hv_snapshot_shape(path, ident, &bytes, &n);
+    if (r) return r;
+    if (ram_mb) *ram_mb = bytes >> 20;
+    if (cpus) *cpus = (int)n;
+    return 0;
+}
+
 int henge_vm_pause(char *err, size_t errlen) {
     if (state == 4) return 0;
     if (!lock_running()) {

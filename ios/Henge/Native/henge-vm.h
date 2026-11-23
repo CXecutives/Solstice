@@ -38,8 +38,9 @@ int henge_vm_trim(void);
 int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_continue(void);
 /* What henge_vm_resume did. REFUSED: the file can never be resumed (damaged, another ident or build, the disk moved on);
-   it is deleted and the Mac may start from cold. FAILED: something of the moment (memory, no JIT region, reading); the
-   file is kept, and a cold boot stays safe (it moves the disk on, and the moved disk refuses the file). */
+   it is deleted and the Mac may start from cold. FAILED: something of the moment (memory, no JIT region, reading), or
+   another shape than henge_vm_saved_shape; the file is kept, and a cold boot stays safe (it moves the disk on, and the
+   moved disk refuses the file). */
 typedef enum HengeVmResume {
     HENGE_VM_RESUME_REFUSED = -2,
     HENGE_VM_RESUME_FAILED = -1,
@@ -48,6 +49,9 @@ typedef enum HengeVmResume {
 HengeVmResume henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed,
                               uint64_t ram_mb, int cpus, const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int64_t *saved_at);
+/* The shape a whole saved Mac for ident goes back into: its RAM in MB and its CPUs. A resume has to use exactly these
+   (another shape is HENGE_VM_RESUME_FAILED, the file kept), so ident need not name them. 0, or nonzero if no such save. */
+int henge_vm_saved_shape(const char *path, const char *ident, uint64_t *ram_mb, int *cpus);
 /* A saved Mac is kept while the disk is as it was saved: after a resume (or running on after a save) the file goes
    once the Mac writes its disk, or a new save replaces it. Call now and then while it runs; 1 if the file was deleted
    now. A stop deletes it too if the disk moved. */
