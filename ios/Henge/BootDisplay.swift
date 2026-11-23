@@ -175,14 +175,6 @@ private struct GPUScreen: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> Screen {
-        if ProcessInfo.processInfo.environment["HV_COLOR_PROBE"] != nil {
-            // What the screen itself is, for the colour probe (the engine logs the layer and the frames).
-            let s = UIScreen.main
-            let gamut = s.traitCollection.displayGamut == .P3 ? "P3" : s.traitCollection.displayGamut == .SRGB ? "sRGB" : "unspecified"
-            HengeLog.log("colorprobe", "colorprobe: v=1 src=swift event=screen gamut=\(gamut) scale=\(s.scale) nativeScale=\(s.nativeScale) "
-                       + "bounds=\(Int(s.bounds.width))x\(Int(s.bounds.height)) maxEDR=\(s.potentialEDRHeadroom) currentEDR=\(s.currentEDRHeadroom) "
-                       + "brightness=\(String(format: "%.2f", s.brightness)) refreshHz=\(s.maximumFramesPerSecond)")
-        }
         let view = Screen(display: display, role: role, surface: surface)
         setColorSpace(view)
         setCorners(view)
