@@ -212,6 +212,11 @@ static BOOL record_fits(const uint8_t *table, size_t n, uint32_t tag, uint32_t s
 /* Metal's argument tables, a stage: 31 buffers, 128 textures (A13 and later), 16 samplers. */
 enum { BUFFER_SLOTS = 31, TEXTURE_SLOTS = 128, SAMPLER_SLOTS = 16 };
 
+/* Viewports or scissor rectangles in a record of size bytes, each bytes apiece after a header: at most the 16 Metal
+   takes (it copies the list into a table that size). */
+enum { VIEWPORT_SLOTS = 16 };
+static uint32_t viewport_count(uint32_t size, uint32_t each) { return MIN(size / each, (uint32_t)VIEWPORT_SLOTS); }
+
 /* Where count bindings from index go in a table of limit slots: what does not fit is left out. NO when none fit. */
 static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *out) {
     if (index >= limit || !count) return NO;
@@ -368,12 +373,12 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
     case 124: [e setTriangleFillMode:(MTLTriangleFillMode)U32(0)]; break;
     case 119: [e setStencilFrontReferenceValue:U32(0) backReferenceValue:U32(4)]; break;
     case 118: { /* a header, then the rectangles */
-        uint32_t head = r.size % sizeof(MTLScissorRect), n = (r.size - head) / sizeof(MTLScissorRect);
+        uint32_t head = r.size % sizeof(MTLScissorRect), n = viewport_count(r.size, sizeof(MTLScissorRect));
         if (n) [e setScissorRects:(const MTLScissorRect *)(r.p + head) count:n];
         break;
     }
     case 131: {
-        uint32_t head = r.size % sizeof(MTLViewport), n = (r.size - head) / sizeof(MTLViewport);
+        uint32_t head = r.size % sizeof(MTLViewport), n = viewport_count(r.size, sizeof(MTLViewport));
         if (n) [e setViewports:(const MTLViewport *)(r.p + head) count:n];
         break;
     }

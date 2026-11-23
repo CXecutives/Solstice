@@ -213,6 +213,30 @@ static void test_wrong_kind_refused(HvReplay *r) {
     puts("wrong kinds: a buffer named as a pipeline or a state is refused");
 }
 
+/* 64 scissor rectangles or viewports in one record: Metal takes 16, and copied all 64 into its table of 16. */
+static void test_many_viewports(HvReplay *r) {
+    check("64 rectangles: 16 set", viewport_count(8 + 64 * sizeof(MTLScissorRect), sizeof(MTLScissorRect)) == VIEWPORT_SLOTS);
+    check("64 viewports: 16 set", viewport_count(64 * sizeof(MTLViewport), sizeof(MTLViewport)) == VIEWPORT_SLOTS);
+    check("3 rectangles: 3", viewport_count(8 + 3 * sizeof(MTLScissorRect), sizeof(MTLScissorRect)) == 3);
+    enum { N = 64 };
+    uint8_t rects[8 + N * sizeof(MTLScissorRect)] = {0};
+    for (int i = 0; i < N; i++) {
+        MTLScissorRect s = {0, 0, 16, 16};
+        memcpy(rects + 8 + i * sizeof s, &s, sizeof s);
+    }
+    MTLViewport views[N];
+    for (int i = 0; i < N; i++) views[i] = (MTLViewport){0, 0, 16, 16, 0, 1};
+    id<MTLCommandBuffer> cb = [r->queue commandBuffer];
+    id<MTLRenderCommandEncoder> re = small_pass(r, cb);
+    [r render:re tag:118 rec:(Rec){rects, sizeof rects} task:1];
+    [r render:re tag:131 rec:(Rec){(const uint8_t *)views, sizeof views} task:1];
+    [re endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    check("and the pass runs", cb.status == MTLCommandBufferStatusCompleted);
+    puts("viewports: at most 16 handed to Metal");
+}
+
 /* A pipeline compiled off the worker: its first use waits for it and gets it; several compile side by side. */
 static void test_pipelines_compiled_later(HvReplay *r) {
     id<MTLFunction> f = [r computeStandIn];
@@ -568,6 +592,7 @@ int main(void) {
         dispatch_sync(r->worker, ^{ test_short_records(r); });
         dispatch_sync(r->worker, ^{ test_offsets_do_not_wrap(r); });
         dispatch_sync(r->worker, ^{ test_wrong_kind_refused(r); });
+        dispatch_sync(r->worker, ^{ test_many_viewports(r); });
         dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
         dispatch_sync(r->worker, ^{ test_video_surface(r); });
         dispatch_sync(r->worker, ^{ test_told_buffer_outlives_remap(r); });
