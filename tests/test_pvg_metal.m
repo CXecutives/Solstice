@@ -604,6 +604,24 @@ static void test_scaler(HvReplay *r) {
     puts("scaler: 2x exact, 1.4x sharp without ringing, 0.75x averaged, all centred");
 }
 
+/* The zoomed view's layer is up to twice the window: its drawables get the window's pixels at most, not 4x them. */
+static void test_target_capped(void) {
+    CALayer *window = [CALayer layer];
+    window.bounds = CGRectMake(0, 0, 400, 300);
+    CAMetalLayer *t = [CAMetalLayer layer];
+    t.contentsScale = 2;
+    [window addSublayer:t];
+    uint32_t w, h;
+    t.bounds = CGRectMake(0, 0, 400, 300);
+    target_pixels(t, 100, 100, &w, &h);
+    check("a target the window's size: its pixels", w == 800 && h == 600);
+    t.bounds = CGRectMake(0, 0, 800, 600);
+    target_pixels(t, 100, 100, &w, &h);
+    check("a target twice the window: at most the window's pixels", (uint64_t)w * h <= 800ull * 600 * TARGET_WINDOWS);
+    check("in its own shape", fabs((double)w / h - 800.0 / 600) < 0.01 && w >= 790);
+    puts("zoomed target: drawables no bigger than the window");
+}
+
 int main(void) {
     alarm(120);
     @autoreleasepool {
@@ -623,6 +641,7 @@ int main(void) {
         dispatch_sync(r->worker, ^{ test_told_buffer_outlives_remap(r); });
         dispatch_sync(r->worker, ^{ test_gpu_recovery(r); });
         test_scaler(r);
+        test_target_capped();
         hv_pvg_metal_destroy(m);
     }
     if (failures) printf("%d failures\n", failures);

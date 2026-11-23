@@ -28,15 +28,26 @@ static HvFit screen_fit(uint32_t out_w, uint32_t out_h, uint32_t W, uint32_t H) 
 }
 
 /* The target's size in pixels: its bounds at its scale, or the screen's own size where it has none (a layer that is
-   not laid out, as the GPU test's). Metal's textures go to 16384 a side. */
+   not laid out, as the GPU test's). Metal's textures go to 16384 a side. A target larger than its window (the zoomed
+   view: 1.5x to 2x the device, 3545 x 2460 on an iPad Air 4, 35 MB a drawable, three of them) gets at most
+   TARGET_WINDOWS windows' worth of pixels, in its own shape; Core Animation stretches that over the layer. */
+enum { TARGET_WINDOWS = 1 };
 static void target_pixels(CAMetalLayer *t, uint32_t W, uint32_t H, uint32_t *out_w, uint32_t *out_h) {
     CGSize b = t.bounds.size;
     CGFloat scale = t.contentsScale > 0 ? t.contentsScale : 1;
-    double w = round(b.width * scale), h = round(b.height * scale), big = MAX(w, h);
+    double w = round(b.width * scale), h = round(b.height * scale);
     if (w < 1 || h < 1) {
         *out_w = W, *out_h = H;
         return;
     }
+    CALayer *root = t;
+    while (root.superlayer) root = root.superlayer; /* the window's own layer */
+    double cap = round(root.bounds.size.width * scale) * round(root.bounds.size.height * scale) * TARGET_WINDOWS;
+    if (cap >= 1 && w * h > cap) {
+        double k = sqrt(cap / (w * h));
+        w = floor(w * k), h = floor(h * k);
+    }
+    double big = MAX(w, h);
     if (big > 16384) w = floor(w * 16384 / big), h = floor(h * 16384 / big);
     *out_w = (uint32_t)w, *out_h = (uint32_t)h;
 }
