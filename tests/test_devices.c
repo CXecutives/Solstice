@@ -7,6 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "pvg_lite.h"
 #include "sysreg.h"
 #include "vmapple.h"
 
@@ -182,6 +183,38 @@ static void test_storm(void) {
     storm_windows(g, 1, 0);
     memset(s, 0, sizeof *s);
     wr32(VMAPPLE_GIC_DIST + 0x184, 1u << 1);
+}
+
+/* Device work no thread signals (a display channel waiting for another channel's stamp) while CPU 0 sleeps: the
+   kicker polls only a running CPU 0, so CPU 0's own tick keeps the HV_POLL_BUSY cadence while a bit is set; with none,
+   no poll comes before the safety poll. A stamp finished while a channel waits asks for a poll at once (with more
+   CPUs its interrupt alone wakes CPU 0 without one). Run last: it leaves a display interrupt pending. */
+static void test_unsignalled_poll(void) {
+    cpu.cntv_ctl = cpu.cntp_ctl = 0; /* no guest timer deadline in the way */
+    board.poll_due = 0;
+    m.tick(&m, &cpu); /* a poll now */
+    uint64_t polled = mach_absolute_time(), polls = HV_ST(&cpu).dev_polls, due = m.tick(&m, &cpu);
+    check("nothing flagged: no device poll before the safety poll", due >= polled + HV_DEV_SAFETY - HV_TICKS_MS, 1);
+    hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, 1);
+    due = m.tick(&m, &cpu);
+    check("flagged: the next device poll within HV_POLL_BUSY", due && due <= polled + HV_POLL_BUSY, 1);
+    check("flagged: no poll before it is due", HV_ST(&cpu).dev_polls, polls);
+    while (mach_absolute_time() < due) {
+    }
+    m.tick(&m, &cpu);
+    check("flagged: polled when it was due", HV_ST(&cpu).dev_polls, polls + 1);
+
+    int ncpus = m.ncpus;
+    m.ncpus = 2;
+    __atomic_store_n(&m.percpu[0].poll_req, 0, __ATOMIC_SEQ_CST);
+    hv_pvg_lite_complete(board.pvg, 0, 1);
+    check("stamp while a channel waits: a poll asked of cpu 0", __atomic_load_n(&m.percpu[0].poll_req, __ATOMIC_SEQ_CST), 1);
+    hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, 0);
+    __atomic_store_n(&m.percpu[0].poll_req, 0, __ATOMIC_SEQ_CST);
+    hv_pvg_lite_complete(board.pvg, 0, 2);
+    check("stamp with no channel waiting: no poll asked", __atomic_load_n(&m.percpu[0].poll_req, __ATOMIC_SEQ_CST), 0);
+    m.ncpus = ncpus;
+    __atomic_store_n(&cpu.exit_req, 0, __ATOMIC_SEQ_CST);
 }
 
 static int make_disk(const char *path, uint64_t size, uint8_t salt) {
@@ -972,6 +1005,7 @@ int main(void) {
     puts("guest programs");
     test_guest_programs();
 #endif
+    test_unsignalled_poll();
 
     hv_disk_close(&root);
     hv_disk_close(&aux);

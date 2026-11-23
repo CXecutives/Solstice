@@ -397,7 +397,10 @@ void hv_pvg_lite_complete(HvPvgLite *p, uint32_t ch, uint32_t stamp) {
        the guest waits for this between the many batches of work in a frame. */
     __atomic_fetch_or(&p->status, 1u << ch, __ATOMIC_ACQ_REL);
     hv_gicv3_pend(p->gic, p->gfx_irq);
-    if (p->m->ncpus == 1) hv_machine_wake(p->m);
+    /* A channel waiting for another one's stamp (HV_UNSIG_PVG_CHAN) runs at CPU 0's next poll: ask for it now (the
+       interrupt alone wakes CPU 0 without one when there are more CPUs). */
+    if (p->m->ncpus == 1 || (__atomic_load_n(&p->m->dev_unsignalled, __ATOMIC_ACQUIRE) & HV_UNSIG_PVG_CHAN))
+        hv_machine_wake(p->m);
 }
 
 void hv_pvg_lite_set_layer(HvPvgLite *p, void *layer) {

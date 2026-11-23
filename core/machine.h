@@ -534,7 +534,7 @@ void hv_cpu_kick(HvCpu *cpu);
 void hv_machine_wake(HvMachine *m);
 
 /* Device work no thread signals, which only a poll finds (HV_UNSIG_* bits, set and cleared by the device): while any
-   is set, the kicker has CPU 0 poll every HV_POLL_BUSY while it runs. With none, CPU 0 polls when a device signals
+   is set, CPU 0 polls every HV_POLL_BUSY (asked by the kicker while it runs, by its own tick while it sleeps). With none, CPU 0 polls when a device signals
    (hv_machine_wake), at its device deadlines (the display's refresh) and every HV_DEV_SAFETY. */
 enum { HV_UNSIG_PVG_CHAN = 1u << 0 /* a display channel waits for another channel's stamp (pvg_lite.c) */ };
 void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on);
