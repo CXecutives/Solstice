@@ -2291,10 +2291,9 @@ static int chunk_take(HvMachine *m, int kind, uint32_t hot, uint32_t cold, uint3
 
 int hv_translate_place(HvMachine *m, HvBlock *b) {
     Emit *e = &E;
-    uint32_t pad = hv_knob[HV_K_TEST1] & ~1u; /* HV_K1: words of nothing after each block's hot part, to see what density is worth */
     uint32_t *dst, *cold, *tramp;
     int kind = hv_cc_kind(m, b->va, b->pa, b->flags); /* dropped by an eviction and wanted again: tenured */
-    if (chunk_take(m, kind, e->nhot + pad, e->ncold, &dst, &cold, &tramp, &b->stag) != 0) return -1;
+    if (chunk_take(m, kind, e->nhot, e->ncold, &dst, &cold, &tramp, &b->stag) != 0) return -1;
     for (uint32_t k = 0; k < e->nrel; k++) {
         uint32_t at = e->rel[k].at, target = e->rel[k].target;
         if (e->rel[k].from_cold) patch_branch(&e->cold[at], (dst + target) - (cold + at));

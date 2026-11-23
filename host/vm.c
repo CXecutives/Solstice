@@ -296,11 +296,6 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     HvCfgParams cfg = {.nr_cpus = (uint32_t)ncpus, .ecid = c->ecid, .seed = c->seed, .mac_en0 = {0x02, 0x48, 0x56, 0x4d, 0x00, 0x01},
                        .serial = c->serial, .model = c->model, .soc_name = c->soc_name};
     if (c->installer) cfg.run_installer1 = cfg.run_installer2 = 1;
-    if (getenv("HV_RUN_INSTALLER")) { /* experiment: "a,b" for the two installer words */
-        unsigned a = 0, b2 = 0;
-        sscanf(getenv("HV_RUN_INSTALLER"), "%u,%u", &a, &b2);
-        cfg.run_installer1 = a, cfg.run_installer2 = b2;
-    }
     static const uint8_t mac[6] = {0x02, 0x48, 0x56, 0x4d, 0x00, 0x01};
     if (hv_vmapple_create(&board, &m, cpus, &disk, &aux, &cfg, mac) != 0)
         return fail(err, errlen, "Cannot build the machine (not enough memory for its CPUs' tables?).");

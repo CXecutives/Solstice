@@ -346,11 +346,8 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, HvDisk *root, HvDi
     if (root) b->root_blk = hv_virtio_blk_create(m, b->pcie, root, HV_VBLK_ROOT);
     if (mac) b->net = hv_virtio_net_create(m, b->pcie, mac);
     b->usb = hv_xhci_create(m, b->pcie);
-    /* HV_INPUT_ORDER (experiment): "keyboard" = keyboard only, "swap" = mouse first. */
-    const char *order = getenv("HV_INPUT_ORDER");
-    if (order && !strcmp(order, "swap")) b->mouse = hv_virtio_input_create(m, b->pcie, HV_VINPUT_MOUSE);
     b->keyboard = hv_virtio_input_create(m, b->pcie, HV_VINPUT_KEYBOARD);
-    if (!order) b->mouse = hv_virtio_input_create(m, b->pcie, HV_VINPUT_MOUSE);
+    b->mouse = hv_virtio_input_create(m, b->pcie, HV_VINPUT_MOUSE);
     if (!getenv("HV_NO_SOUND")) b->snd = hv_virtio_snd_create(m, b->pcie);
     if ((aux && !b->aux_blk) || (root && !b->root_blk)) return -1;
     if (getenv("HV_BALLOON")) {
