@@ -283,8 +283,9 @@ static void light_path_leaves_resets(void) {
     uint64_t root = pt_table();
     for (uint64_t va = lo & ~0x3fffull; va < hi; va += 16384) *pt_entry(root, va) = va | PT_BITS;
     static HvCpu init, native, cpu;
+    static uint8_t stack[65536] __attribute__((aligned(16384))); /* the native run's epilogue pushes on it */
     memset(&init, 0, sizeof init);
-    seed_cpu(&init, 77, 0); /* q0-q31 hold the seed's values throughout: the program never touches them */
+    seed_cpu(&init, 77, ADDR(stack + sizeof stack)); /* q0-q31 hold the seed's values throughout: the program never touches them */
     init.x[20] = 0;          /* no TLBIs (EL0) */
     init.x[21] = 1;
     run_native(&prog, &init, &native, NULL);
@@ -299,13 +300,14 @@ static void light_path_leaves_resets(void) {
     m.stop_pc = ADDR(prog.end);
     HvPerCpu *p = cpu.pc_state;
     const HvStats *st = &p->own.stats;
-    const uint32_t keyed0 = (1u << 17) - 4, ucode0 = (1u << HV_UCODE_BITS) / 2 - 4;
+    const uint32_t keyed0 = (1u << 17) - 1, ucode0 = (1u << HV_UCODE_BITS) / 2 - 2; /* one fill from full, both */
     uint64_t light0 = 0, restarts0 = 0;
     char what[200];
     for (int run = 0; run < 2; run++) {
         if (run) { /* the blocks are made: the user half emptied, so every indirect branch misses into the light path */
             hv_ijc_reset(&cpu, 0);
-            p->ijc_keyed_count = keyed0; /* and its filters a few fills from full */
+            memset(p->ijc_keyed, 0, sizeof p->ijc_keyed); /* so the next fill sets a new bit */
+            p->ijc_keyed_count = keyed0; /* and its filters a fill from full */
             p->ucode_count = ucode0;
             cpu.next_cid = 0xffff; /* the second user-half restart runs out of ids (fresh_cid) */
             light0 = st->ijc_light, restarts0 = st->reset_why[6];
