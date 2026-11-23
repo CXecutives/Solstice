@@ -20,6 +20,15 @@ static int send_all(int fd, const void *p, size_t n) {
     return 0;
 }
 
+// The clipboard's key from the app (new each time it runs): fetched when missing, and again when it is refused.
+static NSString *token;
+static NSString *currentToken(void) {
+    @synchronized([NSProcessInfo processInfo]) { return token; }
+}
+static void forgetToken(void) {
+    @synchronized([NSProcessInfo processInfo]) { token = nil; }
+}
+
 // One request on its own connection. A plain socket: the server is ours, and URLSession refuses plain HTTP.
 static NSData *request(NSString *method, NSString *path, NSData *body, int *status, unsigned long *seq) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -34,8 +43,9 @@ static NSData *request(NSString *method, NSString *path, NSData *body, int *stat
         close(fd);
         return nil;
     }
-    NSString *head = [NSString stringWithFormat:@"%@ %@ HTTP/1.1\r\nHost: " HOST "\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", method, path,
-                                                (unsigned long)body.length];
+    NSString *key = currentToken();
+    NSString *head = [NSString stringWithFormat:@"%@ %@ HTTP/1.1\r\nHost: " HOST "\r\nX-Henge-Token: %@\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n",
+                                                method, path, key ?: @"", (unsigned long)body.length];
     const char *text = head.UTF8String;
     if (send_all(fd, text, strlen(text)) != 0 || (body.length && send_all(fd, body.bytes, body.length) != 0)) {
         close(fd);
@@ -61,15 +71,27 @@ static NSData *request(NSString *method, NSString *path, NSData *body, int *stat
 
 static NSInteger lastChange;
 
+// Makes sure there is a key; NO if the app cannot be reached.
+static BOOL haveToken(void) {
+    if (currentToken()) return YES;
+    int status = 0;
+    NSData *body = request(@"GET", @"/.henge/token", nil, &status, NULL);
+    NSString *key = body && status == 200 ? [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding] : nil;
+    if (!key.length) return NO;
+    @synchronized([NSProcessInfo processInfo]) { token = key; }
+    return YES;
+}
+
 // The device's clipboard, as it changes. The server holds each request until there is something new.
 static void followDevice(void) {
     unsigned long seq = 0;
     for (BOOL first = YES;; first = NO) {
         int status = 0;
         unsigned long now = seq;
-        NSData *body = request(@"GET", [NSString stringWithFormat:@"/.henge/clipboard?since=%lu", first ? ULONG_MAX >> 1 : seq], nil, &status, &now);
-        if (!body) {
-            sleep(5);
+        NSData *body = haveToken() ? request(@"GET", [NSString stringWithFormat:@"/.henge/clipboard?since=%lu", first ? ULONG_MAX >> 1 : seq], nil, &status, &now) : nil;
+        if (status == 403) forgetToken(); // the app started again: a new key
+        if (!body || status == 403) {
+            sleep(status == 403 ? 1 : 5);
             continue;
         }
         BOOL news = !first && status == 200 && now != seq;
@@ -96,8 +118,12 @@ static void checkClipboard(void) {
     NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
     if (!data.length) return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        int status = 0;
-        request(@"PUT", @"/.henge/clipboard", data, &status, NULL);
+        for (int tries = 0; tries < 2 && haveToken(); tries++) {
+            int status = 0;
+            request(@"PUT", @"/.henge/clipboard", data, &status, NULL);
+            if (status != 403) break;
+            forgetToken(); // the app started again: once more with its new key
+        }
     });
 }
 

@@ -10,6 +10,7 @@
    when the guest has posted receive buffers. */
 #include "net_slirp.h"
 #include "dns_proxy.h"
+#include "net_queue.h"
 #include "share.h"
 
 #include <arpa/inet.h>
@@ -25,21 +26,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define QUEUE 512
 #define MAX_FRAME 65550
 #define MAX_TIMERS 64
 #define MAX_POLL 1024
-
-typedef struct Frame {
-    uint32_t len;
-    uint8_t *data;
-} Frame;
-
-typedef struct Queue {
-    Frame f[QUEUE];
-    uint32_t head, tail;
-    pthread_mutex_t mu;
-} Queue;
 
 typedef struct Timer {
     int used;
@@ -51,7 +40,7 @@ typedef struct Timer {
 static Slirp *slirp;
 static HvVirtioNet *net;
 static HvMachine *machine;
-static Queue to_guest, to_host;
+static HvNetQueue to_guest, to_host;
 static int wake_pipe[2] = {-1, -1};
 static pthread_t network_thread;
 static int thread_started, queues_initialized;
@@ -67,21 +56,18 @@ void hv_net_set_share_socket(const char *path) {
     snprintf(share_socket, sizeof share_socket, "%s", path ? path : "");
 }
 
-/* 0: full (dropped); 1: queued; 2: queued into an empty queue, so its reader needs waking. The network thread
-   drains to_host completely each round, so a frame behind others is picked up without a wake of its own. */
-static int push(Queue *q, const uint8_t *data, uint32_t len) {
-    pthread_mutex_lock(&q->mu);
-    int ok = q->tail - q->head < QUEUE;
-    if (ok && q->tail == q->head) ok = 2;
-    if (ok) {
-        Frame *f = &q->f[q->tail % QUEUE];
-        f->data = malloc(len);
-        memcpy(f->data, data, len);
-        f->len = len;
-        q->tail++;
+/* A frame for the guest: CPU 0 is woken only when the queue was empty. Behind others, it goes with them (hv_net_poll
+   drains until the queue is empty, or the guest's next receive buffers bring it: rx_ready). */
+static void to_guest_push(const uint8_t *frame, uint32_t len) {
+    if (hv_netq_push(&to_guest, frame, len) == 2) hv_machine_wake(machine);
+}
+
+/* A frame for libslirp: its thread is woken only when the queue was empty (it drains it whole each round). */
+static void to_host_push(const uint8_t *frame, uint32_t len) {
+    if (hv_netq_push(&to_host, frame, len) == 2) {
+        char c = 0;
+        (void)!write(wake_pipe[1], &c, 1);
     }
-    pthread_mutex_unlock(&q->mu);
-    return ok;
 }
 
 /* HV_NET_LOG: one line per frame (ethertype, IP protocol, ports). */
@@ -116,7 +102,7 @@ static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque) {
     (void)opaque;
     if (len > MAX_FRAME) return (slirp_ssize_t)len;
     log_frame("rx", buf, (uint32_t)len);
-    if (push(&to_guest, buf, (uint32_t)len)) hv_machine_wake(machine);
+    to_guest_push(buf, (uint32_t)len);
     return (slirp_ssize_t)len;
 }
 
@@ -229,15 +215,13 @@ static void *net_thread(void *unused) {
                 timers[i].expire_ms = -1;
                 slirp_handle_timer(slirp, timers[i].id, timers[i].cb_opaque);
             }
-        /* What the guest sent since. */
-        for (;;) {
-            pthread_mutex_lock(&to_host.mu);
-            Frame f = {0, NULL};
-            if (to_host.head != to_host.tail) f = to_host.f[to_host.head++ % QUEUE];
-            pthread_mutex_unlock(&to_host.mu);
-            if (!f.data) break;
-            slirp_input(slirp, f.data, (int)f.len);
-            free(f.data);
+        /* What the guest sent since, a batch at a time. */
+        for (uint32_t n; (n = hv_netq_waiting(&to_host));) {
+            for (uint32_t i = 0; i < n; i++) {
+                const HvNetFrame *f = hv_netq_at(&to_host, i);
+                slirp_input(slirp, f->data, (int)f->len);
+            }
+            hv_netq_pop(&to_host, n);
         }
     }
     return NULL;
@@ -247,10 +231,9 @@ static void *net_thread(void *unused) {
 static void dns_send(const uint8_t *frame, uint32_t len, int guest) {
     if (guest) {
         log_frame("rx dns", frame, len);
-        if (push(&to_guest, frame, len)) hv_machine_wake(machine);
-    } else if (push(&to_host, frame, len) == 2) {
-        char c = 0;
-        (void)!write(wake_pipe[1], &c, 1);
+        to_guest_push(frame, len);
+    } else {
+        to_host_push(frame, len);
     }
 }
 
@@ -260,27 +243,44 @@ static void transmit(void *opaque, const uint8_t *frame, uint32_t len) {
     hv_net_tx_frames++;
     log_frame("tx", frame, len);
     if (hv_dns_proxy_take(frame, len, dns_send)) return;
-    if (push(&to_host, frame, len) == 2) {
-        char c = 0;
-        (void)!write(wake_pipe[1], &c, 1);
-    }
+    to_host_push(frame, len);
 }
 
+/* CPU thread, device lock held (the board's poll, or the guest posting receive buffers): frames for the guest into
+   its buffers, a batch at a time, one interrupt for all of them. */
 void hv_net_poll(void) {
     if (!net) return;
-    for (;;) {
-        pthread_mutex_lock(&to_guest.mu);
-        Frame f = {0, NULL};
-        if (to_guest.head != to_guest.tail) f = to_guest.f[to_guest.head % QUEUE];
-        pthread_mutex_unlock(&to_guest.mu);
-        if (!f.data) return;
-        if (!hv_virtio_net_receive(net, f.data, f.len)) return; /* no buffer posted yet: try again later */
-        hv_net_rx_frames++;
-        pthread_mutex_lock(&to_guest.mu);
-        to_guest.head++;
-        pthread_mutex_unlock(&to_guest.mu);
-        free(f.data);
+    for (uint32_t n; (n = hv_netq_waiting(&to_guest));) {
+        uint32_t i = 0;
+        while (i < n) {
+            const HvNetFrame *f = hv_netq_at(&to_guest, i);
+            if (!hv_virtio_net_receive(net, f->data, f->len)) break; /* no buffer posted: when the guest posts some */
+            i++;
+        }
+        hv_netq_pop(&to_guest, i);
+        hv_net_rx_frames += i;
+        if (i < n) break;
     }
+    hv_virtio_net_rx_done(net);
+}
+
+static void rx_ready(void *opaque) {
+    (void)opaque;
+    hv_net_poll();
+}
+
+/* The stats printer's thread: frames each way, and what did not fit in the queues between the threads. */
+void hv_net_stats(double seconds) {
+    static uint64_t last_rx, last_tx;
+    uint64_t rx = hv_net_rx_frames, tx = hv_net_tx_frames;
+    if (rx < last_rx || tx < last_tx) last_rx = last_tx = 0; /* a new machine */
+    if (seconds <= 0) return;
+    fprintf(stderr, "  net: rx %.0f frames/s, tx %.0f/s; to the guest: dropped %llu, at most %u of %u queued; to the network: dropped %llu, at most %u\n",
+            (double)(rx - last_rx) / seconds, (double)(tx - last_tx) / seconds,
+            (unsigned long long)__atomic_load_n(&to_guest.dropped, __ATOMIC_RELAXED), __atomic_exchange_n(&to_guest.peak, 0, __ATOMIC_RELAXED),
+            HV_NETQ_LEN, (unsigned long long)__atomic_load_n(&to_host.dropped, __ATOMIC_RELAXED),
+            __atomic_exchange_n(&to_host.peak, 0, __ATOMIC_RELAXED));
+    last_rx = rx, last_tx = tx;
 }
 
 int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
@@ -289,8 +289,8 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
     atomic_store(&stopping, 0);
     hv_dns_proxy_start();
     hv_net_tx_frames = hv_net_rx_frames = 0;
-    pthread_mutex_init(&to_guest.mu, NULL);
-    pthread_mutex_init(&to_host.mu, NULL);
+    hv_netq_init(&to_guest);
+    hv_netq_init(&to_host);
     queues_initialized = 1;
     if (pipe(wake_pipe) != 0) { hv_net_detach(); return -1; }
     fcntl(wake_pipe[0], F_SETFL, O_NONBLOCK);
@@ -325,6 +325,7 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
     }
     net = n;
     n->transmit = transmit;
+    n->rx_ready = rx_ready;
     /* User-initiated, as the CPUs waiting on its packets are: not whatever the starting thread had. */
     pthread_attr_t at;
     pthread_attr_init(&at);
@@ -345,17 +346,12 @@ void hv_net_detach(void) {
         pthread_join(network_thread, NULL);
         thread_started = 0;
     }
-    if (net) net->transmit = NULL;
+    if (net) net->transmit = NULL, net->rx_ready = NULL;
     if (slirp) slirp_cleanup(slirp);
     slirp = NULL;
     if (queues_initialized) {
-        Queue *queues[] = {&to_guest, &to_host};
-        for (int i = 0; i < 2; i++) {
-            Queue *q = queues[i];
-            while (q->head != q->tail) free(q->f[q->head++ % QUEUE].data);
-            pthread_mutex_destroy(&q->mu);
-            memset(q, 0, sizeof *q);
-        }
+        hv_netq_destroy(&to_guest);
+        hv_netq_destroy(&to_host);
         queues_initialized = 0;
     }
     for (int i = 0; i < 2; i++) {
