@@ -77,7 +77,6 @@ HENGE_EXPORT void henge_ios_jit_install_trap_handler(void);
  * will ask for (tb-size).
  */
 HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes);
-HENGE_EXPORT bool henge_ios_jit_prewarm_self(size_t bytes);
 
 /* Release a mapping obtained from the debugger. */
 void henge_ios_jit_release(HengeDualMapping *m);
@@ -90,30 +89,6 @@ HENGE_EXPORT void henge_ios_jit_detach(void);
 
 /* True once a successful allocation has happened -- i.e. JIT is genuinely live. */
 HENGE_EXPORT bool henge_ios_jit_is_available(void);
-
-/*
- * Whether this process can execute memory it wrote itself, through a plain
- * MAP_JIT mapping and TCG's own W^X toggle -- the route every other iOS
- * emulator uses, and the one QEMU falls back to when the dual mapping is
- * unavailable.
- *
- * Measured, not inferred: it maps a page, writes two instructions into it,
- * calls them and checks the answer, with a guard around the call so a page that
- * turns out not to be executable fails this test instead of killing the app.
- * The result is cached after the first call.
- *
- * This exists because the question "does this device need a trap servicer?" was
- * previously answered from the device model and the iOS version, and that guess
- * is wrong on at least one real combination -- iOS 26, where StikDebug attaches
- * but services no traps because MAP_JIT works and it does not need to.
- */
-HENGE_EXPORT bool henge_ios_jit_mapjit_works(void);
-
-/*
- * When the region was made without a trap servicer (before iOS 26: TrollStore, a jailbreak, or a debugger that has let go),
- * which way: "MAP_JIT" or "plain". NULL otherwise.
- */
-HENGE_EXPORT const char *henge_ios_jit_self_route(void);
 
 /*
  * Log the process's phys_footprint -- the number jetsam actually kills on.

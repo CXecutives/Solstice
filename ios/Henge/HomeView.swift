@@ -25,7 +25,7 @@ struct HomeView: View {
                     notices
                     if let mac {
                         MacHero(mac: mac, jitReady: jitReady, start: { running = mac }, turnOnJIT: { jit.enable() },
-                                jitNote: jitReady ? nil : (JITBootstrap.lastFailure ?? jit.automaticDescription))
+                                jitNote: jitReady ? nil : (JITBootstrap.lastFailure ?? jit.methodDescription))
                         HStack(spacing: 10) {
                             FactTile(title: "Disk", value: ByteText.string(UInt64(max(mac.bytesUsed, 0))))
                             FactTile(title: "Last used", value: mac.lastUsedText)
@@ -58,7 +58,7 @@ struct HomeView: View {
             }
             .task(id: running == nil) { // waits while a Mac is open over the tabs: this screen is not seen then
                 guard running == nil else { return }
-                while !Task.isCancelled { // the region may be claimed after a hand-off to StikDebug
+                while !Task.isCancelled { // the region may be claimed once the helper attaches
                     if jitReady != JITBootstrap.ready { jitReady = JITBootstrap.ready }
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }

@@ -72,7 +72,7 @@ enum HengeLog {
         // failure must never be able to kill the app it is trying to diagnose.
         signal(SIGPIPE, SIG_IGN)
 
-        // Fresh file each launch. StikDebug relaunches us after attaching, so the
+        // Fresh file each launch, so the
         // run that matters is always the most recent one; keeping the previous
         // run's noise would make the log harder to read, not easier.
         // ...but the previous run is kept as henge-prev.log, because when a game took Henge down with it, that run's log is

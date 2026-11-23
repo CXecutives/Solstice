@@ -29,7 +29,6 @@ targets:
         excludes:
           - "Resources/**"
           - "Info.plist"
-          - "Henge.entitlements"
           - "Henge.personal.entitlements"
           - "AppIcon.icon/**"
           - "AppIcon.icon"

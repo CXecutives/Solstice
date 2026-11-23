@@ -41,7 +41,7 @@ struct InstallView: View {
             .navigationTitle(installer.busy ? "Installing" : "Install macOS")
             .task(id: sessionUp) {
                 guard !sessionUp else { return }
-                while !Task.isCancelled { // the region may be claimed after a hand-off to StikDebug
+                while !Task.isCancelled { // the region may be claimed once the helper attaches
                     if jitReady != JITBootstrap.ready { jitReady = JITBootstrap.ready }
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }

@@ -4,27 +4,6 @@ import Network
 import SwiftUI
 import UIKit
 
-/// How Henge gets a debugger attached. See docs/06-built-in-jit.md.
-enum JITMethod: String, CaseIterable, Identifiable {
-    /// TrollStore or jailbreak first, then a paired built-in helper or StikDebug.
-    case automatic
-    case stikDebug
-    case trollStore
-    case jailbreak
-    case builtIn
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .automatic: return "Automatic"
-        case .stikDebug: return "StikDebug"
-        case .trollStore: return "TrollStore"
-        case .jailbreak: return "Jailbreak (Dopamine)"
-        case .builtIn: return "Built-in StikJIT"
-        }
-    }
-}
-
 /// Where Built-in StikJIT's pairing file came from.
 enum JITPairingSource: String {
     /// Made by Henge on this device (iOS 27, OnDevicePairing).
@@ -80,9 +59,6 @@ enum JITPairingFileStore {
 final class JITCoordinator: ObservableObject {
     static let shared = JITCoordinator()
 
-    @Published var method: JITMethod {
-        didSet { UserDefaults.standard.set(method.rawValue, forKey: "henge.jitMethod") }
-    }
     @Published var showSetup = false
     @Published private(set) var connectionProblem: JITConnectionProblem?
     /// What to tell the user, and which buttons to offer, for the last connection problem.
@@ -114,29 +90,12 @@ final class JITCoordinator: ObservableObject {
     }
 
     private init() {
-        method = UserDefaults.standard.string(forKey: "henge.jitMethod")
-            .flatMap(JITMethod.init(rawValue:)) ?? .automatic
         pathMonitor.start(queue: DispatchQueue(label: "com.henge.app.jit-path", qos: .utility))
     }
 
-    var resolvedMethod: JITMethod {
-        guard method == .automatic else { return method }
-        if JITBootstrap.isTrollStoreInstalled { return .trollStore }
-        if JITBootstrap.isJailbroken { return .jailbreak }
-        if hasPairing && HengeBuiltInJIT.isAvailable { return .builtIn }
-        if JITBootstrap.isStikDebugInstalled { return .stikDebug }
-        return .builtIn
-    }
-
-    var automaticDescription: String {
-        switch resolvedMethod {
-        case .stikDebug: return "StikDebug is installed, so Henge will open it."
-        case .trollStore: return "TrollStore is installed, so Henge will ask it to enable JIT."
-        case .jailbreak: return "This device is jailbroken, so JIT comes from the jailbreak's Allow JIT in Apps setting."
-        default: return hasPairing
-            ? "Henge will use its paired built-in helper."
-            : "StikDebug, TrollStore and a jailbreak were not found, so Henge will use its built-in helper."
-        }
+    /// What turning JIT on will do, for screens that show it.
+    var methodDescription: String {
+        hasPairing ? "Henge will use its paired built-in helper." : "Pair this device to use Henge's built-in helper."
     }
 
     func refreshPairingStatus() {
@@ -145,18 +104,11 @@ final class JITCoordinator: ObservableObject {
 
     private func log(_ line: String) { HengeLog.log("jit", line) }
 
-    /// Get a debugger attached with whichever method applies, or open the setup
-    /// walkthrough when that method is not set up yet.
     /// "Turn on JIT at launch": when Henge opens without JIT, ask the built-in StikJIT for it straight away, once per launch.
     /// Only when StikJIT can do it unattended -- it is available here and already paired -- so opening Henge never lands in
     /// the setup walkthrough by surprise.
     static let autoEnableKey = "henge.jit.autoEnable"
     private var autoTried = false
-
-    /// A Henge TrollStore installed asks TrollStore for JIT each time it opens without it (#135), unless turned off in Settings:
-    /// TrollStore attaches to the running Henge for a moment, with nothing to tap.
-    static let trollStoreAutoKey = "henge.jit.trollStoreAuto"
-    static var trollStoreAuto: Bool { UserDefaults.standard.object(forKey: trollStoreAutoKey) as? Bool ?? true }
 
     /// JIT at launch opened LocalDevVPN to connect it; the next return to the foreground goes on with the built-in helper.
     private var awaitingVPN = false
@@ -170,7 +122,6 @@ final class JITCoordinator: ObservableObject {
             awaitingVPN = false
             guard !JITBootstrap.ready else { return }
             log("back from LocalDevVPN (\(LocalDevVPN.isConnected ? "connected" : "not connected")): turning JIT on with built-in StikJIT")
-            method = .builtIn
             if continueAfterPairing {
                 continueAfterPairing = false
                 prepareBuiltIn(thenEnable: true)
@@ -182,7 +133,6 @@ final class JITCoordinator: ObservableObject {
         if continueAfterPairing {
             autoTried = true
             guard !JITBootstrap.ready, HengeBuiltInJIT.isAvailable, hasPairing else { continueAfterPairing = false; return }
-            method = .builtIn
             if LocalDevVPN.isInstalled, !LocalDevVPN.isConnected {
                 log("paired: opening LocalDevVPN to connect, then JIT")
                 awaitingVPN = true
@@ -192,14 +142,6 @@ final class JITCoordinator: ObservableObject {
             continueAfterPairing = false
             log("paired: checking the setup, then turning JIT on")
             prepareBuiltIn(thenEnable: true)
-            return
-        }
-        if !autoTried, JITBootstrap.isInstalledWithTrollStore, Self.trollStoreAuto {
-            autoTried = true
-            guard !JITBootstrap.ready else { return }
-            log("installed by TrollStore: asking it for JIT at launch")
-            method = .trollStore
-            enable()
             return
         }
         guard !autoTried, Self.autoEnable else { return }
@@ -218,7 +160,6 @@ final class JITCoordinator: ObservableObject {
             return
         }
         log("turning JIT on at launch with built-in StikJIT")
-        method = .builtIn
         enable()
     }
 
@@ -235,95 +176,19 @@ final class JITCoordinator: ObservableObject {
         error = nil
         connectionProblem = nil
         advice = nil
-        switch resolvedMethod {
-        case .automatic:
-            assertionFailure("Automatic must resolve to a concrete JIT method")
-        case .stikDebug:
-            // requestAttach() calls open() on stikjit:// and cannot report failure
-            // synchronously: an unclaimed scheme fails open() silently. Wait for
-            // CS_DEBUGGED so a missing StikDebug still ends in a clear message.
-            if JITBootstrap.requestAttach() {
-                awaitStikDebug()
-            } else if JITBootstrap.requestTrollStoreAttach() {
-                awaitTrollStore()
-            } else {
-                error = "StikDebug is not installed. Install it, or set up Built-in StikJIT."
-                showSetup = true
-            }
-        case .trollStore:
-            if JITBootstrap.requestTrollStoreAttach() {
-                awaitTrollStore()
-            } else {
-                error = "TrollStore could not be opened. Install Henge through TrollStore, or choose another method."
-                showSetup = true
-            }
-        case .jailbreak:
-            // Nothing to ask: a jailbreak marks an app as debugged as it opens, if it has been told to. Say what to turn on.
-            error = "Turn on Allow JIT in Apps in Dopamine's settings, then open Henge again."
+        guard HengeBuiltInJIT.isAvailable, hasPairing else {
+            log("built-in JIT is not set up; opening the walkthrough")
             showSetup = true
-        case .builtIn:
-            guard HengeBuiltInJIT.isAvailable, hasPairing else {
-                log("built-in JIT is not set up; opening the walkthrough")
-                showSetup = true
-                return
-            }
-            // The helper reaches the device through LocalDevVPN: connect it first (it comes back by itself).
-            if LocalDevVPN.isInstalled, !LocalDevVPN.isConnected, !awaitingVPN, !backFromVPN {
-                log("Turn On JIT: LocalDevVPN is not connected; opening it to connect")
-                awaitingVPN = true
-                LocalDevVPN.open()
-                return
-            }
-            enableBuiltIn()
+            return
         }
-    }
-
-    /// After TrollStore is asked: it opens Henge again and attaches to it for a moment, which marks the process as debugged. Watch for
-    /// that, so the Games tab and the Library notice without waiting for another trip to the foreground, and say what to check if
-    /// it never comes -- TrollStore only answers enable-jit once its URL Scheme setting is on.
-    private func awaitTrollStore() {
-        busy = true
-        status = "Waiting for TrollStore to enable JIT…"
-        log("waiting for TrollStore's attach")
-        _ = Self.waitForDebugger(timeout: 60) { [weak self] attached in
-            guard let self else { return }
-            busy = false
-            if attached {
-                status = "JIT is on."
-                error = nil
-                attachGeneration += 1
-                log("TrollStore enabled JIT")
-            } else {
-                status = nil
-                error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure Henge was "
-                      + "installed through TrollStore (or is signed with get-task-allow)."
-                log("TrollStore did not enable JIT within a minute")
-                showSetup = true
-            }
+        // The helper reaches the device through LocalDevVPN: connect it first (it comes back by itself).
+        if LocalDevVPN.isInstalled, !LocalDevVPN.isConnected, !awaitingVPN, !backFromVPN {
+            log("Turn On JIT: LocalDevVPN is not connected; opening it to connect")
+            awaitingVPN = true
+            LocalDevVPN.open()
+            return
         }
-    }
-
-    /// After StikDebug is asked to attach: open() cannot say whether it found StikDebug,
-    /// so watch CS_DEBUGGED the same way awaitTrollStore does.
-    private func awaitStikDebug() {
-        busy = true
-        status = "Waiting for StikDebug to attach…"
-        log("waiting for StikDebug's attach")
-        _ = Self.waitForDebugger(timeout: 60) { [weak self] attached in
-            guard let self else { return }
-            busy = false
-            if attached {
-                status = "JIT is on."
-                error = nil
-                attachGeneration += 1
-                log("StikDebug attached")
-            } else {
-                status = nil
-                error = "StikDebug did not attach within a minute. Make sure it's installed and try again."
-                log("StikDebug did not attach within a minute")
-                showSetup = true
-            }
-        }
+        enableBuiltIn()
     }
 
     func importPairingFile(_ source: URL) {
@@ -331,7 +196,6 @@ final class JITCoordinator: ObservableObject {
             try JITPairingFileStore.importFile(from: source)
             OnDevicePairing.shared.cancel()
             refreshPairingStatus()
-            method = .builtIn
             prepared = false
             status = "Pairing file imported."
             error = nil
@@ -341,11 +205,10 @@ final class JITCoordinator: ObservableObject {
         }
     }
 
-    /// OnDevicePairing finished: its file becomes the pairing file and Built-in StikJIT the method.
+    /// OnDevicePairing finished: its file becomes the pairing file.
     func storeOnDevicePairing(_ data: Data) throws {
         try JITPairingFileStore.store(data, source: .onDevice)
         refreshPairingStatus()
-        method = .builtIn
         prepared = false
         status = "Paired on this device."
         error = nil
@@ -533,7 +396,7 @@ final class JITCoordinator: ObservableObject {
     }
 }
 
-/// LocalDevVPN, which Built-in StikJIT and StikDebug reach the device through:
+/// LocalDevVPN, which Built-in StikJIT reaches the device through:
 /// open it to connect when it is installed, otherwise its App Store page.
 enum LocalDevVPN {
     static let appStore = URL(string: "https://apps.apple.com/us/app/localdevvpn/id6755608044")!

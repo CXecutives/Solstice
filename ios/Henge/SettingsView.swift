@@ -56,11 +56,6 @@ struct SettingsView: View {
             Form {
                 Section("JIT") {
                     LabeledContent("Status", value: JITBootstrap.ready ? "On" : "Off")
-                    Picker("Method", selection: $jit.method) {
-                        ForEach(JITMethod.allCases) { Text($0.title).tag($0) }
-                    }
-                    Text(jit.method == .automatic ? jit.automaticDescription : "Henge uses \(jit.method.title).")
-                        .font(.footnote).foregroundStyle(.secondary)
                     Button("Set up JIT") { jit.showSetup = true }
                     Toggle("Turn on JIT when Henge opens", isOn: $jitAtLaunch)
                     if jitAtLaunch {

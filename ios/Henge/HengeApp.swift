@@ -17,7 +17,6 @@ struct HengeApp: App {
         // Settings > Log stream: send the log to a computer on this network, if that is on.
         LogStream.shared.applySettings()
         HengeLog.logFootprint("app-launch")
-        JITBootstrap.noteLaunchState()
         HengeLog.log("app", "increased memory limit: \(Entitlements.increasedMemory ? "yes" : "no"); extended addressing: \(Entitlements.extendedAddressing ? "yes" : "no"); limit \(Entitlements.memoryLimitAtLaunch >> 20) MB")
         // Without the guard, a brk no debugger answers kills the app instead of failing.
         JITBootstrap.installTrapGuard()
@@ -91,7 +90,7 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             machines.collectImports()
             jit.enableAtLaunchIfAsked()
-            // StikDebug can launch Henge before it attaches. A task also runs
+            // The helper can attach a moment after Henge is active. A task also runs
             // on the first appearance, when there may be no phase change.
             for _ in 0..<100 {
                 guard !Task.isCancelled else { return }
@@ -99,7 +98,7 @@ struct RootView: View {
                     jit.objectWillChange.send()
                     return
                 }
-                if JITBootstrap.debuggedFlag || JITBootstrap.canGrantOwnJIT {
+                if JITBootstrap.debuggedFlag {
                     JITBootstrap.prewarm()
                     // Readiness lives outside the observable coordinator.
                     jit.objectWillChange.send()
@@ -117,7 +116,7 @@ struct RootView: View {
             guard !firstSetupOffered else { return }
             firstSetupOffered = true
             jit.refreshPairingStatus()
-            if !jit.hasPairing && !JITBootstrap.ready && !JITBootstrap.isInstalledWithTrollStore { jit.showSetup = true }
+            if !jit.hasPairing && !JITBootstrap.ready { jit.showSetup = true }
         }
         .task(id: jit.attachGeneration) { await autoStartLastMac() }
         .onChange(of: installer.justInstalled) { mac in
