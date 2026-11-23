@@ -478,11 +478,33 @@ _hv_chain_thunk:
     ldr x1, [x28, #CPU_EXIT]
     br x1
 
-// hv_ijc_thunk: an indirect-branch cache miss, before the dispatcher. x7 = the
-// target VA, x30 = the site's flags word (guest x30 already saved). Jumps to
-// the target block if hv_ijc_resolve found it; else returns after the word,
-// with x7 still the VA. Saves only what C may clobber, as the refill does.
+// hv_ijc_thunk: an indirect branch's way 0 missed, or it was asked to leave (translate.c put_ijc_jump): way 1,
+// then hv_ijc_resolve, then out to the dispatcher. The site did `str x30, [x28, #240]` and `bl` its chunk's
+// trampoline: x30 points at {.word flags (bit 31: check exit_req), .quad the site's guest PC}; x15 is the tag (the
+// VA ^ the salt); x6 and x7 are free, guest x0/x1 live. Saves only what C may clobber, as the refill does.
 _hv_ijc_thunk:
+    ldr w6, [x30]
+    tbz w6, #31, 1f
+    ldr w7, [x28, #CPU_EXIT_REQ]
+    cbnz w7, 3f                   // asked to leave: out at the VA
+1:  and x7, x6, #15
+    add x7, x28, x7, lsl #3
+    ldr x7, [x7, #CPU_IJC_TAB]    // this flags value's table
+    eor x6, x15, x15, lsr #16
+    eor x6, x6, x15, lsr #46
+    ubfx x6, x6, #2, #(IJC_BITS - 1)
+    add x6, x7, x6, lsl #5        // the set: two entries
+    ldr x7, [x6, #16]             // way 1
+    eor x7, x7, x15
+    cbnz x7, 2f
+    ldr x6, [x6, #24]
+    ldr x30, [x28, #240]
+    ret x6                        // (a ret: the bl here pushed a return address)
+2:  ldr w6, [x30]                 // a miss: x7 = the VA
+    and x6, x6, #1
+    add x6, x28, x6, lsl #3
+    ldr x6, [x6, #CPU_IJC_SALT]
+    eor x7, x15, x6
     str x30, [x28, #CPU_REFILL_RET]
     stp x0, x1, [x28, #0]
     stp x2, x3, [x28, #16]
@@ -502,6 +524,7 @@ _hv_ijc_thunk:
     mov x0, x28
     mov x1, x7
     ldr w2, [x30]
+    and w2, w2, #0x7fffffff
     bl _hv_ijc_resolve
     mov x6, x0
     ldr x0, [x28, #CPU_SP]
@@ -518,12 +541,22 @@ _hv_ijc_thunk:
     ldp x16, x17, [x28, #128]
     ldr x7, [x28, #0x130]
     ldr x30, [x28, #240]
-    cbz x6, 1f
+    ldr x15, [x28, #CPU_REFILL_RET]
+    cbz x6, 4f
     isb                           // a block found in the hash may be one another CPU just wrote
     ret x6
-1:  ldr x15, [x28, #CPU_REFILL_RET]
-    add x15, x15, #4
-    ret x15
+3:  and x6, x6, #1                // asked to leave: x7 = the VA
+    add x6, x28, x6, lsl #3
+    ldr x6, [x6, #CPU_IJC_SALT]
+    eor x7, x15, x6
+    mov x15, x30
+    ldr x30, [x28, #240]
+4:  stp x0, x1, [x28]             // leave with pc = the VA (and the guest's x30: hv_exit saves it)
+    str x7, [x28, #CPU_PC]
+    ldur x0, [x15, #4]            // the site, for --stats
+    str x0, [x28, #CPU_MISS_SITE]
+    ldr x1, [x28, #CPU_EXIT]
+    br x1
 
 // hv_xjump_thunk: a direct branch to another page that is not chained, looked
 // up in the indirect-branch cache here instead of in the block (one copy of the
