@@ -90,6 +90,57 @@ static void test_short_records(HvReplay *r) {
     puts("short records: none read past its end");
 }
 
+/* An object under ref in task 1, as if made from the guest's list (object: finds it there when there is no guest). */
+static HvObject *put_object(HvReplay *r, uint32_t ref, id made) {
+    HvObject *o = [HvObject new];
+    o->object = made;
+    *obj_slot(&r->task_objs[1], ref, YES) = o;
+    return o;
+}
+
+static void drop_object(HvReplay *r, uint32_t ref) { *obj_slot(&r->task_objs[1], ref, YES) = nil; }
+
+static BOOL complained(HvReplay *r, NSString *prefix) {
+    @synchronized(r->complaints) {
+        for (NSString *c in r->complaints)
+            if ([c hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
+/* Where the guest asks for an answer to be written: an offset near 2^64 wraps past the length check and wrote before
+   the mapping. Here an unreadable page is right before it, so such a write crashes this test. */
+static void test_offsets_do_not_wrap(HvReplay *r) {
+    size_t ps = (size_t)getpagesize();
+    uint8_t *m = mmap(NULL, ps * 2, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (m == MAP_FAILED || mprotect(m, ps, PROT_NONE)) { check("guard page", 0); return; }
+    HvObject *answers = put_object(r, 9, [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared]);
+    answers->mapped = m + ps, answers->length = ps, answers->checked = r->walk_epoch; /* the guest's pages, current */
+    put_object(r, 10, [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared]);
+    uint64_t wrap = UINT64_MAX - 7;
+    uint8_t rec[0x2c] = {0};
+    uint32_t ten = 10, nine = 9;
+    memcpy(rec, &ten, 4), memcpy(rec + 4, &nine, 4), memcpy(rec + 8, &wrap, 8);
+    [r info:461 rec:(Rec){rec, 16} task:1];
+    check("info 461 at an offset that wraps: refused", complained(r, @"info 461: ref 10 buffer 9"));
+    memset(rec, 0, sizeof rec);
+    memcpy(rec, &ten, 4), memcpy(rec + 8, &nine, 4), memcpy(rec + 12, &wrap, 8);
+    [r info:460 rec:(Rec){rec, 20} task:1];
+    check("info 460 at an offset that wraps: refused", complained(r, @"info 460: ref 10 buffer 9"));
+    memset(rec, 0, sizeof rec);
+    memcpy(rec + 0x20, &nine, 4), memcpy(rec + 0x24, &wrap, 8);
+    [r info:451 rec:(Rec){rec, 0x2c} task:1];
+    check("a heap size query at an offset that wraps: refused", complained(r, @"heap size query: no buffer"));
+    memset(rec, 0, sizeof rec);
+    memcpy(rec, &nine, 4), memcpy(rec + 4, &wrap, 8);
+    [r render:nil tag:164 rec:(Rec){rec, 12} task:1]; /* writes the tile size, if it fits */
+    check("nothing written before the mapping", 1);
+    answers->mapped = NULL;
+    drop_object(r, 9), drop_object(r, 10);
+    munmap(m, ps * 2);
+    puts("answer offsets: one that wraps is refused");
+}
+
 /* A pipeline compiled off the worker: its first use waits for it and gets it; several compile side by side. */
 static void test_pipelines_compiled_later(HvReplay *r) {
     id<MTLFunction> f = [r computeStandIn];
@@ -443,6 +494,7 @@ int main(void) {
         if (!m) { puts("no Metal device"); return 1; }
         HvReplay *r = (__bridge HvReplay *)m;
         dispatch_sync(r->worker, ^{ test_short_records(r); });
+        dispatch_sync(r->worker, ^{ test_offsets_do_not_wrap(r); });
         dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
         dispatch_sync(r->worker, ^{ test_video_surface(r); });
         dispatch_sync(r->worker, ^{ test_told_buffer_outlives_remap(r); });

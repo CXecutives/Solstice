@@ -10,6 +10,9 @@ typedef struct {
 #define U16(off) (*(const uint16_t *)(r.p + (off)))
 #define U64(off) ({ uint64_t _v; memcpy(&_v, r.p + (off), 8); _v; })
 
+/* n bytes at the guest's offset off fit in length bytes: off + n would wrap for an offset near 2^64. */
+static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= length && length - off >= n; }
+
 - (id<MTLRenderCommandEncoder>)beginPass:(Rec)r task:(uint32_t)task commandBuffer:(id<MTLCommandBuffer>)cb {
     if (r.size < 0x48) { /* the depth and stencil attachments, which every pass record has */
         [self complain:[NSString stringWithFormat:@"render pass of %u bytes, too short: skipped", r.size]];
@@ -580,7 +583,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
     case 164: { /* where to write the tile size: {buffer ref, offset} */
         HvObject *o = [self object:U32(0) task:task];
         uint64_t off = U64(4);
-        if (o && o->mapped && off + 4 <= o->length) {
+        if (o && o->mapped && fits_at(o->length, off, 4)) {
             uint16_t dims[2] = {(uint16_t)e.tileWidth, (uint16_t)e.tileHeight};
             memcpy(o->mapped + off, dims, 4);
         }
@@ -794,7 +797,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         HvObject *to = [self object:U32(at) task:task];
         refresh_pages(self, task, to);
         uint64_t where = U64(at + 4);
-        if (!to || !to->mapped || where + 16 > to->length) { [self complain:@"heap size query: no buffer"]; return; }
+        if (!to || !to->mapped || !fits_at(to->length, where, 16)) { [self complain:@"heap size query: no buffer"]; return; }
         MTLSizeAndAlign sa = [device heapTextureSizeAndAlignWithDescriptor:t];
         uint64_t v[2] = {sa.size, sa.align};
         memcpy(to->mapped + where, v, 16);
@@ -812,7 +815,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
     }
     HvObject *to = [self object:bufref task:task];
     if (to) refresh_pages(self, task, to);
-    uint8_t *out = to && to->mapped && off + 28 <= to->length ? to->mapped + off : NULL;
+    uint8_t *out = to && to->mapped && fits_at(to->length, off, 28) ? to->mapped + off : NULL;
     id obj = [self get:ref task:task];
     if (!out || !obj) {
         [self complain:[NSString stringWithFormat:@"info %u: ref %u buffer %u (%s, %llu bytes) offset %llu: %s", tag, ref, bufref,

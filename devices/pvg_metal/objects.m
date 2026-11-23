@@ -2,6 +2,7 @@
 
 - (HvObject *)object:(uint32_t)ref task:(uint32_t)task {
     if (!ref || task >= HV_TASKS) return nil;
+    if (!lite) return obj_known(self, task, ref); /* no guest (a test): the objects put in place */
     uint64_t list = hv_pvg_lite_task_objects(lite, task);
     uint32_t e[3];
     if (!list || task_copy(self, task, list + (uint64_t)ref * 12, e, 12)) return nil;
