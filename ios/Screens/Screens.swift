@@ -163,6 +163,9 @@ enum Screens {
             HengeLog.log("screens", "\(screen.name): state \(session.state.rawValue), error \(session.error ?? "none"), "
                          + "stuck \(session.stuck.map { "\($0)" } ?? "no"), storage paused \(session.storagePaused)")
         }
+        // iPadOS can refuse to turn a window (its windowing mode): then there is no landscape picture to take.
+        if screen.landscape, let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+           scene.coordinateSpace.bounds.width < scene.coordinateSpace.bounds.height { return mark("skip") }
         if screen.page > 0 {
             guard scroll(to: screen.page) else { return mark("skip") }
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -200,7 +203,9 @@ enum Screens {
 /// The app's root in the simulator app: the requested screen, or the app as it is.
 struct ScreensRoot: View {
     private let screen = Screens.current
-    @StateObject private var session = SessionController(mac: Sample.hero)
+    /// The session screens' controller. Not observed here: only SessionView watches it, as in the app.
+    private static let session = SessionController(mac: Sample.hero)
+    private var session: SessionController { Self.session }
 
     var body: some View {
         content.task {
