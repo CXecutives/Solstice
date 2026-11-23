@@ -95,7 +95,7 @@ struct SessionView: View {
                     }
                     .position(x: layout.screen.midX, y: layout.screen.midY)
                 if state != HENGE_VM_STOPPED {
-                    Trackpad()
+                    Trackpad(overScreen: true)
                         .frame(width: layout.touch.width, height: layout.touch.height)
                         .position(x: layout.touch.midX, y: layout.touch.midY)
                     if !layout.fillsPhone {
@@ -182,6 +182,7 @@ struct SessionView: View {
         }
         .statusBarHidden(zoomed || Device.isPad)
         .persistentSystemOverlays(.hidden)
+        .defersSystemGestures(on: .all) // a swipe from an edge is the Mac's first; a second one goes to iOS
         .sheet(isPresented: $showDetails) { details }
         .confirmationDialog("Shut down \(mac.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
             Button("Shut Down", role: .destructive) { finish() }
@@ -339,20 +340,29 @@ struct SessionView: View {
     @ViewBuilder private func floatingControls(_ layout: Layout) -> some View {
         let landscape = layout.touch.width > layout.touch.height
         let top = layout.insets.top + (landscape ? 8 : 6)
-        let pill = HStack(spacing: 4) {
+        // A phone on its side: the controls stand in the margin beside the Mac's screen (by the Dynamic
+        // Island), not over the Mac's menu bar. Not while typing: the keyboard covers the margin's lower half.
+        let margin = layout.screen.minX - layout.insets.leading
+        let standing = landscape && !zoomed && !typing && layout.barY == nil && margin >= 50 // the pill is 50 wide
+        let stack = standing ? AnyLayout(VStackLayout(spacing: 4)) : AnyLayout(HStackLayout(spacing: 4))
+        let pill = stack {
             tool("eye.slash", "Hide controls", tint: .white) { hideControls() }
             tool("keyboard", "Keyboard", tint: .white) { typing.toggle() }
             pasteTool
             tool(zoomed ? "minus.magnifyingglass" : "plus.magnifyingglass", zoomed ? "Zoom out" : "Zoom in", tint: zoomed ? Desk.accentLight : .white) { zoomed.toggle() }
             tool("info.circle", "Details", tint: .white) { showDetails = true }
-            Rectangle().fill(Color.white.opacity(0.3)).frame(width: 1, height: 22).padding(.horizontal, 4)
+            Rectangle().fill(Color.white.opacity(0.3))
+                .frame(width: standing ? 22 : 1, height: standing ? 1 : 22)
+                .padding(standing ? .vertical : .horizontal, 4)
             tool("power", "Shut down", tint: Desk.bad) { stopTapped() }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 50)
+        .padding(standing ? .vertical : .horizontal, 8)
+        .frame(width: standing ? 50 : nil, height: standing ? nil : 50)
         .deskGlass(in: Capsule())
         if controlsHidden {
             EmptyView()
+        } else if standing {
+            pill.position(x: layout.insets.leading + margin / 2, y: layout.touch.midY)
         } else if let barY = layout.barY {
             pill.position(x: layout.touch.midX, y: barY)
         } else if landscape || typing {
@@ -429,7 +439,7 @@ struct SessionView: View {
                     Toggle("Sharp edges", isOn: $sharpCursor)
                     LabeledContent("Scroll speed", value: String(format: "%.1f×", scrollSpeed))
                     Slider(value: $scrollSpeed, in: 0.1...1.5)
-                    Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad. Scroll speed changes apply immediately.")
+                    Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad. Scroll speed applies at once, to two fingers on the screen as well as to a trackpad or mouse.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sharing") {
@@ -445,7 +455,7 @@ struct SessionView: View {
                     }
                     Text(helperRunning
                          ? "Put files in Files, Henge, Shared to see them in the Henge folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
-                         : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) and needs the Mac's keyboard layout to be U.S.")
+                         : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) for the Mac keyboard layout chosen in Settings (\(KeyLayout.current.title)).")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Lighter macOS") {
@@ -463,7 +473,7 @@ struct SessionView: View {
                             await Keys.typeSlowly(Sharing.unlightenCommand)
                         }
                     }
-                    Text("Less drawing for the emulated CPUs: window and Dock animations, desktop widgets, the screen saver and a moving wallpaper go. Open Terminal on the Mac, tap the button and press Return, then log out and back in. Also turn on Reduce Motion and Reduce Transparency in the Mac's System Settings, Accessibility. Undo puts it back, apart from the wallpaper. Needs the Mac's keyboard layout to be U.S.")
+                    Text("Less drawing for the emulated CPUs: window and Dock animations, desktop widgets, the screen saver and a moving wallpaper go. Open Terminal on the Mac, tap the button and press Return, then log out and back in. Also turn on Reduce Motion and Reduce Transparency in the Mac's System Settings, Accessibility. Undo puts it back, apart from the wallpaper. It types for the Mac keyboard layout chosen in Settings (\(KeyLayout.current.title)).")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Log") {

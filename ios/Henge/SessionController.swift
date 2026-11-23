@@ -61,6 +61,7 @@ final class SessionController: ObservableObject {
         JITBootstrap.releaseLingeringDebugger()
         Sharing.prepare()
         EngineTuning.apply()
+        henge_vm_set_keyboard_iso(KeyLayout.current.isISO ? 1 : 0) // the Mac reads its keyboard's kind as it starts
         henge_vm_set_display(UInt32(mac.screen.width), UInt32(mac.screen.height))
         if mac.isRetina {
             henge_vm_set_display_mm(UInt32(mac.retinaMM.width), UInt32(mac.retinaMM.height))

@@ -281,7 +281,24 @@ test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
 	$(B)/test_physical_mouse_buttons
 .PHONY: test-physical-mouse-buttons
 
+# Which keys type a character on the Mac's keyboard layout (U.S., German).
+$(B)/test_key_layout: ios/Henge/KeyLayout.swift tests/test_key_layout.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-key-layout: $(B)/test_key_layout
+	$(B)/test_key_layout
+.PHONY: test-key-layout
+
+# The touch surface's gestures: taps, holds and drags into clicks.
+$(B)/test_touch_gestures: ios/Henge/TouchGestures.swift tests/test_touch_gestures.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-touch-gestures: $(B)/test_touch_gestures
+	$(B)/test_touch_gestures
+.PHONY: test-touch-gestures
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
-SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-physical-mouse-buttons
+SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-physical-mouse-buttons \
+	test-key-layout test-touch-gestures
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

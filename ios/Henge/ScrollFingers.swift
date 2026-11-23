@@ -9,8 +9,13 @@ import UIKit
 /// scrolling faster and faster. So the fingers start at the edge they move away from, and at the far edge they
 /// first hold still for a moment (the motion meanwhile is kept), lift with no speed left, start again from the
 /// other edge, and the kept motion is paid out over the next samples.
+///
+/// Everything runs on `queue` (HardwareMouse's), the timers too.
 final class ScrollFingers {
     static let unitsPerPoint: Float = 40
+    private let queue: DispatchQueue
+
+    init(queue: DispatchQueue) { self.queue = queue }
     /// Two pairs, used in turn: a pair lifted at an edge isn't put down again under the same ids a moment later.
     private static let pairs: [(Int32, Int32)] = [(14, 15), (12, 13)]
     private var pair = 0
@@ -44,12 +49,12 @@ final class ScrollFingers {
         pendingY += dy
         if !flushScheduled {
             flushScheduled = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.mergeDelay) { [weak self] in self?.flush() }
+            queue.asyncAfter(deadline: .now() + Self.mergeDelay) { [weak self] in self?.flush() }
         }
         idle?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.end() }
         idle = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleLift, execute: work)
+        queue.asyncAfter(deadline: .now() + Self.idleLift, execute: work)
     }
 
     /// The gesture is over: lift both fingers, and macOS carries the scroll on as it would on a Mac.
