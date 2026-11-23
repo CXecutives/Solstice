@@ -57,10 +57,9 @@ int henge_vm_exit_outcome(void);
 void henge_vm_stop(void);
 /* Testing: sets a translation knob (core/machine.h) in the running machine; nonzero if it exists. */
 int henge_vm_knob(const char *name, int value);
-/* The power profile (PowerPolicy.swift), live and kept for the Macs started later: 0 normal; 1 or more saving (a
-   serious thermal state or Low Power Mode; 2, critical, is the same here, the app pauses the Mac): an idle CPU sleeps
-   at once (no HV_WFI_SPIN) and at most HV_SAVING_HZ frames a second go to the screen (macOS is still refreshed at its
-   mode's rate). */
+/* The power profile (PowerPolicy.swift), live and kept for the Macs started later: 0 normal; 1 (Low Power Mode) an
+   idle CPU sleeps at once (no HV_WFI_SPIN); 2 (a serious thermal state) also at most HV_SAVING_HZ frames a second go
+   to the screen (macOS is still refreshed at its mode's rate); 3 (critical) is the same here, the app pauses the Mac. */
 void henge_vm_set_power_profile(int level);
 /* The memory balloon (only with HV_BALLOON set before boot): asks the guest to hand over target_mb (when >= 0)
    and returns how many MB it has handed over, or -1 without a balloon. */

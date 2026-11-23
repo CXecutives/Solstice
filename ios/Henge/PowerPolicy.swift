@@ -2,10 +2,10 @@ import Foundation
 import SwiftUI
 import UIKit
 
-/// Heat and Low Power Mode, with nothing to set: hot (thermal state serious) or in Low Power Mode, the engine saves
-/// power (henge_vm_set_power_profile: the screen at HV_SAVING_HZ, no WFI spin), so the Mac runs on steadily instead of
-/// iOS throttling it in bursts; critical, the Mac pauses with a notice and runs on by itself once the device has cooled
-/// to serious. iOS's thermal states change slowly and with their own hysteresis, so they are followed as they come.
+/// Heat and Low Power Mode, with nothing to set (henge_vm_set_power_profile): in Low Power Mode an idle CPU sleeps at
+/// once (no WFI spin) but every frame still goes to the screen, as iOS itself keeps 60 Hz there; hot (thermal state
+/// serious) the screen also goes to HV_SAVING_HZ, so the Mac runs on steadily instead of iOS throttling it in bursts;
+/// critical, the Mac pauses with a notice and runs on by itself once the device has cooled to serious. iOS's thermal states change slowly and with their own hysteresis, so they are followed as they come.
 /// Each change is logged. Used on the main thread.
 @MainActor
 final class PowerPolicy: ObservableObject {
@@ -14,11 +14,12 @@ final class PowerPolicy: ObservableObject {
     @Published private(set) var thermal = ProcessInfo.processInfo.thermalState
     /// The Mac is paused for heat (SessionView shows HeatNotice).
     @Published private(set) var holding = false
-    private var level = 0 // 0 normal, 1 saving, 2 too hot to run
+    private var level = 0 // 0 normal, 1 Low Power Mode, 2 hot, 3 too hot to run
     private var started = false, logged = false // the state at launch is logged too
 
     /// What the levels do, for the log.
-    private static let meaning = ["normal", "saving power (the screen at HV_SAVING_HZ, no WFI spin)",
+    private static let meaning = ["normal", "saving power (no WFI spin)",
+                                  "hot: saving power (no WFI spin, the screen at HV_SAVING_HZ)",
                                   "too hot: the Mac pauses until the device cools"]
 
     static func label(_ state: ProcessInfo.ThermalState) -> String {
@@ -46,7 +47,7 @@ final class PowerPolicy: ObservableObject {
     private func update() {
         let info = ProcessInfo.processInfo
         let heat = info.thermalState, lowPower = info.isLowPowerModeEnabled
-        let now = heat == .critical ? 2 : heat == .serious || lowPower ? 1 : 0
+        let now = heat == .critical ? 3 : heat == .serious ? 2 : lowPower ? 1 : 0
         guard heat != thermal || now != level || !logged else { return }
         logged = true
         thermal = heat
@@ -62,7 +63,7 @@ final class PowerPolicy: ObservableObject {
     func tick() {
         let state = henge_vm_state()
         if holding && state != 1 && state != 4 { holding = false } // stopped meanwhile
-        if holding && level < 2 {
+        if holding && level < 3 {
             holding = false
             guard !StorageGuard.holding else { return }
             InstantResume.queue.async {
@@ -71,7 +72,7 @@ final class PowerPolicy: ObservableObject {
             }
             return
         }
-        guard level == 2, state == 1, UIApplication.shared.applicationState == .active, !Installer.shared.busy else { return }
+        guard level == 3, state == 1, UIApplication.shared.applicationState == .active, !Installer.shared.busy else { return }
         holding = true // also when something ran it on meanwhile: it pauses again
         InstantResume.queue.async {
             guard henge_vm_state() == 1 else { return }
@@ -83,7 +84,7 @@ final class PowerPolicy: ObservableObject {
 
     /// Back to a paused Mac (InstantResume.cameBack): whether it stays paused for heat (it runs on by itself later).
     func keepsPaused() -> Bool {
-        if level == 2 { holding = true }
+        if level == 3 { holding = true }
         return holding
     }
 }

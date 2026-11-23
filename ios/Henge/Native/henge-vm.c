@@ -112,10 +112,10 @@ static _Atomic int power_level;
 static int started_wfi_spin; /* HV_WFI_SPIN as the running machine started with it (knobs_init) */
 /* With api_lock held and a machine there, or none running (the present cap is the display's, not a machine's). */
 static void apply_power_profile(int running) {
-    int saving = atomic_load(&power_level) > 0;
+    int level = atomic_load(&power_level);
     const char *hz = getenv("HV_SAVING_HZ");
-    hv_pvg_set_present_hz(saving && hz ? atoi(hz) : 0);
-    if (running) hv_knob[HV_K_WFI_SPIN] = saving ? 0 : started_wfi_spin; /* read live by every WFI (dispatch.c) */
+    hv_pvg_set_present_hz(level >= 2 && hz ? atoi(hz) : 0); /* only when hot: Low Power Mode keeps every frame */
+    if (running) hv_knob[HV_K_WFI_SPIN] = level >= 1 ? 0 : started_wfi_spin; /* read live by every WFI (dispatch.c) */
 }
 
 void henge_vm_set_power_profile(int level) {
