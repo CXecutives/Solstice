@@ -11,9 +11,12 @@ san="${SOLSTICE_SAN:-false}" # SOLSTICE_SAN=true: the tests again with undefined
 branch="$(git rev-parse --abbrev-ref HEAD)"
 git push -q origin "$branch"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-gh workflow run build-henge.yml --ref "$branch" -f tests="$tests" -f ipa="$ipa" -f san="$san"
-run=""
-for _ in $(seq 1 12); do # the new run takes a few seconds to be listed
+out="$(gh workflow run build-henge.yml --ref "$branch" -f tests="$tests" -f ipa="$ipa" -f san="$san" 2>&1)"
+echo "$out"
+# gh prints the new run's URL; older versions do not, and then the run is looked up (it takes a while to be listed).
+run="$(printf '%s\n' "$out" | sed -n 's#.*/actions/runs/\([0-9][0-9]*\).*#\1#p' | head -1)"
+for _ in $(seq 1 36); do
+  [ -n "$run" ] && break
   sleep 5
   run="$(gh run list --workflow build-henge.yml --branch "$branch" --event workflow_dispatch --limit 1 \
          --json databaseId,createdAt -q '.[0] | select(.createdAt > "'"$started"'") | .databaseId')"
