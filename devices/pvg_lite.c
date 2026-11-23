@@ -753,10 +753,13 @@ static void note_chans(HvPvgLite *p) {
 }
 
 /* The next refresh (host time), for CPU 0's deadline: the kicker and WFI wake it then, so the refreshes keep their
-   grid whatever else polls the devices. 0 before the guest named its display page. */
+   grid whatever else polls the devices. 0 before the guest named its display page, and while it masks event 8
+   (hv_vblank_deadline: looked at at every tick of CPU 0, so the refreshes resume as soon as it unmasks). */
 uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
     if (!p || !p->display_pa || !p->vblank_period) return 0;
-    return hv_vblank_next(&p->vclock);
+    const uint8_t *d = hv_pvg_lite_display_page(p);
+    if (!d) return 0;
+    return hv_vblank_deadline(&p->vclock, (__atomic_load_n((const uint32_t *)(d + 0x104), __ATOMIC_ACQUIRE) & 8) != 0);
 }
 
 /* The display's refresh: event 8 while the guest asks for it in its mask (+104), and the refresh's time at +68.
@@ -764,9 +767,12 @@ uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
    that is ldr x8, [page, #0x68]; str x8, [x1]). Left 0, WindowServer times its frames from 0: it logs "Timer delayed
    by <uptime>s" in bursts, its display timer re-arms at once, and the Mac spends minutes at a time switching threads
    (on an iPhone, 20-48K interrupts and 40-80K process switches a second where a calm Mac has 3-7K). Without event 8
-   a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ). HV_PVG_VBLANK=0: neither, as before. */
+   a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ), or the present cap's while the app
+   caps presents below it (hv_vblank_period: the guest then draws only frames that are shown). HV_PVG_VBLANK=0:
+   neither, as before. While the guest masks event 8 the refreshes are no deadline of CPU 0's, and their times are
+   written at the polls that come anyway (on the grid; the guest is not listening then). */
 static void vblank(HvPvgLite *p) {
-    uint64_t period = p->vblank_period;
+    uint64_t period = hv_vblank_period(p->vblank_period, hv_pvg_present_hz(), 24000000);
     if (!period || !p->display_pa) return;
     uint8_t *d = hv_phys_ptr(p->m, p->display_pa, 0x4000);
     if (!d) return;
