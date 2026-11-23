@@ -607,6 +607,24 @@ int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *
 }
 void henge_vm_free_display(const uint8_t *pixels) { free((void *)pixels); }
 
+int henge_vm_boot_display_copy(uint8_t *dst, size_t cap, int *width, int *height, int *stride) {
+    if (!lock_running()) return -1;
+    HvBootDisplay d;
+    int result = -1;
+    if (hv_vm_boot_display(&d) == 0) {
+        size_t bytes = (size_t)d.stride * d.height;
+        *width = (int)d.width;
+        *height = (int)d.height;
+        *stride = (int)d.stride;
+        if (dst && bytes <= cap) {
+            memcpy(dst, d.pixels, bytes);
+            result = 0;
+        }
+    }
+    pthread_rwlock_unlock(&api_lock);
+    return result;
+}
+
 #if TARGET_OS_IPHONE
 size_t henge_available_memory(void) { return os_proc_available_memory(); }
 #else

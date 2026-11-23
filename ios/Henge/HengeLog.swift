@@ -47,8 +47,11 @@ enum HengeLog {
     /// Recent lines, for the in-app viewer. Bounded so a long session cannot grow
     /// without limit.
     private static let ringLimit = 4000
-    private static var ring: [String] = []
+    private static var ring = [String](repeating: "", count: ringLimit) // circular: the next line goes at ringNext
+    private static var ringNext = 0, ringCount = 0
     private static let ringLock = NSLock()
+    /// Follows henge-native.log as it grows (a file system event, not a timer).
+    private static var tail: DispatchSourceFileSystemObject?
 
     static var logFileURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -57,7 +60,8 @@ enum HengeLog {
 
     static func recentLines(_ n: Int = 400) -> [String] {
         ringLock.lock(); defer { ringLock.unlock() }
-        return Array(ring.suffix(n))
+        let k = min(max(n, 0), ringCount)
+        return (0..<k).map { ring[(ringNext - k + $0 + ringLimit) % ringLimit] }
     }
 
     // MARK: - Startup
@@ -97,7 +101,12 @@ enum HengeLog {
     /// could retrieve. Replaying it here puts it in henge.log, which is the file
     /// people already know how to send.
     private static func replayPreviousNativeLog() {
-        guard let data = try? Data(contentsOf: previousNativeLogURL),
+        // Only the end is wanted: the previous log can be many MB, read from its last 8 KB.
+        guard let file = try? FileHandle(forReadingFrom: previousNativeLogURL) else { return }
+        defer { try? file.close() }
+        let size = (try? file.seekToEnd()) ?? 0
+        try? file.seek(toOffset: size > 8 * 1024 ? size - 8 * 1024 : 0)
+        guard let data = try? file.readToEnd(),
               !data.isEmpty,
               let text = String(data: data.suffix(8 * 1024), encoding: .utf8)
         else { return }
@@ -169,38 +178,31 @@ enum HengeLog {
         dup2(pipeWriteFD, STDOUT_FILENO)
         dup2(pipeWriteFD, STDERR_FILENO)
 
-        let t = Thread {
-            var pending = Data()
-            var buf = [UInt8](repeating: 0, count: 16 * 1024)
+        // The file grows as C writes: each growth is an event, and the reader drains to the end of the file then
+        // (more written meanwhile raises the next event). No timer: a paused Mac in the background wakes nothing here.
+        let queue = DispatchQueue(label: "com.henge.log.reader", qos: .userInitiated)
+        var pending = Data()
+        var buf = [UInt8](repeating: 0, count: 16 * 1024)
+        let drain = {
             while true {
                 let n = read(pipeReadFD, &buf, buf.count)
-                if n < 0 {
-                    if errno == EINTR { continue }
-                    break
-                }
-                // End of file, not end of stream: the writer is still open and
-                // more will arrive. A pipe blocked here; a file returns 0, so
-                // this is where the tail waits.
-                if n == 0 {
-                    usleep(40_000)
-                    continue
-                }
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { break } // end of file, not of the stream: the next write raises the event again
                 pending.append(contentsOf: buf[0..<n])
-
-                // Emit complete lines only, so a partial write never splits a
-                // message across two log entries.
-                while let nl = pending.firstIndex(of: 0x0A) {
-                    let lineData = pending.subdata(in: pending.startIndex..<nl)
-                    pending.removeSubrange(pending.startIndex...nl)
-                    if let line = String(data: lineData, encoding: .utf8) {
-                        emit(line, fromStream: true)
-                    }
+                // Emit complete lines only, so a partial write never splits a message across two log entries.
+                var start = pending.startIndex
+                while let nl = pending[start...].firstIndex(of: 0x0A) {
+                    if let line = String(data: pending[start..<nl], encoding: .utf8) { emit(line, fromStream: true) }
+                    start = nl + 1
                 }
+                pending.removeSubrange(pending.startIndex..<start)
             }
         }
-        t.name = "com.henge.log.reader"
-        t.qualityOfService = .userInitiated
-        t.start()
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: pipeReadFD, eventMask: [.extend, .write], queue: queue)
+        source.setEventHandler { drain() }
+        source.resume()
+        tail = source
+        queue.async { drain() } // what was written before the source was there
     }
 
     /// Turn "the app vanished with no crash log" into a labelled last line.
@@ -288,8 +290,9 @@ enum HengeLog {
     ///   meaning the C side already sent it to os_log itself.
     private static func emit(_ line: String, fromStream: Bool) {
         ringLock.lock()
-        ring.append(line)
-        if ring.count > ringLimit { ring.removeFirst(ring.count - ringLimit) }
+        ring[ringNext] = line
+        ringNext = (ringNext + 1) % ringLimit
+        ringCount = min(ringCount + 1, ringLimit)
         ringLock.unlock()
 
         // The computer on the network, when Settings > Log stream is on (LogStream.swift).

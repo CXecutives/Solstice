@@ -136,6 +136,9 @@ void henge_vm_set_display_layer(void *layer);
 uint64_t henge_vm_gpu_frames(void);
 int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *stride);
 void henge_vm_free_display(const uint8_t *pixels);
+/* The same, copied once into the caller's buffer of cap bytes: 0, or -1 (nothing to show, or too small: then width,
+   height and stride say what it needs). */
+int henge_vm_boot_display_copy(uint8_t *dst, size_t cap, int *width, int *height, int *stride);
 
 /* The largest single mapping the address space takes right now, in MB (the
    increased virtual addressing entitlement raises it). */
