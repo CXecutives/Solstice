@@ -9,8 +9,6 @@ struct SettingsView: View {
     @AppStorage(PhysicalMouseButtons.swapKey) private var swapMouseButtons = false
     @AppStorage(EngineTuning.refreshKey) private var refreshRate = 60
     @AppStorage(EngineTuning.fastFlushKey) private var fastFlush = true
-    @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = false
-    @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
     @State private var safeMode = SafeMode.active
     @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = Device.profile.codeCacheMB
     @ObservedObject private var stream = LogStream.shared
@@ -98,8 +96,6 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     Toggle("Faster disk writes", isOn: $fastFlush)
-                    Toggle("Quicker wake from idle", isOn: $wfiSpin)
-                    Toggle("Superblocks (experimental)", isOn: $superblocks)
                     Picker("Code cache", selection: $codeCacheMB) {
                         ForEach(DeviceProfile.codeCacheChoices, id: \.self) { mb in
                             Text(mb < 1024 ? "\(mb) MB" : String(format: "%g GB", Double(mb) / 1024)).tag(mb)
@@ -107,7 +103,7 @@ struct SettingsView: View {
                     }
                     Text("A bigger code cache empties less often and takes more memory (its records add about half to two thirds of its size again); Henge picks one by the device's memory and its limit. 1.5 GB also needs extended-virtual-addressing in the signing (a paid team): without it 1 GB is the most that fits. Applies the next time Henge opens. If JIT stops turning on, or a Mac closes Henge during setup, choose a smaller one.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text("macOS draws a frame for every refresh: 30 Hz leaves the most of the emulated CPU to apps, at the cost of choppier animation; 60 Hz is smoother. Faster disk writes order them without waiting for a full sync; a sudden power loss could lose the last ones. Quicker wake keeps an idle CPU watching for work for 50 µs, at some battery cost. Superblocks let translated code run past conditional branches. Changes apply the next time a Mac starts.")
+                    Text("macOS draws a frame for every refresh: 30 Hz leaves the most of the emulated CPU to apps, at the cost of choppier animation; 60 Hz is smoother. Faster disk writes order them without waiting for a full sync; a sudden power loss could lose the last ones. Changes apply the next time a Mac starts.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)

@@ -12,10 +12,8 @@ struct SessionView: View {
     @State private var bootAttempt = 0
     @ObservedObject private var power = PowerPolicy.shared // heat: the Mac may be paused for it
     @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
-    @AppStorage("henge.matchScreenColors") private var matchScreenColors = true
     @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
     @AppStorage("henge.cursor.scale") private var cursorScale = Device.isPad ? 1 : 3
-    @AppStorage("henge.cursor.sharp") private var sharpCursor = true
     @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3
 
     @State private var typing = false
@@ -427,7 +425,6 @@ struct SessionView: View {
                     LabeledContent("Up", value: "\(Int(Date().timeIntervalSince(started))) s")
                 }
                 Section("Display") {
-                    Toggle("Color matching", isOn: $matchScreenColors)
                     LabeledContent("Brightness", value: "\(Int(screenBrightness * 100))%")
                     Slider(value: $screenBrightness, in: 0.4...1)
                     Text("Brightness dims only the Mac's screen.")
@@ -440,7 +437,6 @@ struct SessionView: View {
                         Text("3×").tag(3)
                     }
                     .pickerStyle(.segmented)
-                    Toggle("Sharp edges", isOn: $sharpCursor)
                     LabeledContent("Scroll speed", value: String(format: "%.1f×", scrollSpeed))
                     Slider(value: $scrollSpeed, in: 0.1...1.5)
                     Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad. Scroll speed applies at once, to two fingers on the screen as well as to a trackpad or mouse.")

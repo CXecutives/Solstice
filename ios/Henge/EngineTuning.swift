@@ -5,8 +5,6 @@ import Foundation
 /// Applied at launch and again before each Mac starts, so changes need no relaunch.
 enum EngineTuning {
     static let refreshKey = "henge.perf.hz"
-    static let superblocksKey = "henge.perf.superblocks"
-    static let wfiSpinKey = "henge.perf.wfiSpin"
     static let fastFlushKey = "henge.perf.fastFlush"
 
     /// What upstream Henge starts its engine with. Safe mode (SafeMode, HV_SAFE) runs with exactly these.
@@ -55,8 +53,6 @@ enum EngineTuning {
         // A rate the panel cannot show (120 chosen before, or on another device) stays at the default.
         let hz = d.integer(forKey: refreshKey)
         if hz != Device.defaultRefresh, Device.refreshChoices.contains(hz) { env["HV_HZ"] = String(hz) }
-        if d.bool(forKey: superblocksKey) { env["HV_SUPERBLOCKS"] = "1" } else { unsetenv("HV_SUPERBLOCKS") }
-        if d.bool(forKey: wfiSpinKey) { env["HV_WFI_SPIN"] = "50" }
         if d.object(forKey: fastFlushKey) as? Bool == false { env["HV_FLUSH"] = "0" }
         // GPU command trace: on while Documents/trace-on exists (it is checked every frame, so it can be toggled live).
         env["HV_PVG_TRACE_FILE"] = docs.appendingPathComponent("trace-on").path
