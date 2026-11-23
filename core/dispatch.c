@@ -914,7 +914,8 @@ static int run_loop(HvCpu *cpu, int one) {
         }
         /* Someone asked the CPU to leave (the kicker at its deadline, a device, an invalidation): tick now. Acquire: what
            was asked with it (HvPerCpu.poll_req) is seen. */
-        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_ACQUIRE) != 0;
+        int kicked = __atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED) && /* a look first: most entries were not asked for */
+                     __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_ACQUIRE) != 0;
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */
@@ -976,7 +977,9 @@ static int run_loop(HvCpu *cpu, int one) {
         last_fault = ~0ull;
         uint64_t flushes = m->stats.block_flushes;
         int made = 0;
-        HvBlock *b = lookup(cpu, cpu->pc, pa, hv_block_flags(cpu), code, avail, &made);
+        /* A pending chain means nothing changed the state since the block before left: its flags are these. */
+        uint32_t flags = pending_chain ? chain_flags : hv_block_flags(cpu);
+        HvBlock *b = lookup(cpu, cpu->pc, pa, flags, code, avail, &made);
         /* A full flush while translating freed the slot the last exit came through,
            and new blocks may have it now: chaining it would rewrite one of theirs. */
         if (m->stats.block_flushes != flushes) pending_chain = NULL;
@@ -1055,7 +1058,10 @@ static int run_loop(HvCpu *cpu, int one) {
                 }
                 HV_ST(cpu).fill_kind[kind]++;
             }
-            if (hv_ijc_fill_checked(cpu, b) && m->stats_interval) HV_ST(cpu).ijc_fills++;
+            /* Not when way 0 holds it already (an entry stays only while its page's mapping and code do, so the
+               fill would write what is there): most entries after a kick or an exception are of cached blocks. */
+            if ((ent[0] != tag || ent[1] != (uint64_t)(uintptr_t)b->code) && hv_ijc_fill_checked(cpu, b) && m->stats_interval)
+                HV_ST(cpu).ijc_fills++;
         }
         /* The block before left through a chainable direct branch to this one: link them. */
         /* Only if nothing in between (an abort, an interrupt) sent the CPU elsewhere. */
