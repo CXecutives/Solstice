@@ -46,7 +46,7 @@ struct SessionView: View {
 
     // What the view shows of the running Mac, from the session.
     private var error: String? { session.error }
-    private var state: Int32 { session.state }
+    private var state: HengeVmState { session.state }
     private var cpusOn: Int32 { session.cpusOn }
     private var userCode: Bool { session.userCode }
     private var blocksPerSecond: Double { session.blocksPerSecond }
@@ -73,7 +73,7 @@ struct SessionView: View {
                 BootDisplay(display: display, role: .device)
                     .opacity(display.isExternal ? 0 : 1)
                     .overlay {
-                        if display.isExternal && state != 2 {
+                        if display.isExternal && state != HENGE_VM_STOPPED {
                             VStack(spacing: 8) {
                                 Image(systemName: "display").font(.largeTitle)
                                 Text("Mac on external display").font(.headline)
@@ -94,7 +94,7 @@ struct SessionView: View {
                         }
                     }
                     .position(x: layout.screen.midX, y: layout.screen.midY)
-                if state != 2 {
+                if state != HENGE_VM_STOPPED {
                     Trackpad()
                         .frame(width: layout.touch.width, height: layout.touch.height)
                         .position(x: layout.touch.midX, y: layout.touch.midY)
@@ -136,15 +136,15 @@ struct SessionView: View {
                             .allowsHitTesting(false)
                     }
                 }
-                if state == 2 {
+                if state == HENGE_VM_STOPPED {
                     StoppedMacView(outcome: henge_vm_exit_outcome(), reason: String(cString: henge_vm_exit_reason()),
                                    start: { bootAttempt += 1 }, close: close)
                         .frame(width: min(layout.touch.width - 32, 360))
                         .position(x: layout.touch.midX, y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
                 }
                 if let error { errorCard(error, layout) }
-                if storagePaused && state != 2 { storageCard(layout) }
-                if power.holding && state != 2 {
+                if storagePaused && state != HENGE_VM_STOPPED { storageCard(layout) }
+                if power.holding && state != HENGE_VM_STOPPED {
                     HeatNotice().frame(width: min(layout.touch.width, 390) - 32)
                         .position(x: layout.fillsPhone ? layout.touch.midX : layout.pad.midX, y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
                 }
@@ -197,7 +197,7 @@ struct SessionView: View {
             guard phase != .active else {
                 display.refresh()
                 InstantResume.cameBack(mac)
-                if bootRAM > 0 && henge_vm_state() != 2 { SafeMode.macLive(true) }
+                if bootRAM > 0 && henge_vm_state() != HENGE_VM_STOPPED { SafeMode.macLive(true) }
                 return
             }
             // In the background the Mac waits, paused: Henge ending there is iOS's doing, not a crash with a Mac up.
@@ -237,7 +237,7 @@ struct SessionView: View {
     }
 
     /// When there is something of the app's to point at, iPadOS gets its own pointer back.
-    private var pointerNeeded: Bool { state == 2 || showDetails || confirmStop || error != nil || storagePaused }
+    private var pointerNeeded: Bool { state == HENGE_VM_STOPPED || showDetails || confirmStop || error != nil || storagePaused }
 
     // MARK: Upright
 
@@ -395,9 +395,9 @@ struct SessionView: View {
 
     private var phase: String {
         switch state {
-        case 0: return error == nil ? "Starting…" : "Not started"
-        case 1: return userCode ? "macOS is running" : "Booting"
-        case 3: return "Finishing shutdown…"
+        case HENGE_VM_IDLE: return error == nil ? "Starting…" : "Not started"
+        case HENGE_VM_RUNNING: return userCode ? "macOS is running" : "Booting"
+        case HENGE_VM_STARTING_OR_STOPPING: return "Finishing shutdown…"
         default: return "Stopped (\(String(cString: henge_vm_exit_reason())))"
         }
     }
@@ -508,7 +508,7 @@ struct SessionView: View {
     }
 
     private func stopTapped() {
-        if state == 1 { confirmStop = true } else { close() }
+        if state == HENGE_VM_RUNNING { confirmStop = true } else { close() }
     }
 
     private func finish() {

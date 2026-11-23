@@ -327,7 +327,7 @@ int henge_make_aux(const char *path) {
     return ok ? 0 : -1;
 }
 
-int henge_vm_state(void) { return state; }
+HengeVmState henge_vm_state(void) { return (HengeVmState)state; }
 uint64_t henge_vm_generation(void) { return atomic_load(&generation); }
 int henge_vm_can_start(void) {
     pthread_rwlock_rdlock(&api_lock);

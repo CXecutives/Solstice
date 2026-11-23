@@ -7,7 +7,7 @@ final class SessionController: ObservableObject {
     let mac: VirtualMac
 
     @Published private(set) var error: String?
-    @Published private(set) var state: Int32 = 0
+    @Published private(set) var state = HENGE_VM_IDLE
     @Published private(set) var cpusOn: Int32 = 0
     @Published private(set) var userCode = false
     @Published private(set) var blocksPerSecond: Double = 0
@@ -39,13 +39,13 @@ final class SessionController: ObservableObject {
 
     func run(cpus: Int, hooks: Hooks) async {
         error = nil
-        state = 0
+        state = HENGE_VM_IDLE
         userCode = false
         cpusOn = 0
         blocksPerSecond = 0
         framesOut = 0
         framesIn = 0
-        while henge_vm_state() == 3 && !Task.isCancelled {
+        while henge_vm_state() == HENGE_VM_STARTING_OR_STOPPING && !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         guard !Task.isCancelled else { return }
@@ -112,7 +112,7 @@ final class SessionController: ObservableObject {
         while !Task.isCancelled {
             let now_state = henge_vm_state()
             if now_state != state { state = now_state }
-            if state == 3 || state == 4 { /* starting, stopping, or paused (Henge in the background, or storage short) */
+            if state == HENGE_VM_STARTING_OR_STOPPING || state == HENGE_VM_PAUSED { /* starting, stopping, or paused (Henge in the background, or storage short) */
                 try? await Task.sleep(nanoseconds: storagePaused ? 1_000_000_000 : 100_000_000)
                 continue
             }
@@ -128,7 +128,7 @@ final class SessionController: ObservableObject {
                 refreshDetails()
             }
             if Sharing.helperRunning != helperRunning { helperRunning = Sharing.helperRunning }
-            if state == 2 {
+            if state == HENGE_VM_STOPPED {
                 SafeMode.macLive(false)
                 hooks.stopped()
                 StickyKeys.shared.releaseAll()
@@ -171,7 +171,7 @@ final class SessionController: ObservableObject {
         while !Task.isCancelled {
             if let free = StorageGuard.freeBytes() {
                 if storagePaused || free < StorageGuard.minimumFree { storageFree = free } // only shown then
-                if !storagePaused && !StorageGuard.holding && free < StorageGuard.minimumFree && henge_vm_state() == 1 {
+                if !storagePaused && !StorageGuard.holding && free < StorageGuard.minimumFree && henge_vm_state() == HENGE_VM_RUNNING {
                     storagePaused = true
                     storageRoom = false
                     StorageGuard.holding = true
@@ -185,7 +185,7 @@ final class SessionController: ObservableObject {
                 }
                 if storagePaused { storageRoom = free >= StorageGuard.resumeAt }
             }
-            if storagePaused && henge_vm_state() == 2 { // shut down meanwhile
+            if storagePaused && henge_vm_state() == HENGE_VM_STOPPED { // shut down meanwhile
                 StorageGuard.holding = false
                 storagePaused = false
             }
@@ -204,7 +204,7 @@ final class SessionController: ObservableObject {
     func shutDown() {
         SafeMode.macLive(false)
         StorageGuard.holding = false
-        if state == 1 || state == 4 {
+        if state == HENGE_VM_RUNNING || state == HENGE_VM_PAUSED {
             MacPreview.saveNow(for: mac)
             henge_vm_stop()
         }
