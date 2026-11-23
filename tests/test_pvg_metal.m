@@ -142,13 +142,13 @@ static void test_video_surface(HvReplay *r) {
     s->plane_from[0] = 0, s->plane_row[0] = ROW, s->plane_h[0] = H;
     s->plane_from[1] = LUMA, s->plane_row[1] = ROW, s->plane_h[1] = H / 2;
     NSDictionary *planes[2] = {
-        @{(__bridge id)kIOSurfacePlaneWidth: @W, (__bridge id)kIOSurfacePlaneHeight: @H, (__bridge id)kIOSurfacePlaneBytesPerRow: @ROW,
-          (__bridge id)kIOSurfacePlaneOffset: @0, (__bridge id)kIOSurfacePlaneSize: @LUMA, (__bridge id)kIOSurfacePlaneBytesPerElement: @1},
-        @{(__bridge id)kIOSurfacePlaneWidth: @(W / 2), (__bridge id)kIOSurfacePlaneHeight: @(H / 2), (__bridge id)kIOSurfacePlaneBytesPerRow: @ROW,
-          (__bridge id)kIOSurfacePlaneOffset: @LUMA, (__bridge id)kIOSurfacePlaneSize: @CHROMA, (__bridge id)kIOSurfacePlaneBytesPerElement: @2},
+        @{(__bridge id)kIOSurfacePlaneWidth: @(W), (__bridge id)kIOSurfacePlaneHeight: @(H), (__bridge id)kIOSurfacePlaneBytesPerRow: @(ROW),
+          (__bridge id)kIOSurfacePlaneOffset: @0, (__bridge id)kIOSurfacePlaneSize: @(LUMA), (__bridge id)kIOSurfacePlaneBytesPerElement: @1},
+        @{(__bridge id)kIOSurfacePlaneWidth: @(W / 2), (__bridge id)kIOSurfacePlaneHeight: @(H / 2), (__bridge id)kIOSurfacePlaneBytesPerRow: @(ROW),
+          (__bridge id)kIOSurfacePlaneOffset: @(LUMA), (__bridge id)kIOSurfacePlaneSize: @(CHROMA), (__bridge id)kIOSurfacePlaneBytesPerElement: @2},
     };
-    NSDictionary *props = @{(__bridge id)kIOSurfaceWidth: @W, (__bridge id)kIOSurfaceHeight: @H, (__bridge id)kIOSurfacePixelFormat: @('420v'),
-                            (__bridge id)kIOSurfaceAllocSize: @ALLOC, (__bridge id)kIOSurfacePlaneInfo: [NSArray arrayWithObjects:planes count:2]};
+    NSDictionary *props = @{(__bridge id)kIOSurfaceWidth: @(W), (__bridge id)kIOSurfaceHeight: @(H), (__bridge id)kIOSurfacePixelFormat: @('420v'),
+                            (__bridge id)kIOSurfaceAllocSize: @(ALLOC), (__bridge id)kIOSurfacePlaneInfo: [NSArray arrayWithObjects:planes count:2]};
     s->iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
     if (!s->iosurface || IOSurfaceGetPlaneCount(s->iosurface) != 2) { check("a two-plane IOSurface", 0); return; }
 
