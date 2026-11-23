@@ -15,7 +15,7 @@ rm -rf "$OUT" && mkdir -p "$OUT" "$IOS/build"
 xcodegen generate --spec screens.yml > /dev/null
 DD="$IOS/build/ScreensData"
 xcodebuild -project Screens.xcodeproj -scheme Screens -configuration Debug -sdk iphonesimulator \
-    -destination 'generic/platform=iOS Simulator' -derivedDataPath "$DD" CODE_SIGNING_ALLOWED=NO build > "$DD.buildlog" 2>&1 || {
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath "$DD" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build > "$DD.buildlog" 2>&1 || {
     grep -E "error:|Undefined symbols|referenced from|BUILD" "$DD.buildlog" | sort -u | head -100
     echo "==> the simulator build failed" >&2
     exit 1
@@ -44,24 +44,22 @@ echo "==> $RUNTIME: $PHONE, $PAD"
 # A simulator command that may hang gets this many seconds (simctl reads no stdin here: the screen list is on it).
 limit() { local s="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@" < /dev/null; }
 
-# Boots one device and installs the app; prints its UDID.
-prepare() {
-    local udid
-    udid="$(xcrun simctl create "Screens $1" "$2" "$RUNTIME")"
-    limit 300 xcrun simctl boot "$udid"
-    limit 300 xcrun simctl bootstatus "$udid" -b > /dev/null
-    limit 60 xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+# Boots a device (its first boot sets the system up: minutes), cleans its status bar and installs the app.
+prepare() { # label udid
+    local t0=$SECONDS
+    limit 900 xcrun simctl bootstatus "$2" -b > /dev/null
+    limit 60 xcrun simctl status_bar "$2" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
         --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 > /dev/null
-    limit 120 xcrun simctl install "$udid" "$APP"
-    echo "$udid"
+    limit 120 xcrun simctl install "$2" "$APP"
+    echo "==> $1 booted in $((SECONDS - t0))s"
 }
 
-# Launches the app with an argument and waits for its marker; prints what the marker says ("timeout" if none).
-launch() { # udid container argument
+# Launches the app with an argument and waits for its marker (wait: tenths of a second); prints what the marker says.
+launch() { # udid container argument [wait]
     local marker="$2/tmp/solstice-preview-ready"
     rm -f "$marker"
     limit 60 xcrun simctl launch --terminate-running-process "$1" "$BUNDLE" -solsticePreview "$3" > /dev/null || { echo "launch failed"; return; }
-    for _ in $(seq 1 120); do
+    for _ in $(seq 1 "${4:-120}"); do
         [ -s "$marker" ] && { cat "$marker"; return; }
         sleep 0.1
     done
@@ -100,15 +98,33 @@ shoot_all() { # label udid
     echo "==> $label done at ${SECONDS}s"
 }
 
+IPHONE_UDID="$(xcrun simctl create "Screens iPhone" "$PHONE" "$RUNTIME")"
+IPAD_UDID="$(xcrun simctl create "Screens iPad" "$PAD" "$RUNTIME")"
+# Whatever happens, the app's crash reports go with the screenshots.
+diagnose() {
+    mkdir -p "$OUT/crashes"
+    find ~/Library/Logs/DiagnosticReports -name 'Solstice*' -newer "$DD.buildlog" -exec cp {} "$OUT/crashes/" \; 2>/dev/null || true
+    rmdir "$OUT/crashes" 2>/dev/null || true
+}
+trap diagnose EXIT
+prepare iPhone "$IPHONE_UDID" &
+boot_job=$!
+prepare iPad "$IPAD_UDID"
+wait "$boot_job"
 # Whatever is left after this many seconds is not photographed, so that what was taken is still uploaded.
-DEADLINE=$((SECONDS + ${SCREENS_MINUTES:-15} * 60))
-IPHONE_UDID="$(prepare iPhone "$PHONE")"
-IPAD_UDID="$(prepare iPad "$PAD")"
-echo "==> booted in ${SECONDS}s"
+DEADLINE=$((SECONDS + ${SCREENS_MINUTES:-12} * 60))
 
-# The app's own list of screens (Screen.all), from the iPhone.
+# The app's own list of screens (Screen.all), from the iPhone. The first launch after a boot can be slow.
 container="$(xcrun simctl get_app_container "$IPHONE_UDID" "$BUNDLE" data)"
-[ "$(launch "$IPHONE_UDID" "$container" list)" = list ] || { echo "the app did not list its screens" >&2; exit 1; }
+listed="$(launch "$IPHONE_UDID" "$container" list 400)"
+[ "$listed" = list ] || {
+    echo "the app did not list its screens ($listed)" >&2
+    mkdir -p "$OUT/logs"
+    cp "$container/Documents/solstice.log" "$OUT/logs/list.log" 2>/dev/null || true
+    limit 30 xcrun simctl io "$IPHONE_UDID" screenshot --type=png "$OUT/logs/list.png" > /dev/null 2>&1 || true
+    limit 60 xcrun simctl spawn "$IPHONE_UDID" log show --last 3m --style compact > "$OUT/logs/list-system.log" 2>&1 || true
+    exit 1
+}
 cp "$container/tmp/solstice-preview-list" "$OUT/screens.txt"
 echo "==> $(wc -l < "$OUT/screens.txt" | tr -d ' ') screens"
 
@@ -118,9 +134,5 @@ shoot_all ipad "$IPAD_UDID"
 wait "$phone_job"
 
 python3 -I "$IOS/scripts/screens_index.py" "$OUT"
-# Crashes of the app, if any, go with the screenshots.
-mkdir -p "$OUT/crashes"
-find ~/Library/Logs/DiagnosticReports -name 'Solstice*' -newer "$DD.buildlog" -exec cp {} "$OUT/crashes/" \; 2>/dev/null || true
-rmdir "$OUT/crashes" 2>/dev/null || true
 for udid in "$IPHONE_UDID" "$IPAD_UDID"; do xcrun simctl shutdown "$udid" || true; xcrun simctl delete "$udid" || true; done
 echo "==> $(ls "$OUT"/*.png | wc -l | tr -d ' ') screenshots in ${SECONDS}s"
