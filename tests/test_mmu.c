@@ -393,6 +393,118 @@ static void stash_test(void) {
     free(sw_mem);
 }
 
+/* Entries that stay across a switch: processes A (ASID 20) and B (ASID 21) share the level 3 table of the twig at
+   SW_S (as every process shares the shared region's) and each has its own at SW_P. What B's tables map the same as A's
+   stays live when A switches to B, and only that: a twig remapped, a descriptor changed (TLBI or not yet), fewer rights
+   all make it go; and what stayed dies on TLBIs from either CPU. */
+#define SW_S(i) (0x180000000ull + ((uint64_t)(i) << 14))
+
+static void keep_test(void) {
+    static HvMachine km;
+    static HvCpu c0, c1;
+    if (hv_machine_init(&km, 1 << 20) != 0) exit(1);
+    km.stats_interval = 3600;
+    sw_mem = aligned_alloc(16384, (SW_TABLES + SW_DATA) * 16384);
+    sw_next = 0;
+    hv_machine_add_ram(&km, ADDR(sw_mem), (SW_TABLES + SW_DATA) * 16384, sw_mem, 0);
+    uint64_t ra = sw_table(), rb = sw_table(), shared = sw_table(), other = sw_table();
+    for (int i = 0; i < 8; i++) {
+        ((uint64_t *)(uintptr_t)shared)[(SW_S(i) >> 14) & 0x7ff] = sw_data(i) | SW_USER;
+        ((uint64_t *)(uintptr_t)other)[(SW_S(i) >> 14) & 0x7ff] = sw_data(16 + i) | SW_USER;
+        *sw_desc(ra, SW_P(i), 3) = sw_data(8 + i) | SW_USER;
+        *sw_desc(rb, SW_P(i), 3) = sw_data(24 + i) | SW_USER;
+    }
+    uint64_t *la = sw_desc(ra, SW_S(0), 2), *lb = sw_desc(rb, SW_S(0), 2);
+    *la = shared | 3, *lb = shared | 3;
+    const uint64_t A = ra | 20ull << 48, B = rb | 21ull << 48;
+    sw_cpu(&c0, &km, 0, A);
+    sw_cpu(&c1, &km, 1, B);
+    HvStats *st = &c0.pc_state->own.stats;
+
+    /* A to B and back: the shared twig's entries stay, the own twig's do not (each gets its own back from its stash). */
+    sw_fill(&c0, SW_S(0)), sw_fill(&c0, SW_S(1)), sw_fill(&c0, SW_P(0));
+    uint64_t kept0 = st->switch_kept;
+    sw_switch(&c0, B);
+    checks++;
+    if (st->switch_kept != kept0 + 2) printf("  FAIL A to B kept %llu entries, want 2\n", (unsigned long long)(st->switch_kept - kept0)), failures++;
+    sw_expect("shared twig, kept", &c0, SW_S(0), sw_data(0));
+    sw_expect("shared twig, kept too", &c0, SW_S(1), sw_data(1));
+    sw_expect("own twig, not kept", &c0, SW_P(0), 0);
+    sw_fill(&c0, SW_P(0));
+    sw_switch(&c0, A);
+    sw_expect("shared twig, kept back", &c0, SW_S(0), sw_data(0));
+    sw_expect("own twig, from the stash", &c0, SW_P(0), sw_data(8));
+    sw_switch(&c0, B);
+    sw_expect("own twig, B's from its stash", &c0, SW_P(0), sw_data(24));
+    sw_switch(&c0, A);
+
+    /* What stayed dies on TLBIs: another CPU's of the page under the other ASID (the live TLB does not tell ASIDs
+       apart), this CPU's own, another CPU's all-ASID one after a switch, and by ASID. */
+    sw_tlbi(&c1, TLBI_VAE1IS, TLBI_VA(SW_S(0), 21));
+    hv_cpu_process_requests(&c0);
+    sw_expect("kept, then another CPU's TLBI under the other ASID", &c0, SW_S(0), 0);
+    sw_tlbi(&c0, TLBI_VAE1, TLBI_VA(SW_S(1), 20));
+    sw_expect("kept, then a TLBI here", &c0, SW_S(1), 0);
+    sw_fill(&c0, SW_S(2)), sw_fill(&c0, SW_S(3));
+    sw_switch(&c0, B);
+    sw_expect("kept into B", &c0, SW_S(2), sw_data(2));
+    sw_tlbi(&c1, TLBI_VAAE1IS, TLBI_VA(SW_S(2), 0));
+    hv_cpu_process_requests(&c0);
+    sw_expect("kept into B, then another CPU's all-ASID TLBI", &c0, SW_S(2), 0);
+    sw_tlbi(&c1, TLBI_ASIDE1IS, 21ull << 48);
+    hv_cpu_process_requests(&c0);
+    sw_expect("kept into B, then B's TLBI by ASID", &c0, SW_S(3), 0);
+    sw_switch(&c0, A);
+    sw_expect("dropped in B, not back in A from A's stash", &c0, SW_S(2), 0);
+
+    /* A twig remapped in B while A runs (break, TLBI by B's ASID, make): what A has there does not go into B. */
+    sw_fill(&c0, SW_S(4));
+    *lb = 0;
+    sw_tlbi(&c1, TLBI_ASIDE1IS, 21ull << 48);
+    hv_cpu_process_requests(&c0);
+    *lb = other | 3;
+    sw_switch(&c0, B);
+    sw_expect("twig remapped: not kept", &c0, SW_S(4), 0);
+    sw_fill(&c0, SW_S(4));
+    sw_expect("twig remapped: B's own page", &c0, SW_S(4), sw_data(20));
+    sw_switch(&c0, A);
+    sw_expect("twig remapped: not kept back into A", &c0, SW_S(4), sw_data(4)); /* A's stash has its own */
+    *lb = shared | 3;
+    sw_tlbi(&c1, TLBI_ASIDE1IS, 21ull << 48);
+    hv_cpu_process_requests(&c0);
+
+    /* A shared descriptor changed and not yet TLBI'd: what A has of it does not go into B (B walks it anew), and
+       neither does an entry with more rights than the descriptor now gives. */
+    sw_fill(&c0, SW_S(5));
+    uint64_t pa = 0;
+    hv_mmu_access(&c0, SW_S(6), HV_ACC_WRITE, 0, &pa);
+    ((uint64_t *)(uintptr_t)shared)[(SW_S(5) >> 14) & 0x7ff] = sw_data(30) | SW_USER;
+    ((uint64_t *)(uintptr_t)shared)[(SW_S(6) >> 14) & 0x7ff] = sw_data(6) | SW_USER | 2ull << 6; /* EL0 read-only */
+    sw_switch(&c0, B);
+    sw_expect("descriptor changed: not kept", &c0, SW_S(5), 0);
+    sw_expect("fewer rights: not kept", &c0, SW_S(6), 0);
+    checks++;
+    if (hv_tlb_ent(&c0, (uint32_t)(SW_S(6) >> 14) & (HV_TLB_SIZE - 1), 0)->write_tag != HV_TLB_INVALID)
+        printf("  FAIL a writable entry stayed over a read-only descriptor\n"), failures++;
+    ((uint64_t *)(uintptr_t)shared)[(SW_S(5) >> 14) & 0x7ff] = sw_data(5) | SW_USER;
+    ((uint64_t *)(uintptr_t)shared)[(SW_S(6) >> 14) & 0x7ff] = sw_data(6) | SW_USER;
+    sw_tlbi(&c1, TLBI_VAAE1IS, TLBI_VA(SW_S(5), 0));
+    sw_tlbi(&c1, TLBI_VAAE1IS, TLBI_VA(SW_S(6), 0));
+    hv_cpu_process_requests(&c0);
+
+    /* Many switches both ways with the shared pages in use: they stay, and each process's own pages are its own. */
+    for (int k = 0; k < 20; k++) {
+        uint64_t to = k & 1 ? A : B;
+        sw_switch(&c0, to);
+        for (int i = 0; i < 4; i++) sw_fill(&c0, SW_S(i)), sw_fill(&c0, SW_P(i));
+        for (int i = 0; i < 4; i++) {
+            sw_expect("back and forth, shared", &c0, SW_S(i), sw_data(i));
+            sw_expect("back and forth, own", &c0, SW_P(i), sw_data((k & 1 ? 8 : 24) + i));
+        }
+    }
+    free(sw_mem);
+}
+
 /* O8b: a TTBR0 write (a process switch) does the TLBIs other CPUs asked of this one first. */
 static void switch_does_requests(HvMachine *m) {
     static HvCpu c;
@@ -862,6 +974,7 @@ int main(void) {
 
     switch_does_requests(&m);
     stash_test();
+    keep_test();
     remap_test();
 
     printf("%d checks, %d failures\n", checks, failures);

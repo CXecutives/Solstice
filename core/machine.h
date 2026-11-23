@@ -141,6 +141,7 @@ typedef struct HvStats {
     uint64_t stash_miss;      /* process switches that found no stash for the incoming address space */
     uint64_t stash_evict;     /* stashes taken over from another address space (least recently used) */
     uint64_t stash_out;       /* entries copied into stashes at process switches */
+    uint64_t switch_kept;     /* user entries that stayed live across process switches (the new tables map them the same) */
     uint64_t user_reset_why[7]; /* user-half branch-cache resets by cause: all-ASID TLBI by VA, all-ASID big range,
                                    whole-TLB flush, (id, page) set half full, keyed filter full, code under several VA
                                    pages, ASID log overflow (the rest of ijc_reset_kind[0]: code-cache epochs) */
@@ -246,6 +247,7 @@ typedef struct HvPerCpu {
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
     uint32_t live_stash;         /* index + 1 of the stash whose entries are live in the TLB again (0: none) */
+    uint32_t live_kept;          /* user_fills before this stayed from the process before (mmu.c: not in it) */
     uint32_t live_from;          /* user_fills from here on are not in it (filled after it was put back) */
     uint32_t pos_epoch;          /* stash_pos entries of another epoch mean nothing */
     uint32_t *stash_pos;         /* by TLB code: pos_epoch << 10 | where its entry is in the stash being saved or put back */
