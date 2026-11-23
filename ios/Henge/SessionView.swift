@@ -223,8 +223,7 @@ struct SessionView: View {
             if showing { HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll() }
         }
         .onAppear {
-            UIApplication.shared.isIdleTimerDisabled = true
-            HardwareMouse.shared.start()
+            UIApplication.shared.isIdleTimerDisabled = true // the physical mouse starts with each run (SessionController)
         }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
