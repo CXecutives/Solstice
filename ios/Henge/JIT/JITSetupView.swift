@@ -385,3 +385,13 @@ struct JITSetupFlow: View {
             .padding(14).hengeCard()
     }
 }
+
+#if SOLSTICE_SCREENS
+extension JITSetupFlow {
+    /// The simulator app for screenshots (ios/Screens): the walkthrough open on these steps.
+    init(screensPath: [Step]) {
+        self.init()
+        _path = State(initialValue: screensPath)
+    }
+}
+#endif
