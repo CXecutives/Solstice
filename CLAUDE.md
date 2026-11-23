@@ -1,28 +1,39 @@
 # Solstice
 
-Privater, leistungsorientierter Fork von Henge (iOS-App, die echtes macOS 15.6.1 per eigenem
-arm64→arm64-JIT ausführt). Einziger Nutzer: der Besitzer. Geräte: iPhone 16 Pro (Hauptgerät),
-iPad Air 4 (4 GB, knappster Fall), später iPad Pro M4/M5. Kostenlose Apple-ID, Sideloading über
-AltStore Classic 2.3. Plan und Blöcke: `PLAN.md`; Detailwissen: `docs/solstice/`; Stand: `HANDOFF.md`.
+Eigener, schlanker macOS-Lader für iPhone und iPad, hervorgegangen aus Henge (GPL-2.0-or-later): echtes macOS Sequoia 15.6.1
+per eigenem arm64→arm64-JIT. Geräte des Besitzers: iPhone 16 Pro (Hauptgerät), iPad Air 4 (4 GB, knappster Fall), später
+iPad Pro. Das Repo ist **öffentlich**. Plan: `PLAN.md`; Stand und Entscheidungen: `HANDOFF.md`; PC-Eigenes (nicht
+eingecheckt): `HANDOFF.local.md`.
+
+## Leitlinien
+1. **Schlank vor vollständig:** Was der Besitzer nicht nutzt, fliegt ganz raus (Code, Texte, Tests, Doku). Kein Schalter für Totes.
+2. **Erst messen, dann den gemessenen Engpass beheben.** Grundlage ist das Geräte-Log; jede Kern-Änderung nennt den Zähler, den sie senkt.
+3. **Niedrigste Verzögerung zuerst:** Eingabe → Bild ist der wichtigste Weg; nichts Schweres auf dem UI-Faden, keine festen
+   Wartezeiten, wo ein Ereignis reicht.
+4. **macOS bleibt macOS:** Aussehen und Verhalten des Gasts werden nicht automatisch verändert; optimiert wird darunter.
+5. **Eine Quelle pro Entscheidung:** Namen, Texte, Einstellungs-Schlüssel, Engine-Knöpfe und Gerätewerte je in einer Tabelle;
+   was Swift und C beide kennen, wird erzeugt, nicht abgeschrieben.
+6. **Kleinste Änderung, die das Verhalten erhält;** Umbauten als reine Verschiebungen in eigenen Commits. Logikfehler: erst
+   der Test, dann die Behebung.
+7. **Keine privaten Angaben** (Pfade, Adressen, Gerätekennungen, Konten) in Dateien, Commits oder Logs im Repo.
+8. Keine unnötige Komplexität: einfach vor schlau; abstrahieren erst beim dritten Mal.
 
 ## Befehle
-- Kein lokaler Build (Windows). Gebaut und getestet wird nur auf GitHub Actions (`xcode-27`-Runner).
-- `tools/check.sh test_jit test_mem` – nur die genannten Engine-Tests in CI (berührte Teile).
-- `tools/check-all.sh` – alle Engine-Tests + iOS-Build + IPA (Blockende).
-- IPA landet nach `tools/check-all.sh` in `out/Solstice.ipa`.
-- CI testet zusätzlich mit den ausgelieferten Einstellungen (`tools/shipped_env.py` aus `EngineTuning.swift`) + ThinLTO.
-- `tools/windows-sideload.ps1` – dieser PC fürs Sideloading mit Impactor (Treiber 538, Gerät hinten am Prozessor-USB).
+- Kein lokaler Build (Windows). Gebaut und getestet wird auf GitHub Actions (`xcode-27`-Runner, kostenlos, weil öffentlich).
+- `tools/check.sh test_jit test_mem` – nur die genannten Engine-Tests (berührte Teile).
+- `tools/check-all.sh` – alle Engine-Tests (normal, wie ausgeliefert + ThinLTO, mit UB-Fallen), Registerschutz-Prüfung,
+  iOS-Build; die IPA landet in `out/Solstice.ipa`.
+- `tools/shipped_env.py` – die ausgelieferten Engine-Einstellungen aus `EngineTuning.swift` (CI testet damit).
+- `tools/windows-sideload.ps1` – richtet einen Windows-PC fürs Sideloading ein (Apple-Gerätedienst, Treiber).
 
 ## Grenzen
-- Privat. Pushen nur nach `origin` (CXecutives/Solstice); nichts veröffentlichen.
-- macOS-Minuten sind knapp (privat ~200 min/Monat): Läufe bündeln, nie ohne Änderung wiederholen.
-- Nur Sequoia 15.6.1 als Gast (#161-Zeitstempel gilt nur für macOS 15).
-- Bundle-ID bleibt `com.henge.app` (Daten und App-IDs bleiben erhalten). Signiert wird mit
-  `Henge.personal.entitlements` (kostenloses Team: kein EVA).
-- Engine-Standardwerte nur in `ios/Henge/EngineTuning.swift`, Geräte-Werte nur in der Gerätetabelle
-  in `ios/Henge/Hardware.swift`.
-- Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`/`hv_light`
-  heraus kein libc-Aufruf und kein SIMD (Dateien in `NOSIMD` im Makefile; CI-Gate `tools/simd_gate.py`).
-  Resets großer Tabellen nur im Dispatcher.
+- Nichts außer `origin` (CXecutives/Solstice) wird beschrieben; keine Releases.
+- Nur Sequoia 15.6.1 als Gast, bis eine Versions-Weiche gebaut ist (der vBlank-Zeitstempel aus #161 gilt nur für macOS 15).
+  Geräte ab A14, iOS/iPadOS ab 26.
+- Engine-Standardwerte nur in `ios/Henge/EngineTuning.swift`, Gerätewerte nur in der Gerätetabelle.
+- Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`/`hv_light` heraus kein
+  libc-Aufruf und kein SIMD (Dateien in `NOSIMD` im Makefile; CI-Gate `tools/simd_gate.py`). Resets großer Tabellen nur im
+  Dispatcher.
 - Gast-Setup: Set Up ruft nur `tune` (nichts Sichtbares); sichtbare Änderungen nur im optionalen `lighten`.
+- Sichtbar heißt alles „Solstice“; interne Namen (`henge_vm_*`, Ordner `ios/Henge`, Einstellungs-Schlüssel) bleiben.
 - Sprache im Repo: Englisch (Code, Kommentare, Commits); mit dem Besitzer: Deutsch.

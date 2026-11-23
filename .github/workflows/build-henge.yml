@@ -31,9 +31,12 @@ concurrency:
 env:
   HUSK: ${{ github.workspace }}/Husk
   IOS_DEPS: ${{ github.workspace }}/Husk/build/ios-arm64/sysroot
-  HUSK_REF: "3.4"
+  HUSK_REF: "acfd7bcb6d1d2f6655a24e43d1d6f87cf142667a" # tag 3.4, pinned by commit
   HOMEBREW_NO_AUTO_UPDATE: 1
   HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -42,7 +45,7 @@ jobs:
 
     steps:
       - name: Check out Solstice
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: Henge
 
@@ -75,7 +78,7 @@ jobs:
 
       - name: Check out Husk (pinned)
         if: inputs.ipa
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Leviidev/Husk
           ref: ${{ env.HUSK_REF }}
@@ -84,7 +87,7 @@ jobs:
       - name: Cache Husk's prebuilt iOS pieces
         if: inputs.ipa
         id: husk
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             Husk/third_party/build
@@ -144,7 +147,7 @@ jobs:
 
       - name: Upload Solstice.ipa
         if: inputs.ipa
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Solstice-ipa
           path: ${{ github.workspace }}/Solstice.ipa
@@ -153,7 +156,7 @@ jobs:
 
       - name: Upload the build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: buildlog
           path: Henge/ios/build/DerivedData.buildlog

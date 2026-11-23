@@ -1,0 +1,22 @@
+Solstice
+Copyright (C) 2026 the Solstice contributors
+
+Solstice is a modified version of Henge (https://github.com/Leviidev/Henge),
+Copyright (C) Leviidev and the Henge contributors, licensed under the GNU General
+Public License, version 2 or (at your option) any later version. Solstice is
+distributed under the same licence; see LICENSE.
+
+Solstice's changes began on 2026-11-22 on top of Henge commit 7b55730. Every change
+is recorded in this repository's git history. In summary, Solstice:
+
+  - picks fixes and improvements proposed to Henge by its community (each such
+    commit names its origin) and adds its own;
+  - reworks the translator, the multi-CPU and timer paths, the code cache, the
+    memory layout, the GPU replay and the disk, network and audio devices for speed
+    and lower memory use;
+  - narrows the app to one guest (macOS Sequoia 15.6.1) and to devices with an A14
+    or newer on iOS/iPadOS 26 or later, and removes what that does not need;
+  - changes the app's name, set-up flow and settings.
+
+Third-party components keep their own licences; see docs/licensing.md and the
+COPYING files under third_party/.

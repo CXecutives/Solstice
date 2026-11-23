@@ -1,56 +1,42 @@
 # Übergabe
 
-## Stand (23.11.2026, letzter Durchlauf)
-Solstice ist fertig gebaut: alles in `main`, nur noch `main` (lokal und auf origin), keine Helfer-Worktrees.
-Final-IPA: `out/Solstice.ipa` aus `tools/check-all.sh` (alle Engine-Tests normal, mit den ausgelieferten
-Einstellungen + ThinLTO und mit UB-Traps; Fuzzer; SIMD-Gate; iOS-Build). Offen ist nur der Gerätetest.
+## Stand (23.11.2026)
+Solstice läuft auf dem iPhone 16 Pro (macOS Sequoia 15.6.1, sideloaded mit Impactor). Das erste Geräte-Log (82 Minuten)
+ist ausgewertet; daraus und aus sieben weiteren Analysen entstand der Umbau-Plan in `PLAN.md` (freigegeben am 23.11.).
+Das Repo ist öffentlich; die Geschichte wurde vorher von privaten Angaben bereinigt. PC-Eigenes steht in `HANDOFF.local.md`.
 
-## Was drin ist
-- **Basis (Block 1):** Henge `7b55730` + #214 #121 #166 #207 #188 #187 #161 #142 #137 #73 #183 #215 #109 #209,
-  not-nullptr `4aed49b` und Log-Stream `616435e`, abetinoco `e4798b0`. Nur macOS 15.6.1; Ein-Tipp-Start
-  (JIT automatisch, Autostart mit Schutz nach 2 Fehlstarts, Sicherheitsmodus `HV_SAFE`), Disk 40–64 GB nach Platz.
-- **Übersetzer:** kompakte Slow-Paths (−22 % Code), Groups v2 (Standard an), 8192-TLB, Refill für alle Formen,
-  Systemregister/CLREX inline, IJC per LDP, ADRP+ADD gefaltet.
-- **Mehrkern/Energie:** Statistik pro CPU, kürzere TLBI-Wartezeiten (`HV_SYNC_WAIT=1`, `HV_RANGE_DROP=256`),
-  fristgesteuerter Kicker (~35–45 statt 1000 Wakeups/s), PV-Ticket-Locks, WFE bis zur Timer-Frist.
-- **Leichter Pfad:** SVC/ERET/WFE ohne SIMD-Sicherung (`core/light.c`, ~92 Befehle weniger pro Paar), kein ISB bei
-  Treffern im eigenen Sprung-Cache, billigere Dispatcher-Ausgänge.
-- **Code-Cache:** segmentiert und generationell, ohne Stillstand; Größe nach Gerät (4 GB: 384 MB, 6–8 GB: 768 MB,
-  12–16 GB: 1,5 GB mit EVA sonst 1 GB).
-- **Speicher:** Block-Records 80→40 B, Slots 64→48 B, Tabellen nur für gestartete CPUs, RAM vor den Engine-Tabellen
-  reserviert, `henge_vm_trim()` vor der Hintergrund-Pause; Ballon nach System-Reserve (`Device.profile.headroomMB`,
-  1-s-Sampler in `KeepAlive.swift`) statt erst bei iOS-Warnung.
-- **Hitze/Strom (`PowerPolicy.swift`):** Stromsparmodus → kein WFI-Spin; heiß → Bildausgabe 30 Hz; kritisch → Pause,
-  weiter erst im Vordergrund und kühler.
-- **Grafik/IO:** Objekt-Cache per Index, Zeiger-Ebene, Present-Pacing, vBlank-Periode pro Mac; Disk preadv/QD8/TRIM;
-  Netz weckt nur bei leer→voll.
-- **Gast:** Set Up ruft nur `tune` (unsichtbar: keine Hintergrund-Updates, kein Power Nap, LaunchDaemon mit
-  Ticket-Spins 8 und Timer-Slack für Hintergrund-QoS/Tier 3). Sichtbares (Animationen, Spotlight, Siri …) nur über
-  den optionalen Befehl „Lighter macOS“; `unlighten` nimmt alles zurück.
-- **iPad:** #170 Trackpad-Klick, #167 Zwei-Finger-Scrollen, #123 Stage Manager (USB-Absolutzeiger).
-- **Prüfung:** `tools/shipped_env.py` erzeugt die ausgelieferten Einstellungen aus `EngineTuning.swift` für CI;
-  `tools/simd_gate.py` liest Aufrufe aus den BR26-Relokationen (vorher sah es keine).
+## Was drin ist (vor dem Umbau)
+- **Basis:** Henge `7b55730` + ausgewählte Community-Verbesserungen (#214 #121 #166 #207 #188 #187 #161 #142 #137 #73 #183
+  #215 #109 #209 #170 #167 #123 u. a.).
+- **Übersetzer:** kompakte Slow-Paths (−22 % Code), Groups v2, 8192-TLB, Refill für alle Formen, Systemregister inline.
+- **Mehrkern/Energie:** Statistik pro CPU, kurze TLBI-Wartezeiten, fristgesteuerter Kicker, PV-Ticket-Locks.
+- **Leichter Pfad:** SVC/ERET/WFE ohne SIMD-Sicherung (`core/light.c`), kein ISB bei Treffern im eigenen Sprung-Cache.
+- **Code-Cache:** segmentiert und generationell, ohne Stillstand.
+- **Speicher:** Block-Records 40 B, Slots 48 B, Tabellen nur für gestartete CPUs, `henge_vm_trim()`, Ballon nach System-Reserve.
+- **Hitze/Strom:** `PowerPolicy.swift` (kein WFI-Spin im Stromsparmodus, 30 Hz bei Hitze, Pause bei kritisch).
+- **Gast:** Set Up ruft nur `tune` (unsichtbar); sichtbare Erleichterungen nur im optionalen „Lighter macOS“.
+- **Prüfung:** alle Engine-Tests normal, wie ausgeliefert (+ ThinLTO) und mit UB-Fallen; Fuzzer; `tools/simd_gate.py`.
 
-## Entscheidungen (mit Grund)
-- **Impactor statt SideStore:** beantragt `increased-memory-limit` selbst, registriert die JIT-Erweiterung; SideStores
-  Anisette-Server war ausgefallen. Preis: Auffrischen alle 7 Tage über den PC (automatisch per WLAN, wenn er läuft).
-- **macOS sieht aus wie immer** (Wunsch des Besitzers): nur Unsichtbares automatisch.
-- **Stromsparmodus halbiert die Bildrate nicht** (iOS selbst bleibt bei 60 Hz); 30 Hz nur bei Hitze.
-- **HV_HOIST_CHECK aus:** +2,3–2,5 % Code im Fuzzer-A/B (Grenze 2 %). **Superblocks aus:** mehr Code, ungemessen.
-- **Weggelassen:** Vor-Übersetzung auf E-Kernen, Lazy-FP, TLBT=2, PGO, flüchtige GPU-Heaps, RW-Alias-Trim,
-  vBlank-Gating – Risiko ohne Gerätedaten, Gewinn unbekannt.
-- **Bildgröße:** Air 4 startet mit „Larger“ (1280×888), iPhone mit 1536×864; pro Mac unter „Size“ änderbar.
+## Messwerte vom ersten Gerätelauf (Ziele des Umbaus)
+- Speichergrenze 6144 MiB, App 1,7–2,4 GB, immer ≥ 3,7 GB frei.
+- Code-Cache 768 MB: 85 % der Übersetzungen sind Wieder-Übersetzungen.
+- 4–7 Tsd. Programmwechsel/s → 364–398 Tsd. TLB-Nachfüllungen/s; 148–190 Tsd. Sprung-Cache-Füllungen/s in toten Bestand.
+- Geräte-Abfragen 2,7–4,4 Tsd./s (bis 37 Tsd.), Kicker 1,3–1,5 Tsd. Wakeups/s unter Last.
+- Leerlauf-Sturm: 40 s mit 65,8 Tsd. IRQ/s bei stehendem Bild.
+- Pipeline-Archiv bei 31 von 32 Dateien; Gast-Ton bleibt nach einer iOS-Unterbrechung stehen.
+- Download heizt das Gerät („Hot“ nach 82 s), Restore 452 s, erster Start bis Bild 50–60 s.
 
-## Sideloading auf diesem PC
-- Apples USB-Filter (Treiber 552) stürzt am **Chipsatz-USB** ab → iPhone/iPad **hinten an den Prozessor-USB**
-  (AMD USB 3.10) und Treiber **538** (Microsoft Update Catalog). `tools/windows-sideload.ps1` (ein UAC-Klick, Gerät
-  eingesteckt) entfernt iTunes-App und LocalSend, behält Apple Mobile Device Support, pinnt 538, versteckt 552.
-- Impactor 2.7.3 portable: `%LOCALAPPDATA%\Programs\Impactor\Impactor.exe` (Desktop/Startmenü), Anisette
-  `mac-ani.jkcoxson.com`. iloader ist entfernt.
+## Entscheidungen
+- **Impactor** zum Sideloaden (beantragt `increased-memory-limit` selbst); Auffrischen alle 7 Tage über den PC.
+- **Nur Sequoia** in diesem Durchlauf; Tahoe 26 / macOS 27 später (braucht eine Versions-Weiche).
+- **Alles Unbenutzte fällt weg:** „Mac-Apps ohne macOS“, alte JIT-Wege, iOS < 26, Lautstärketasten-Klick, Autopilot, Farbtest.
+- **macOS sieht aus wie immer;** „Fortsetzen“ wird Vorgabe; Code-Cache 1 GB auf 8-GB-Geräten.
+- **Eigene App-Kennung** im Schluss-Build (`io.github.cxecutives.solstice`): der Mac wird danach einmal neu installiert.
+- Herkunftszeile unter Einstellungen → Info und in der README.
 
-## Als Nächstes (Besitzer)
-1. Gerät hinten einstecken, `tools/windows-sideload.ps1` ausführen.
-2. Impactor → Apple-ID → `out/Solstice.ipa` (erst iPhone 16 Pro, dann iPad Air 4; SideStore vom iPhone löschen) →
-   Entwickler vertrauen → Entwicklermodus → Solstice öffnen → JIT-Kopplung → macOS installieren (≥ 40 GB frei).
-3. Log-Stream an den PC: `py -3 -u tools/henge-log-listen.py --quiet --out henge-stream.log` (<PC-ADDRESS>:7777).
-   Im Log prüfen: IML an, keine Jetsam-Beendigung, Ballon-Schritte („memory“), „code cache:“, „power“.
+## Ablauf des Umbaus (Details in `PLAN.md`)
+1. Phase 0: Repo öffentlich, schnellere Prüfung, Regeln.
+2. Welle 1 (parallel): S Schlank+Struktur (Swift) · E1 MMU · E2 Code-Cache/Übersetzer/Messung · E3 Wecken/Timer/Bildtakt ·
+   E4 Datenwege · E5 Grafik → Build 1 aufs iPhone, Zähler vergleichen.
+3. Welle 2 (parallel): I Steuerung · D Bild · L Lebenszyklus · U Einstellungen · K Knopf-Tabelle.
+4. Drei unabhängige Prüfungen, Schluss-Build, frische Installation auf iPhone 16 Pro und iPad Air 4.

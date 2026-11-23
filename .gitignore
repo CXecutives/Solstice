@@ -4,3 +4,4 @@ henge.log
 henge-stream.log
 .claude/
 tools/*.log
+HANDOFF.local.md
