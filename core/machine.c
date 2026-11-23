@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "dispatch.h"
+#include "light.h"
 #include "mmu.h"
 #include "sysreg.h"
 
@@ -414,6 +415,21 @@ void hv_cpu_process_requests(HvCpu *cpu) {
     ack_wake(p);
 }
 
+/* A CPU waiting for another's acknowledgement first watches its ack_seq this long (24 MHz ticks: 2 us), in WFE, which a
+   store to the word ends at once: acknowledgements often come within microseconds, and the wait neither spins on the
+   target's cache line nor sleeps through one (HV_SYNC_WAIT's sleep, or a yield without it, comes after). */
+#define HV_SYNC_WATCH 48
+
+static void ack_watch(const uint64_t *ack_seq, uint64_t seen) {
+    uint64_t v;
+    __asm__ volatile("ldaxr %0, [%1]" : "=r"(v) : "r"(ack_seq) : "memory"); /* arms the monitor: a store to it ends the WFE */
+    if (v == seen) {
+        if (__atomic_load_n(&hv_light_flags, __ATOMIC_RELAXED) & HV_LIGHT_WFE_SLEEP) __asm__ volatile("wfe" ::: "memory");
+        else __asm__ volatile("yield" ::: "memory"); /* no event stream to end a WFE (or not measured yet: light_init) */
+    }
+    __asm__ volatile("clrex" ::: "memory");
+}
+
 void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
     HvPerCpu *t = target->pc_state, *s = self ? self->pc_state : NULL;
     HvMachine *mm = target->m;
@@ -425,6 +441,7 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
     }
     int sleep = hv_knob[HV_K_SYNCWAIT], probed = !t0 || !mm->stats_deep, probed_long = probed; /* thread_info: diagnostics only */
     if (s) __atomic_store_n(&s->phase, HV_PHASE_SYNC, __ATOMIC_RELAXED);
+    uint64_t watch_end = 0;
     for (uint32_t spins = 0;; spins++) {
         uint64_t ack = __atomic_load_n(&t->ack_seq, __ATOMIC_ACQUIRE);
         if (ack >= seq) break;
@@ -446,13 +463,17 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
         }
         if (!__atomic_load_n(&t->tlb_live, __ATOMIC_SEQ_CST)) break; /* parked: it does the work before it runs again */
         if (self) hv_cpu_process_requests(self);
-        if (sleep && spins >= 64) {
+        uint64_t now = mach_absolute_time();
+        if (!watch_end) watch_end = now + HV_SYNC_WATCH;
+        if (now < watch_end) {
+            ack_watch(&t->ack_seq, ack);
+        } else if (sleep) {
             __atomic_add_fetch(&t->ack_waiters, 1, __ATOMIC_SEQ_CST);
             /* Asleep until ack_seq's low word moves or 100 us pass (a missed wake costs no more than that). */
             if (__atomic_load_n(&t->ack_seq, __ATOMIC_SEQ_CST) == ack && __atomic_load_n(&t->tlb_live, __ATOMIC_SEQ_CST))
                 __ulock_wait(HV_UL_COMPARE_AND_WAIT | HV_ULF_NO_ERRNO, &t->ack_seq, (uint32_t)ack, 100);
             __atomic_sub_fetch(&t->ack_waiters, 1, __ATOMIC_SEQ_CST);
-        } else if (spins > 200) {
+        } else {
             sched_yield();
         }
     }

@@ -305,6 +305,11 @@ Fields must first move into the fixed area that translated code can address (fre
 - **Risk:** medium-high. **Effort:** 1.5–2 weeks.
 - **Knob:** `HV_FAST_EXC`.
 - **CI:** `test_exc` plus a new `bench_syscall` (an EL0 SVC to EL1 ERET loop).
+- **Done (no knob):** SVC, ERET and WFE carry `HV_OP_LIGHT`; `hv_helper_thunk` sends them to `hv_light` (`core/light.c`,
+  `-mgeneral-regs-only`, a root of `tools/simd_gate.py`), saving only x0-x17, NZCV and SP. It commits the exception or
+  ERET (`hv_exception_enter`, `hv_eret`), then `hv_resume` (was `fast_resume`) goes on at the cached block without an
+  ISB, or leaves for the dispatcher. Only a logged SVC (log level 2 or more, trace) falls back to the full helper. Tested by
+  `test_exc` "el0 svc" (MMU on, kernel vectors in TTBR1) and `test_mp` "spinlock" (WFE).
 
 **O14. Cheaper dispatcher round trip.**
 - **Lazy FP:** `hv_exit` does not save the Q registers and sets `fp_live`. The hot dispatcher loop moves to a `-mgeneral-regs-only` file, like `mmu.c` (`Makefile:69-70`). Every call that may use SIMD must save FP first: device tick, translation (`memcpy`), `print_stats`, WFI, and `hv_tlb_flush`'s `memset`.

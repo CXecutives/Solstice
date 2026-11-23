@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "exception.h"
+#include "light.h"
 #include "memop.h"
 #include "mmu.h"
 #include "sysreg.h"
@@ -80,14 +81,23 @@ static void unpark(HvCpu *cpu) {
     hv_kicker_note(m, mach_absolute_time() + HV_KICK_CAP);
 }
 
-static uint32_t block_flags(HvCpu *cpu) {
-    uint32_t flags = cpu->el ? HV_BLOCK_EL1 : 0;
-    if (cpu->el && cpu->spsel) flags |= HV_BLOCK_SPX;
-    if (cpu->el && (cpu->pstate_extra & HV_PSTATE_PAN)) flags |= HV_BLOCK_PAN;
-    uint32_t fpen = (cpu->cpacr_el1 >> 20) & 3;
-    if (fpen == 0 || fpen == 2 || (fpen == 1 && cpu->el == 0)) flags |= HV_BLOCK_FPOFF;
-    return flags;
+/* What the light paths (light.c) cannot find out themselves, having no libc: the settings, and how the host waits.
+   Once, before any block runs (run_loop). */
+static void light_init(void) {
+    uint32_t f = 0;
+    if (!getenv("HV_NO_FAST_RESUME")) f |= HV_LIGHT_RESUME; /* HV_NO_FAST_RESUME: every exception and return through the dispatcher */
+    uint32_t timebase = *(volatile uint8_t *)(uintptr_t)HV_COMMPAGE_TIMEBASE_TYPE;
+    if (!getenv("HV_WFE_SPIN") && timebase) f |= HV_LIGHT_WFE_WAIT; /* HV_WFE_SPIN: a WFE always leaves for the dispatcher */
+    /* The host's WFE wakes at its event stream (about every microsecond on the Mac); if it does not come back that
+       soon (no event stream), waits spin instead. */
+    __asm__ volatile("sevl; wfe" ::: "memory"); /* clear the event register */
+    uint64_t t0 = mach_absolute_time();
+    __asm__ volatile("wfe" ::: "memory");
+    if (mach_absolute_time() - t0 < 24 * 20) f |= HV_LIGHT_WFE_SLEEP;
+    __atomic_store_n(&hv_light_clock, timebase, __ATOMIC_RELAXED);
+    __atomic_store_n(&hv_light_flags, f, __ATOMIC_RELEASE);
 }
+static pthread_once_t light_once = PTHREAD_ONCE_INIT;
 
 
 /* Finding a block is lock-free (blocks are only ever added, with a release
@@ -247,89 +257,15 @@ flush:
     return NULL;
 }
 
-/* WFE. xnu's spin loops arm the exclusive monitor on the lock word (LDAXR)
-   and wait for it to change; leaving for the dispatcher every time made a
-   waiting CPU spin through it (a hundred thousand times a second). Wait here
-   instead: the host core sleeps in its own WFE on the host copy of the word,
-   which wakes when another core writes it (or at the event stream, about every
-   microsecond). A request for this CPU (an interrupt, a TLBI) ends the wait, and
-   so does a short timeout, so its timer and devices are seen to. Without a
-   monitor to watch it leaves at once, as before. HV_WFE_SPIN: always that. */
-static uint32_t wfe(HvCpu *cpu) {
-    static int spin = -1;
-    if (spin < 0) spin = getenv("HV_WFE_SPIN") != NULL;
-    uint64_t va = cpu->excl_addr;
-    uint32_t size = cpu->excl_size;
-    const HvTlbEntry *e = hv_tlb_ent(cpu, (va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1), hv_tlb_table(cpu, cpu->el));
-    uint64_t page = va & ~((1ull << HV_TLB_PAGE_BITS) - 1);
-    if (spin || va == ~0ull || (size != 1 && size != 2 && size != 4 && size != 8) || (va & (size - 1)) ||
-        e->read_tag == HV_TLB_INVALID || e->read_tag + HV_TLB_ADJ != page) {
-        __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_RELAXED); /* let another CPU run: the dispatcher's way */
-        return 0;
-    }
-    const void *host = (const void *)(uintptr_t)(va + (uint64_t)e->addend);
-    uint64_t want = cpu->excl_val[0] & (size == 8 ? ~0ull : (1ull << (8 * size)) - 1);
-    /* The host's WFE wakes at its event stream (about every microsecond on the
-       Mac); if it does not come back that soon (no event stream), spin instead. */
-    static int sleep_ok = -1;
-    if (sleep_ok < 0) {
-        __asm__ volatile("sevl; wfe" ::: "memory"); /* clear the event register */
-        uint64_t t0 = mach_absolute_time();
-        __asm__ volatile("wfe" ::: "memory");
-        sleep_ok = mach_absolute_time() - t0 < 24 * 20;
-    }
-    uint64_t deadline = mach_absolute_time() + 24 * 50; /* 50 us at 24 MHz */
-    if (cpu->m->stats_interval) HV_ST(cpu).wfe_waits++;
-    for (;;) {
-        uint64_t v;
-        switch (size) { /* LDAXR arms the host monitor too, so the WFE below wakes on a write */
-        case 1: { uint32_t w; __asm__ volatile("ldaxrb %w0, [%1]" : "=r"(w) : "r"(host) : "memory"); v = w; break; }
-        case 2: { uint32_t w; __asm__ volatile("ldaxrh %w0, [%1]" : "=r"(w) : "r"(host) : "memory"); v = w; break; }
-        case 4: { uint32_t w; __asm__ volatile("ldaxr %w0, [%1]" : "=r"(w) : "r"(host) : "memory"); v = w; break; }
-        default: __asm__ volatile("ldaxr %0, [%1]" : "=r"(v) : "r"(host) : "memory"); break;
-        }
-        if (v != want || __atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED)) break;
-        if (mach_absolute_time() >= deadline) {
-            __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_RELAXED);
-            break;
-        }
-        if (sleep_ok) __asm__ volatile("wfe" ::: "memory");
-        else __asm__ volatile("yield" ::: "memory");
-    }
-    __asm__ volatile("clrex" ::: "memory");
-    return 0;
-}
-
-/* After an SVC or ERET, the block the CPU goes to next, if the dispatcher has
-   nothing to do first: no request, interrupt or timer due, no flush, and the
-   block in this CPU's indirect-branch cache for the new state. hv_helper then
-   resumes there instead of leaving (a hundred thousand round trips a second). */
-static void *fast_resume(HvCpu *cpu) {
-    static int off = -1; /* HV_NO_FAST_RESUME: every exception and return goes through the dispatcher */
-    if (off < 0) off = getenv("HV_NO_FAST_RESUME") != NULL;
-    HvMachine *m = cpu->m;
-    HvPerCpu *p = cpu->pc_state;
-    if (off || !m->chain || m->trace || m->log >= 2 || !p || cpu->pc == m->stop_pc || cpu->pc == m->stop_pc2 || cpu->halted || cpu->off) { if (m->stats_interval && p) p->own.stats.fr_fail[0]++; return NULL; }
-    if (__atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED) || __atomic_load_n(&m->flush_pending, __ATOMIC_RELAXED) ||
-        __atomic_load_n(&m->stw_active, __ATOMIC_RELAXED)) {
-        if (m->stats_interval) p->own.stats.fr_fail[1]++;
-        return NULL;
-    }
-    if ((p->irq_line && !(cpu->daif & HV_PSTATE_I)) || (p->fiq_line && !(cpu->daif & HV_PSTATE_F))) { if (m->stats_interval) p->own.stats.fr_fail[2]++; return NULL; }
-    if (cpu->timer_due && mach_absolute_time() >= cpu->timer_due) { if (m->stats_interval) p->own.stats.fr_fail[3]++; return NULL; }
-    uint32_t flags = block_flags(cpu);
-    int kernel = flags & HV_BLOCK_EL1;
-    uint64_t va = cpu->pc;
-    if ((int)((va >> 55) & 1) != kernel || (va & 3)) return NULL;
-    uint64_t tag = va ^ cpu->ijc_salt[kernel];
-    uint64_t *ent = p->ijc + (size_t)(flags & (HV_IJC_TABLES - 1)) * (HV_IJC_TABLE_BYTES / 8) + (size_t)hv_ijc_index(tag) * 2;
-    void *code = ent[0] == tag ? (void *)(uintptr_t)ent[1] : ent[2] == tag ? (void *)(uintptr_t)ent[3] : NULL;
-    if (!code) code = hv_ijc_resolve(cpu, va, flags); /* made already but not cached: cache it */
-    if (code) {
-        cpu->exit_reason = HV_EXIT_BRANCH;
-        if (m->stats_interval) p->own.stats.fast_resumes++;
-    } else if (m->stats_interval) p->own.stats.fr_fail[4]++;
-    return code;
+/* After an exception or ERET, hv_helper_entry goes on at the CPU's next block instead of leaving, if hv_resume found
+   one (a hundred thousand round trips a second); without an ISB when it came from this CPU's branch cache, which
+   helper_came_from = the target says (see hv_helper_entry). */
+static int resume_at(HvCpu *cpu) {
+    uintptr_t code = hv_resume(cpu);
+    if (!code) return 0;
+    cpu->helper_ret = code & ~(uintptr_t)1;
+    if (!(code & 1)) cpu->helper_came_from = cpu->helper_ret;
+    return 1;
 }
 
 /* Blocks call this through hv_helper_entry. Returns 1 to leave the block. */
@@ -370,19 +306,14 @@ uint32_t hv_helper(HvCpu *cpu, const HvHelperInfo *info_in) {
     if (pcs) __atomic_store_n(&pcs->phase, HV_PHASE_RUN, __ATOMIC_RELAXED);
     /* An exception just taken (an abort, an undefined instruction, a trap): its
        vector's block, as after an SVC. */
-    if (r && cpu->exit_reason == HV_EXIT_EXCEPTION) {
-        void *code = fast_resume(cpu);
-        if (code) {
-            cpu->helper_ret = (uint64_t)(uintptr_t)code;
-            return 0;
-        }
-    }
+    if (r && cpu->exit_reason == HV_EXIT_EXCEPTION && resume_at(cpu)) return 0;
     return r;
 }
 
+/* The full helper. SVC, ERET and WFE come here only when the light path (hv_light) left them to it. */
 static uint32_t helper(HvCpu *cpu, const HvHelperInfo *info_in) {
     HvHelperInfo info_copy = *info_in;
-    info_copy.op &= 0xff; /* the rest: hv_helper_thunk's refill flags */
+    info_copy.op &= 0xff; /* the rest: flags (HV_OP_LIGHT) */
     const HvHelperInfo *info = &info_copy;
     if (info->op < 12 && cpu->m->stats_interval) HV_ST(cpu).helper[info->op]++;
     if (cpu->m->stats_deep && (info->op == HV_OP_MRS || info->op == HV_OP_MSR || info->op == HV_OP_SYS))
@@ -410,15 +341,9 @@ static uint32_t helper(HvCpu *cpu, const HvHelperInfo *info_in) {
     case HV_OP_EXCEPTION: {
         return hv_exception_insn(cpu, info->insn, info->pc); /* SVC: see hv_helper */
     }
-    case HV_OP_ERET: {
+    case HV_OP_ERET:
         hv_eret(cpu);
-        void *code = fast_resume(cpu);
-        if (code) {
-            cpu->helper_ret = (uint64_t)(uintptr_t)code;
-            return 0;
-        }
-        return 1;
-    }
+        return resume_at(cpu) ? 0 : 1;
     case HV_OP_FPTRAP:
         hv_raise_sync(cpu, HV_EC_FP_ACCESS, 1u << 24 | 0xeu << 20, 0, info->pc);
         return 1;
@@ -430,7 +355,8 @@ static uint32_t helper(HvCpu *cpu, const HvHelperInfo *info_in) {
         cpu->exit_reason = HV_EXIT_WFI;
         return 1;
     case HV_OP_WFE:
-        return wfe(cpu);
+        hv_light_wfe(cpu);
+        return 0;
     case HV_OP_UNDEF:
     default:
         hv_raise_undef(cpu, info->pc);
@@ -491,13 +417,7 @@ static int wait_for_interrupt(HvCpu *cpu) {
        thread takes far longer than that: watch for it a little first. HV_WFI_SPIN: microseconds. */
     int spin_us = hv_knob[HV_K_WFI_SPIN];
     if (spin_us) {
-        static int sleep_ok = -1; /* does the host's WFE come back soon by itself? (see wfe()) */
-        if (sleep_ok < 0) {
-            __asm__ volatile("sevl; wfe" ::: "memory");
-            uint64_t t = mach_absolute_time();
-            __asm__ volatile("wfe" ::: "memory");
-            sleep_ok = mach_absolute_time() - t < 24 * 20;
-        }
+        int sleep_ok = (__atomic_load_n(&hv_light_flags, __ATOMIC_RELAXED) & HV_LIGHT_WFE_SLEEP) != 0; /* light_init */
         uint64_t until = mach_absolute_time() + (uint64_t)spin_us * 24;
         for (;;) {
             uint32_t v;
@@ -977,6 +897,7 @@ static int run_loop(HvCpu *cpu, int one) {
     uint32_t chain_flags = 0;
     uint32_t last_reason = HV_EXIT_BRANCH;
     hv_self = cpu;
+    pthread_once(&light_once, light_init);
     unpark(cpu);
     for (;;) {
         if (__atomic_load_n(&m->flush_pending, __ATOMIC_SEQ_CST) || __atomic_load_n(&m->stw_active, __ATOMIC_SEQ_CST)) {
@@ -998,7 +919,8 @@ static int run_loop(HvCpu *cpu, int one) {
         }
         /* Someone asked the CPU to leave (the kicker at its deadline, a device, an invalidation): tick now. Acquire: what
            was asked with it (HvPerCpu.poll_req) is seen. */
-        int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_ACQUIRE) != 0;
+        int kicked = __atomic_load_n(&cpu->exit_req, __ATOMIC_RELAXED) && /* a look first: most entries were not asked for */
+                     __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_ACQUIRE) != 0;
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */
@@ -1060,7 +982,9 @@ static int run_loop(HvCpu *cpu, int one) {
         last_fault = ~0ull;
         uint64_t flushes = m->stats.block_flushes;
         int made = 0;
-        HvBlock *b = lookup(cpu, cpu->pc, pa, block_flags(cpu), code, avail, &made);
+        /* A pending chain means nothing changed the state since the block before left: its flags are these. */
+        uint32_t flags = pending_chain ? chain_flags : hv_block_flags(cpu);
+        HvBlock *b = lookup(cpu, cpu->pc, pa, flags, code, avail, &made);
         /* A full flush while translating freed the slot the last exit came through,
            and new blocks may have it now: chaining it would rewrite one of theirs. */
         if (m->stats.block_flushes != flushes) pending_chain = NULL;
@@ -1139,7 +1063,10 @@ static int run_loop(HvCpu *cpu, int one) {
                 }
                 HV_ST(cpu).fill_kind[kind]++;
             }
-            if (hv_ijc_fill_checked(cpu, b) && m->stats_interval) HV_ST(cpu).ijc_fills++;
+            /* Not when way 0 holds it already (an entry stays only while its page's mapping and code do, so the
+               fill would write what is there): most entries after a kick or an exception are of cached blocks. */
+            if ((ent[0] != tag || ent[1] != (uint64_t)(uintptr_t)hv_block_code(m, b)) && hv_ijc_fill_checked(cpu, b) && m->stats_interval)
+                HV_ST(cpu).ijc_fills++;
         }
         /* The block before left through a chainable direct branch to this one: link them. */
         /* Only if nothing in between (an abort, an interrupt) sent the CPU elsewhere. */
@@ -1182,7 +1109,7 @@ static int run_loop(HvCpu *cpu, int one) {
         if (cpu->exit_reason == HV_EXIT_BRANCH && cpu->last_stub && m->chain) {
             pending_chain = (uint64_t *)cpu->last_stub;
             chain_pc = cpu->pc;
-            chain_flags = block_flags(cpu); /* the exiting block's state (a block ends where its state changes) */
+            chain_flags = hv_block_flags(cpu); /* the exiting block's state (a block ends where its state changes) */
         }
         last_reason = cpu->exit_reason;
         switch (cpu->exit_reason) {

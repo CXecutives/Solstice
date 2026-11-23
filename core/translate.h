@@ -25,6 +25,8 @@ enum {
     HV_OP_WFI,
     HV_OP_WFE,         /* waits for the exclusive monitor's word to change (or a request); the block carries on */
 };
+/* In op, beside HV_OP_*: hv_helper_thunk tries the light path (hv_light, light.c) first. SVC, ERET and WFE have it. */
+#define HV_OP_LIGHT 0x100u
 
 #define HV_MAX_BLOCK_INSNS 128
 

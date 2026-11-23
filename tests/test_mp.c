@@ -16,7 +16,7 @@
 #include "pvg_vblank_clock.h"
 
 extern const char mp_programs_begin[], mp_programs_finish[], mp_done[], mp_svc[], mp_timer_spin[], mp_timer_wfi[],
-    mp_idle[], mp_spin[], mp_pv_probe[], mp_pv_pingpong[];
+    mp_idle[], mp_spin[], mp_pv_probe[], mp_pv_pingpong[], mp_lock[];
 #define ADDR(sym) ((uint64_t)(uintptr_t)(sym))
 #define NCPU 4
 
@@ -348,6 +348,42 @@ static void pv_locks(void) {
     check("pv: every wait and kick counted", after.pv_waits - before.pv_waits == waits && after.pv_kicks - before.pv_kicks == 2 * n);
 }
 
+static void lock_setup(HvCpu *c, int i) {
+    if (i < 2) c->x[9] = ADDR(flag + 32); /* the lock; the count after it */
+}
+
+/* A1/A4: two CPUs taking turns at an LDAXR/STXR spinlock, waiting in WFE while the other holds it: the light path's
+   WFE waits for the holder's release in place (never the full helper), and the count the lock guards comes out exact. */
+static void spinlock(void) {
+    const uint64_t n = 200000;
+    static const char *const prog[NCPU] = {mp_lock, mp_lock, mp_idle, mp_idle};
+    static HvStats before, after;
+    hv_stats_total(&m, &before);
+    flag[32] = 0;
+    memset(&flag[34], 0, 8);
+    uint64_t t0 = mach_absolute_time();
+    start(prog, n, 0, lock_setup);
+    for (int i = 0; i < 2; i++) pthread_join(threads[i], NULL), threads[i] = 0;
+    double secs = (double)(mach_absolute_time() - t0) / 24e6;
+    __atomic_store_n(flag, 1, __ATOMIC_SEQ_CST);
+    for (int i = 2; i < NCPU; i++) hv_cpu_wake(&cpus[i]);
+    for (int i = 2; i < NCPU; i++) pthread_join(threads[i], NULL), threads[i] = 0;
+    hv_stats_total(&m, &after);
+    uint64_t count;
+    memcpy(&count, &flag[34], 8);
+    printf("spinlock: %llu turns each in %.2f s, %llu WFE waits in place, %llu dispatcher entries\n", (unsigned long long)n, secs,
+           (unsigned long long)(after.wfe_waits - before.wfe_waits), (unsigned long long)(after.blocks - before.blocks));
+    for (int i = 0; i < 2; i++) {
+        char msg[120];
+        snprintf(msg, sizeof msg, "spinlock: cpu %d took every turn (x0 %llu, x17 %llx)", i, (unsigned long long)cpus[i].x[0],
+                 (unsigned long long)cpus[i].x[17]);
+        check(msg, cpus[i].x[0] == 0 && cpus[i].x[17] == 0 && cpus[i].pc == ADDR(mp_done));
+    }
+    check("spinlock: the count is exact (the lock excluded)", count == 2 * n);
+    check("spinlock: released at the end", flag[32] == 0);
+    check("spinlock: no WFE through the full helper", after.helper[HV_OP_WFE] == before.helper[HV_OP_WFE]);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     alarm(240); /* a multi-CPU test that hangs fails */
@@ -362,6 +398,7 @@ int main(void) {
     refresh_and_idle();
     pv_calls();
     pv_locks();
+    spinlock();
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

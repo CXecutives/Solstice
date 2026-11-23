@@ -31,6 +31,8 @@ void hv_sp_switch(HvCpu *cpu, uint32_t el, uint32_t spsel);
 
 /* Takes an exception to EL1. ret is the preferred return address (ELR_EL1). */
 void hv_take_exception(HvCpu *cpu, int type, uint32_t esr, uint64_t far, int set_far, uint64_t ret);
+/* The same without its log line: what the light path takes an SVC with (light.c; this file is built without SIMD). */
+void hv_exception_enter(HvCpu *cpu, int type, uint32_t esr, uint64_t far, int set_far, uint64_t ret);
 void hv_raise_sync(HvCpu *cpu, uint32_t ec, uint32_t iss, uint64_t far, uint64_t pc);
 void hv_raise_undef(HvCpu *cpu, uint64_t pc);
 void hv_raise_abort(HvCpu *cpu, int insn, uint64_t va, uint32_t fsc, int wnr, int s1ptw, uint64_t pc);
