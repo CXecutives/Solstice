@@ -23,7 +23,7 @@ METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -frame
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
         $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
-        $(B)/test_pvg_lifecycle $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue
+        $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 
@@ -35,7 +35,7 @@ $(B)/hengevm-ref: host/hvf_ref.c host/hvf_ref.entitlements $(ENGINE) $(DEV)
 # Mac-only graphics device (ParavirtualizedGraphics.framework, as QEMU uses it).
 # Built for an older deployment target: the framework's memory callbacks are
 # marked obsolete in macOS 27 without a documented replacement.
-$(B)/pvg_metal.o: devices/pvg_metal.m devices/*.h core/*.h host/*.h | $(B)
+$(B)/pvg_metal.o: devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h core/*.h host/*.h | $(B)
 	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
 $(B)/pvg_mac.o: devices/pvg_mac.m devices/*.h core/*.h host/*.h | $(B)
 	$(CC) -fobjc-arc -O2 -g -Wall -mmacosx-version-min=15.2 -Icore -Ihost -Idevices -c $< -o $@
@@ -123,6 +123,11 @@ test-vm-lifecycle: $(B)/test_vm_lifecycle
 $(B)/test_pvg_lifecycle: tests/test_pvg_lifecycle.m $(ENGINE) $(DEV)
 	$(CC) $(CFLAGS) -fobjc-arc $^ $(METAL_LIBS) -o $@
 
+# The Metal replay's parts called directly: devices/pvg_metal.m is compiled into the test instead of linked.
+DEV_NO_METAL = $(filter-out $(B)/pvg_metal.o,$(DEV))
+$(B)/test_pvg_metal: tests/test_pvg_metal.m devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h $(ENGINE) $(DEV_NO_METAL)
+	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations tests/test_pvg_metal.m $(ENGINE) $(DEV_NO_METAL) $(METAL_LIBS) -o $@
+
 $(B)/hvsparse: tools/hvsparse_main.c host/hvsparse.c host/hvsparse.h | $(B)
 	$(CC) $(CFLAGS) tools/hvsparse_main.c host/hvsparse.c -o $@
 
@@ -184,7 +189,7 @@ $(patsubst %,$(IB)/core/%.o,$(NOSIMD)): $(IB)/core/%.o: core/%.c core/*.h host/*
 $(IB)/%.o: %.c core/*.h host/*.h devices/*.h
 	@mkdir -p $(dir $@)
 	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -c $< -o $@
-$(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/*.h core/*.h host/*.h
+$(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h core/*.h host/*.h
 	@mkdir -p $(dir $@)
 	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
 $(IB)/host/enter.o: host/enter.S
