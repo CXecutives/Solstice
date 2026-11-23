@@ -176,7 +176,7 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
     NSMutableArray *keep = [NSMutableArray new];
     uint32_t have = 0;
     for (uint32_t i = 0; i < n && have < 64; i++) {
-        id heap = [self get:refs[i] task:task];
+        id heap = of_kind([self get:refs[i] task:task], @protocol(MTLHeap));
         if (!heap) continue;
         [keep addObject:heap];
         list[have++] = heap;

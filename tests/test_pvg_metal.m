@@ -43,52 +43,37 @@ static Rec at_guard(const void *bytes, uint32_t size) {
 }
 
 static BOOL complained(HvReplay *r, NSString *prefix);
+static HvObject *put_object(HvReplay *r, uint32_t ref, id made);
+static void drop_object(HvReplay *r, uint32_t ref);
 
 static void test_short_records(HvReplay *r) {
     page_size = (size_t)getpagesize();
     guard = mmap(NULL, page_size * 2, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     if (guard == MAP_FAILED || mprotect(guard + page_size, page_size, PROT_NONE)) { check("guard page", 0); return; }
-    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:16 height:16 mipmapped:NO];
-    td.usage = MTLTextureUsageRenderTarget;
-    td.storageMode = MTLStorageModePrivate;
-    id<MTLTexture> target = [r->device newTextureWithDescriptor:td];
-    id<MTLCommandBuffer> cb = [r->queue commandBuffer];
-    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = target;
-    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-
-    /* A pass record shorter than its depth and stencil attachments. */
-    for (uint32_t size = 0; size < 0x48; size += 4) [r beginPass:at_guard(NULL, size) task:1 commandBuffer:cb];
-
-    id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
-    r->pipeline_set = NO;
+    /* Every field 1: a ref that names a real object (a buffer), so lookups succeed and handlers go on to read the rest,
+       and a count of one list entry. Every tag at every size from 0 to past what it needs (a list's entry more), each
+       record ending at the guard. No encoder or command buffer: what is read is the point, and a message to nil still
+       has its arguments read; a pipeline counts as set so draws read their fields too. */
+    put_object(r, 1, [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared]);
+    uint32_t ones[0x260 / 4];
+    for (size_t i = 0; i < sizeof ones / 4; i++) ones[i] = 1;
+    for (uint32_t size = 0; size <= 0x250; size += 4) [r beginPass:at_guard(ones, size) task:1 commandBuffer:nil];
     for (uint32_t tag = 0; tag < 200; tag++)
-        for (uint32_t size = 0; size <= 4; size += 4) [r render:re tag:tag rec:at_guard(NULL, size) task:1];
-    /* Lists longer than their records: {index 0, count 2} and nothing after. */
-    static const uint32_t render_lists[] = {27, 110, 112, 114, 125, 127, 129, 157, 161, 165};
-    uint32_t two[2] = {0, 2};
-    for (size_t i = 0; i < sizeof render_lists / sizeof *render_lists; i++) [r render:re tag:render_lists[i] rec:at_guard(two, 8) task:1];
-    uint32_t heaps[1] = {2};
-    [r render:re tag:134 rec:at_guard(heaps, 4) task:1];
-    [re endEncoding];
-
-    id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+        for (uint32_t size = 0; size <= 64; size++) {
+            r->pipeline_set = YES, r->tess_factors = YES;
+            [r render:nil tag:tag rec:at_guard(ones, size) task:1];
+        }
     for (uint32_t tag = 200; tag < 230; tag++)
-        for (uint32_t size = 0; size <= 4; size += 4) [r compute:ce tag:tag rec:at_guard(NULL, size) task:1];
-    static const uint32_t compute_lists[] = {203, 204, 206};
-    for (size_t i = 0; i < sizeof compute_lists / sizeof *compute_lists; i++) [r compute:ce tag:compute_lists[i] rec:at_guard(two, 8) task:1];
-    [ce endEncoding];
-
-    id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+        for (uint32_t size = 0; size <= 64; size++) {
+            r->pipeline_set = YES;
+            [r compute:nil tag:tag rec:at_guard(ones, size) task:1];
+        }
     for (uint32_t tag = 300; tag < 320; tag++)
-        for (uint32_t size = 0; size <= 4; size += 4) [r blit:be tag:tag rec:at_guard(NULL, size) task:1];
-    [be endEncoding];
-
+        for (uint32_t size = 0; size <= 0x60; size++) [r blit:nil tag:tag rec:at_guard(ones, size) task:1];
     for (uint32_t tag = 450; tag < 470; tag++)
-        for (uint32_t size = 0; size <= 4; size += 4) [r info:tag rec:at_guard(NULL, size) task:1];
-    [cb commit];
-    [cb waitUntilCompleted];
+        for (uint32_t size = 0; size <= 0x40; size++) [r info:tag rec:at_guard(ones, size) task:1];
+    r->pipeline_set = r->tess_factors = NO;
+    drop_object(r, 1);
     /* The records are in memory the guest shares: a field read twice could change in between (an index checked, then
        another used). */
     check("no record field read twice in one handler", read_twice == 0);
