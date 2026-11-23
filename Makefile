@@ -6,6 +6,11 @@ ifeq ($(SAN),1)
 CFLAGS += -fsanitize=undefined -fsanitize-trap=undefined -fno-sanitize=alignment
 B = build-san
 endif
+# LTO=1: the engine tests built with ThinLTO, as the iOS library ships (CI's shipped-settings leg).
+ifeq ($(LTO),1)
+CFLAGS += -flto=thin
+B = build-lto
+endif
 B ?= build
 
 CORE = $(B)/classify.o $(B)/operands.o $(B)/translate.o $(B)/dispatch.o $(B)/mmu.o $(B)/memop.o \
@@ -159,6 +164,9 @@ IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 $(IO
 # ios/deps/include/slirp first when it holds libslirp's headers (they are all the engine takes from there).
 IOS_DEPS ?= $(if $(wildcard ios/deps/include/slirp/libslirp.h),$(CURDIR)/ios/deps,$(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot)
 IOS_CFLAGS = -std=c11 -Wall -Wextra -O2 -g -Icore -Ihost -Idevices -I$(IOS_DEPS)/include/slirp
+# ThinLTO for the engine: the app's link optimises across its files. The paths that run with the guest's q-registers
+# live (NOSIMD, enter.S) stay plain objects: the SIMD gate reads them, and nothing is inlined into them.
+IOS_LTO ?= -flto=thin
 IB = build/ios
 IOS_SRC = $(wildcard core/*.c) host/prof_ios.c host/jit_region.c host/disk.c host/vm.c host/snapshot.c host/dt_fixup.c host/net_slirp.c host/dns_proxy.c host/share.c host/audio_mac.c host/hvsparse.c host/usb_host.c \
           $(filter-out devices/pvg_mac.m,$(wildcard devices/*.c))
@@ -169,10 +177,10 @@ $(patsubst %,$(IB)/core/%.o,$(NOSIMD)): $(IB)/core/%.o: core/%.c core/*.h host/*
 	$(IOS_CC) $(IOS_CFLAGS) -mgeneral-regs-only -c $< -o $@
 $(IB)/%.o: %.c core/*.h host/*.h devices/*.h
 	@mkdir -p $(dir $@)
-	$(IOS_CC) $(IOS_CFLAGS) -c $< -o $@
+	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -c $< -o $@
 $(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/*.h core/*.h host/*.h
 	@mkdir -p $(dir $@)
-	$(IOS_CC) $(IOS_CFLAGS) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
+	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
 $(IB)/host/enter.o: host/enter.S
 	@mkdir -p $(dir $@)
 	$(IOS_CC) -c $< -o $@
