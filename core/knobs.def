@@ -12,7 +12,7 @@
    Set the environment, then hv_knobs_load() (each machine creation, the Mac tool's main, the app's EngineTuning).
    Keep each line on one line: tools/knobs.py reads them. */
 
-/* ---- The translator and the dispatcher (several can also be set while a Mac runs: hv_knob_set) ---- */
+/* ---- The translator and the dispatcher ---- */
 KNOB(superblocks, "HV_SUPERBLOCKS", BOOL, 0, 0, 0, "Blocks continue past direct branches into one longer translation.")
 KNOB(groups, "HV_GROUPS", BOOL, 0, 0, 0, "Neighbouring memory accesses checked as one group.")
 KNOB(no_ras, "HV_NO_RAS", BOOL, 0, 0, 0, "Every return goes through the indirect-branch cache (no return prediction).")
