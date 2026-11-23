@@ -8,6 +8,7 @@
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <pthread/qos.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -463,9 +464,30 @@ static void spinlock(void) {
     check("spinlock: no WFE through the full helper", after.helper[HV_OP_WFE] == before.helper[HV_OP_WFE]);
 }
 
+/* A hang: where each CPU is and what the kicker last did, then fail. */
+static void hung(int sig) {
+    (void)sig;
+    uint64_t now = mach_absolute_time();
+    for (int i = 0; i < NCPU; i++) {
+        HvCpu *c = &cpus[i];
+        HvPerCpu *p = &m.percpu[i];
+        printf("hung: cpu %d pc %llx el%u daif %llx x0 %llu x21 %llu ctl %llx cval %+lld us timer_due %+lld us guest_due %+lld us "
+               "exit_req %u active %d irq %u wake_pending %d wfi %llu\n", i, (unsigned long long)c->pc, c->el,
+               (unsigned long long)c->daif, (unsigned long long)c->x[0], (unsigned long long)c->x[21], (unsigned long long)c->cntv_ctl,
+               (long long)((int64_t)(c->cntv_cval - (now - c->cntvoff)) / 24), (long long)((int64_t)(c->timer_due - now) / 24),
+               (long long)((int64_t)(p->guest_due - now) / 24), (unsigned)c->exit_req, p->active, (unsigned)p->irq_line,
+               p->wake_pending, (unsigned long long)p->own.stats.wfi);
+    }
+    printf("hung: kicker wakes %llu kicks %llu polls %llu, kick_at %+lld us, on %d\n", (unsigned long long)m.stats.kicker_wakes,
+           (unsigned long long)m.stats.kicker_kicks, (unsigned long long)m.stats.kicker_polls,
+           (long long)((int64_t)(m.kick_at - now) / 24), m.kicker_on);
+    _exit(3);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
-    alarm(240); /* a multi-CPU test that hangs fails */
+    signal(SIGALRM, hung);
+    alarm(240); /* a multi-CPU test that hangs fails, saying where each CPU was */
     if (hv_machine_init(&m, 16 << 20) != 0) return 1;
     m.stats_interval = 3600; /* counted as on a device (HV_STATS), never printed here */
     m.tick = tick;
