@@ -5,6 +5,7 @@
 // full flushes and the stats line in between in one of the runs, and the phone's sleeping TLBI waits in another. Every
 // run's x0 must be the native run's, and the cache must have gone round hundreds of times.
 #include "harness.h"
+#include "stats.h"
 
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -74,6 +75,7 @@ enum {
     RUN_CHANGES = 1,   /* code changes from another thread, and two full flushes */
     RUN_STATS = 2,     /* the stats line every 2 s (its counters and the code-cache line) */
     RUN_SYNC_WAIT = 4, /* TLBI waits asleep, as on the phone (HV_SYNC_WAIT=1) */
+    RUN_NO_CPU0 = 8,   /* the CPUs are 1.. (CPU 0 never runs: the stats line must come all the same) */
 };
 
 /* One run: cap_mb of code cache, ncpu CPUs, until want_laps times round (at least min_laps) or max_s seconds. */
@@ -114,7 +116,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         w[i].want = native.x[0];
         HvCpu *cpu = aligned_alloc(16384, (sizeof(HvCpu) + 16383) & ~(size_t)16383);
         memset(cpu, 0, sizeof *cpu);
-        hv_cpu_reset_index(cpu, &m, (uint32_t)i);
+        hv_cpu_reset_index(cpu, &m, (uint32_t)i + ((opts & RUN_NO_CPU0) ? 1 : 0));
         memcpy(cpu->x, init.x, sizeof cpu->x);
         cpu->cpacr_el1 = 3u << 20;
         w[i].cpu = cpu;
@@ -127,6 +129,9 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     pthread_t changer;
     uint64_t nchanges = 0;
     if (changes) pthread_create(&changer, &attr, code_changer, &nchanges);
+    uint64_t lines0 = hv_stats_lines;
+    HvRateMark mark = {0};
+    double rate0 = hv_stats_blocks_rate(&m, &mark, mach_absolute_time());
     double t0 = now_s(), laps = 0;
     int flushes_asked = 0;
     for (;;) {
@@ -146,6 +151,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     for (int i = 0; i < ncpu; i++) pthread_join(w[i].th, NULL);
     if (changes) pthread_join(changer, NULL);
     double secs = now_s() - t0;
+    double rate = hv_stats_blocks_rate(&m, &mark, mach_absolute_time());
     const HvCodeCache *cc = &m.cc;
     static HvStats tot; /* the machine's counters and every CPU's own */
     hv_stats_total(&m, &tot);
@@ -171,6 +177,22 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     if (laps < min_laps) printf("%s: the cache went round %.1f times, want %.0f: FAIL\n", name, laps, min_laps), failed++;
     if (!cc->evict_tenured || !tot.cc_tenured) printf("%s: nothing tenured, or no tenured segment evicted: FAIL\n", name), failed++;
     if (!cc->evict_unchained) printf("%s: no chained exit undone: FAIL\n", name), failed++;
+    if (rate0 != 0 || rate * secs < 0.9 * (double)tot.blocks || rate * secs > 1.1 * (double)tot.blocks)
+        printf("%s: blocks/s since the mark %.0f (first read %.0f), %.0f entered in %.1f s: FAIL
+", name, rate, rate0,
+               (double)tot.blocks, secs), failed++;
+    if (opts & RUN_STATS) {
+        /* Every guest instruction takes some words: the count must be the blocks' own code (it was the region's
+           extent, which goes back down as segments are reused). And a line every 2 s, whichever CPUs run. */
+        double wpi = (double)tot.translated_words / ((double)tot.translated_insns + 1e-9);
+        uint64_t lines = hv_stats_lines - lines0;
+        printf("%s: %llu stats lines, %.1f words per translated instruction
+", name, (unsigned long long)lines, wpi);
+        if (wpi < 2) printf("%s: %.2f words per translated instruction: FAIL
+", name, wpi), failed++;
+        if ((double)lines + 2 < secs / 2) printf("%s: %llu stats lines in %.1f s: FAIL
+", name, (unsigned long long)lines, secs), failed++;
+    }
     if (tot.flush_full) printf("%s: full flushes for room: FAIL\n", name), failed++;
     if (tot.block_flushes > (uint64_t)flushes_asked) /* (one asked for just before the end may not have run) */
         printf("%s: %llu full flushes, %d asked for: FAIL\n", name, (unsigned long long)tot.block_flushes, flushes_asked), failed++;
@@ -189,6 +211,9 @@ int main(void) {
     failed += run("1 cpu, 2 MB", 2, 1, 0, 100, 300, 60);
     failed += run("3 cpus, 2 MB, code changes, full flushes, stats", 2, 3, RUN_CHANGES | RUN_STATS, 100, 300, 60);
     failed += run("3 cpus, 1 MB, TLBI waits asleep (HV_SYNC_WAIT=1, as on the phone)", 1, 3, RUN_SYNC_WAIT, 100, 300, 60);
+    /* One CPU that is not CPU 0, the stats line every 2 s: it printed only from CPU 0. */
+    failed += run("cpu 1 alone, 2 MB, stats", 2, 1, RUN_NO_CPU0 | RUN_STATS, 0, 1e9, 7);
+    print_code_size("test_codecache");
     printf("%s\n", failed ? "FAIL" : "ok");
     return failed != 0;
 }

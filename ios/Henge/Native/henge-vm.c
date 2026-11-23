@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "dispatch.h"
+#include "stats.h"
 #include "henge-ios-jit.h"
 #include "net_slirp.h"
 #include "dns_proxy.h"
@@ -22,6 +23,7 @@
 
 #include <fcntl.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <mach/vm_page_size.h>
 #include <unistd.h>
 
@@ -240,6 +242,18 @@ int henge_vm_continue(void) {
     return r;
 }
 
+/* HV_STATS: the disk's line too, as often (its worker reads HV_BLK_STATS as it starts: before hv_vm_create). */
+static void stats_env(void) {
+    const char *s = getenv("HV_STATS");
+    if (s && atoi(s) > 0) setenv("HV_BLK_STATS", s, 0);
+}
+
+/* The engine's stats lines, for a boot and an install alike (a restore's engine and disk time are measured too). */
+static void stats_on(void) {
+    if (getenv("HV_STATS")) hv_vm_machine()->stats_interval = atoi(getenv("HV_STATS"));
+    if (getenv("HV_STATS_DEEP")) hv_vm_machine()->stats_deep = atoi(getenv("HV_STATS_DEEP"));
+}
+
 static int boot_or_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
                           int cpus, const char *resume, const char *ident, char *err, size_t errlen) {
     { extern void hv_prof_ios_start(void); hv_prof_ios_start(); }
@@ -258,6 +272,7 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
                     .jit_rx = jit->rx_addr, .jit_rw = jit->rw_addr, .jit_bytes = jit->size};
     fprintf(stderr, "henge: booting with %d CPUs, %llu MB RAM, a %zu MB JIT region\n", cpus, (unsigned long long)ram_mb,
             jit->size >> 20);
+    stats_env();
     if (hv_vm_create(&c, err, errlen) != 0) return failed_start();
     if (resume) {
         int restored = hv_snapshot_restore(resume, ident, err, errlen);
@@ -268,8 +283,7 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
             return failed_start();
         }
     }
-    if (getenv("HV_STATS")) hv_vm_machine()->stats_interval = atoi(getenv("HV_STATS"));
-    if (getenv("HV_STATS_DEEP")) hv_vm_machine()->stats_deep = atoi(getenv("HV_STATS_DEEP"));
+    stats_on();
     return started(err, errlen);
 }
 
@@ -300,10 +314,12 @@ int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_
     HvVmConfig c = {.rom = rom, .disk = disk, .aux = aux, .ecid = ecid, .ram_mb = ram_mb, .ncpus = cpus, .log = 1,
                     .installer = 1, .no_sound = 1, .jit_rx = jit->rx_addr, .jit_rw = jit->rw_addr, .jit_bytes = jit->size};
     fprintf(stderr, "henge: installing %s with %d CPUs, %llu MB RAM\n", ipsw, cpus, (unsigned long long)ram_mb);
+    stats_env();
     if (hv_vm_create(&c, err, errlen) != 0) return failed_start();
     install_step = 0;
     install_progress = 0;
     installer_session = 1;
+    stats_on();
     if (hv_install_start(hv_vm_board()->vusb, ipsw, workdir, ecid, on_install_progress, NULL) != 0) {
         snprintf(err, errlen, "The installer could not start.");
         return failed_start();
@@ -417,6 +433,13 @@ int henge_vm_knob(const char *name, int value) {
 uint64_t henge_vm_blocks(void) {
     pthread_rwlock_rdlock(&api_lock);
     uint64_t result = state == 1 ? hv_stat_blocks(hv_vm_machine()) : stopped_blocks;
+    pthread_rwlock_unlock(&api_lock);
+    return result;
+}
+double henge_vm_blocks_per_second(void) {
+    static HvRateMark mark; /* one reader: the session's perf line */
+    pthread_rwlock_rdlock(&api_lock);
+    double result = state == 1 ? hv_stats_blocks_rate(hv_vm_machine(), &mark, mach_absolute_time()) : 0;
     pthread_rwlock_unlock(&api_lock);
     return result;
 }

@@ -72,6 +72,7 @@ uint64_t henge_vm_ram_mb(void);
 
 /* Progress, for the session screen. */
 uint64_t henge_vm_blocks(void);            /* blocks the CPUs entered */
+double henge_vm_blocks_per_second(void);   /* their average rate since the last call (0 the first time, or not running) */
 uint64_t henge_vm_net_frames(int sent);    /* Ethernet frames out (sent = 1) and in */
 uint64_t henge_vm_dns(int which);          /* guest DNS queries answered through iOS's resolver (0), handed to libslirp (1), unanswered in time (2) */
 int henge_vm_cpus_on(void);                /* CPUs the guest has started */

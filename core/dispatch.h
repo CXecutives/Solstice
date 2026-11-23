@@ -20,4 +20,7 @@ void hv_fp_leave(HvCpu *cpu);
 
 void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what);
 
+/* Stats lines printed (HvMachine.stats_interval), for the tests. */
+extern uint64_t hv_stats_lines;
+
 #endif

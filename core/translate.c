@@ -123,6 +123,8 @@ typedef struct {
     int nogroup;                        /* translating plain (copies, or the retry when they do not fit) */
     int u_live, u_prev;                 /* slot + 1 when x15 holds that group's addend after the last instruction */
     int overflow;
+    uint8_t cold_kind;                  /* what the cold words written now are for (HV_COLD_*) */
+    uint32_t cold_words[HV_COLD_KINDS];
 } Emit;
 
 static __thread Emit E; /* each CPU translates on its own thread, outside the translation lock */
@@ -171,6 +173,14 @@ static inline int64_t sext(uint64_t v, int bits) {
 static void put(Emit *e, uint32_t w) {
     if (e->n < MAX_WORDS) e->w[e->n] = w;
     e->n++;
+    e->cold_words[e->cold_kind] += (uint32_t)e->in_cold;
+}
+
+/* The cold words written from here on are for kind; returns the kind before, to put back. */
+static int cold_for(Emit *e, int kind) {
+    int was = e->cold_kind;
+    e->cold_kind = (uint8_t)kind;
+    return was;
 }
 
 /* Write the cold part for a while. */
@@ -280,7 +290,7 @@ static void put_ijc_jump(Emit *e, int check) {
         put(e, BR_X(1));
         return;
     }
-    int p0 = e->in_cold;
+    int p0 = e->in_cold, kind0 = cold_for(e, HV_COLD_IJC);
     uint32_t to_exit = 0;
     if (check) {
         put(e, 0xb9400000u | (HV_CPU_EXIT_REQ / 4) << 10 | 28 << 5 | 6); /* ldr w6, [x28, #exit_req] */
@@ -338,6 +348,7 @@ static void put_ijc_jump(Emit *e, int check) {
     put(e, LDR_X(1, 28, HV_CPU_EXIT));
     put(e, BR_X(1));
     if (!p0) cold_off(e);
+    cold_for(e, kind0);
 }
 
 /* A direct branch to another page through hv_xjump_thunk (the cache lookup in
@@ -435,7 +446,7 @@ static int use_xjump(void) {
 
 static void put_branch_exit(Emit *e, uint64_t target, int plain) {
     int check = !(plain && (target > e->cur_pc || plain == 2) && !check_exits_always());
-    int p0 = e->in_cold;
+    int p0 = e->in_cold, kind0 = cold_for(e, HV_COLD_EXIT);
     e->site_direct = 0;
     uint32_t slot_index = ~0u;
     int same_page = (target & ~((1ull << HV_TLB_PAGE_BITS) - 1)) == e->page;
@@ -450,6 +461,7 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
             put_lit(e, 15, target);
             put_ijc_jump(e, check);
         }
+        cold_for(e, kind0);
         return;
     }
     uint64_t *slot = HV_SLOT(e->m, slot_index);
@@ -514,6 +526,7 @@ static void put_branch_exit(Emit *e, uint64_t target, int plain) {
         }
     }
     if (!p0) cold_off(e);
+    cold_for(e, kind0);
 }
 
 /* Call hv_helper: guest x30 saved, a blr to hv_helper_thunk with x6 = its HvHelperInfo,
@@ -543,6 +556,7 @@ static void put_slow_record(Emit *e, const Ool *o) {
                     op << 24;
     uint32_t a = o->nrestore > 0 ? o->restore[0] : 6, t = o->nrestore > 1 ? o->restore[1] : 6, u = o->nrestore > 2 ? o->restore[2] : 6;
     uint32_t regs = (uint32_t)(o->addr & 31) | a << 5 | t << 10 | u << 15 | (back & 63) << 20 | (fwd & 63) << 26;
+    int kind0 = cold_for(e, HV_COLD_SLOW);
     put(e, STR_X(30, 28, HV_CPU_X(30)));
     put_drel(e, DREL_TRAMP, e->n, 0, 0, 0);
     put(e, 0x94000000u); /* bl the trampoline */
@@ -555,6 +569,7 @@ static void put_slow_record(Emit *e, const Ool *o) {
     put(e, regs);
     put_drel(e, DREL_DATA, e->n, rec, resume, o->cold);
     put(e, 0);
+    cold_for(e, kind0);
 }
 
 /* The return address is where it goes back to, so the thunk's RET goes where the CPU expects
@@ -1967,15 +1982,18 @@ static void emit_ool(Emit *e) {
             put_slow_record(e, o);
             continue;
         }
+        int kind0 = cold_for(e, HV_COLD_EXIT);
         unspill(e, o->restore, o->nrestore);
         e->cur_pc = o->site;
         if (o->kind == OOL_MSR_EXIT) {
             put_helper(e, o->pc, o->insn, HV_OP_MSR);
             if (e->no_ijc) put_exit(e, o->pc + 4);
             else put_branch_exit(e, o->pc + 4, 0); /* checks exit_req, which the helper set if it flushed */
+            cold_for(e, kind0);
             continue;
         }
         put_branch_exit(e, o->pc, o->plain); /* branches, and exits for interrupts let through */
+        cold_for(e, kind0);
         /* With nothing to do on the way, chaining can take the hot part's own branch there:
            a taken branch that goes where it means to, like the guest's, in place of two. */
         if (e->site_direct && !o->nrestore && !o->cold && (e->flat || (e->hot[site_at] & 0x7e000000) != 0x36000000)) {
@@ -2092,6 +2110,7 @@ static void plan_groups(Emit *e, const uint32_t *code, uint32_t max, uint64_t va
    goes back to the hot part after the group's end. Returns -1 if they do not fit. */
 static int emit_group_copies(Emit *e, const uint32_t *code, uint64_t va, uint32_t ntrans) {
     e->nogroup = 1;
+    cold_for(e, HV_COLD_GROUP); /* (translate_emit puts it back) */
     for (uint32_t k = 0; k < e->ngrp; k++) {
         Group *g = &e->grp[k];
         if (!g->live || g->first >= ntrans) continue;
@@ -2165,6 +2184,8 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     e->m = m;
     e->nogroup = nogroup;
     e->u_live = e->u_prev = 0;
+    e->cold_kind = HV_COLD_OTHER;
+    memset(e->cold_words, 0, sizeof e->cold_words);
 
     /* No prologue: hv_enter, chained exits and the indirect-branch cache all
        enter with guest x0 and x1 live. */
@@ -2197,11 +2218,14 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
     uint32_t inline_words = e->n;
     cold_on(e);
     if (!e->nogroup && e->ngrp && emit_group_copies(e, code, b->va, i) != 0) return -1;
+    cold_for(e, HV_COLD_OTHER);
     emit_ool(e);
     if (m->stats_interval) {
         m->stats.words_inline += inline_words;
         m->stats.words_ool += e->n - (e->flat ? inline_words : 0);
         m->stats.words_pool += e->npool * 2;
+        _Static_assert(sizeof m->stats.words_cold / sizeof m->stats.words_cold[0] == HV_COLD_KINDS, "HvStats.words_cold");
+        for (int k = 0; k < HV_COLD_KINDS; k++) m->stats.words_cold[k] += e->cold_words[k];
     }
 
     /* Pool after the cold code, 8-byte aligned; both parts start 8-byte aligned. */
@@ -2225,6 +2249,7 @@ static int translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32
 }
 
 uint32_t hv_translate_last_words(void) { return E.flat ? E.pool_at : E.nhot; } /* hot words (no pool) of this thread's last block */
+uint32_t hv_translate_last_size(void) { return E.flat ? E.nhot : E.nhot + E.ncold; }
 
 HvXlateCounts hv_xlate_counts;
 
@@ -2346,6 +2371,7 @@ int hv_translate_place(HvMachine *m, HvBlock *b) {
     __atomic_fetch_add(&hv_xlate_counts.hot, e->flat ? e->pool_at : e->nhot, __ATOMIC_RELAXED);
     __atomic_fetch_add(&hv_xlate_counts.cold, e->flat ? 0 : e->pool_at, __ATOMIC_RELAXED);
     __atomic_fetch_add(&hv_xlate_counts.pool, e->npool * 2, __ATOMIC_RELAXED);
+    for (int k = 0; k < HV_COLD_KINDS; k++) __atomic_fetch_add(&hv_xlate_counts.cold_kind[k], e->cold_words[k], __ATOMIC_RELAXED);
     for (uint32_t k = 0; k < e->nsite; k++) {
         m->slot_stub[e->site[k].slot] = hv_jit_ref(m, (e->site[k].stub_cold ? cold : dst) + e->site[k].stub);
         m->slot_cond[e->site[k].slot] = e->site[k].has_cond ? hv_jit_ref(m, dst + e->site[k].cond_at) : 0;

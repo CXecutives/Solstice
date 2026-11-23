@@ -188,7 +188,6 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
         st->translated_insns += nb.ninsns;
     }
     /* ...and place it in the region (space is reserved atomically, so no lock either)... */
-    size_t used0 = m->jit.used;
     if (hv_translate_place(m, &nb) != 0) { /* JIT region full */
         hv_translate_discard_slots(m);
         if (cpu->pc_state->cc_work & HV_CC_NEED) return NULL; /* a segment is being freed: wait at the top of the loop */
@@ -236,7 +235,7 @@ again: /* its code-cache segment was condemned while it was made (hv_cc_publish)
         goto flush;
     }
     st->translations++; /* this CPU's line, not the machine's */
-    if (m->stats_interval) st->translated_words += m->jit.used - used0;
+    if (m->stats_interval) st->translated_words += hv_translate_last_size(); /* its own code: the region's extent says nothing once segmented */
     if (m->stats_deep) { /* 4 MB of tables, made only for the deep stats */
         static uint64_t seen_va[1 << 18], seen_vapa[1 << 18]; /* was this code translated before? (hashed, so approximate) */
         uint32_t hv = (uint32_t)(((va >> 2) ^ flags) * 0x9e3779b97f4a7c15ull >> 40);
@@ -517,7 +516,10 @@ static void print_profile(HvMachine *m) {
     }
 }
 
-static void print_stats(HvCpu *cpu, int force) {
+uint64_t hv_stats_lines;
+
+/* Printed by whichever CPU first finds the line due (stats_tick), so one at a time: the statics are its own. */
+static void print_stats(HvCpu *cpu) {
     static uint64_t last_t, start_t;
     /* This uses floating point, and the host FP registers hold the guest's state. */
     hv_fp_leave(cpu);
@@ -526,14 +528,18 @@ static void print_stats(HvCpu *cpu, int force) {
     static HvStats last;
     HvMachine *m = cpu->m;
     uint64_t now = mach_absolute_time();
-    if (!start_t) start_t = last_t = now;
-    if (!force && now - last_t < (uint64_t)m->stats_interval * 24000000ull) {
+    static HvStats sum;
+    hv_stats_total(m, &sum);
+    static const HvMachine *last_m;
+    if (!start_t || m != last_m || sum.blocks < last.blocks) { /* the first interval (of this machine) starts here */
+        last_m = m;
+        start_t = last_t = now;
+        last = sum;
         hv_fp_enter(cpu);
         return;
     }
+    hv_stats_lines++;
     double dt = (double)(now - last_t) / 24e6;
-    static HvStats sum;
-    hv_stats_total(m, &sum);
     HvStats *s = &sum;
 #define RATE(f) ((double)(s->f - last.f) / dt)
     fprintf(stderr,
@@ -557,15 +563,21 @@ static void print_stats(HvCpu *cpu, int force) {
     {
         double tot = 0;
         for (int k = 0; k < 6; k++) tot += RATE(why[k]);
-        /* How much of the interval the CPU thread actually ran: below 100% means the host took it away. */
-        static double last_busy;
+        /* How much of the time since it last printed the printing CPU's thread actually ran: below 100% means the host
+           took it away. */
+        static double last_busy[HV_MAX_CPUS];
+        static uint64_t last_busy_t[HV_MAX_CPUS];
+        uint32_t me = cpu->index < HV_MAX_CPUS ? cpu->index : 0;
         thread_basic_info_data_t ti;
         mach_msg_type_number_t cnt = THREAD_BASIC_INFO_COUNT;
         mach_port_t self = mach_thread_self();
         if (thread_info(self, THREAD_BASIC_INFO, (thread_info_t)&ti, &cnt) == KERN_SUCCESS) {
             double busy = ti.user_time.seconds + ti.user_time.microseconds / 1e6 + ti.system_time.seconds +
                           ti.system_time.microseconds / 1e6;
-            fprintf(stderr, "  cpu thread ran %.0f%% of the interval\n", 100 * (busy - last_busy) / dt);
+            if (last_busy_t[me])
+                fprintf(stderr, "  cpu %u's thread ran %.0f%% of the time since it last printed\n", me,
+                        100 * (busy - last_busy[me]) / ((double)(now - last_busy_t[me]) / 24e6));
+            last_busy_t[me] = now;
             if (m->ncpus > 1) {
                 fprintf(stderr, "  cpus:");
                 for (int i = 0; i < m->ncpus; i++)
@@ -574,7 +586,7 @@ static void print_stats(HvCpu *cpu, int force) {
                                 (unsigned long long)m->cpus[i]->pc);
                 fprintf(stderr, "\n");
             }
-            last_busy = busy;
+            last_busy[me] = busy;
         }
         mach_port_deallocate(mach_task_self(), self);
         fprintf(stderr, "  whole-TLB flushes/s: TLBI all here %.0f, TLBI all shared %.0f, SCTLR %.0f, TTBR1 %.0f, TCR %.0f, MAIR %.0f, range of all %.0f, requests overflowed %.0f\n",
@@ -613,8 +625,14 @@ static void print_stats(HvCpu *cpu, int force) {
         }
         {
             double tw = RATE(words_inline) + RATE(words_ool) + RATE(words_pool) + 1e-9;
-            fprintf(stderr, "  code words: inline %.0f%% out of line %.0f%% literals %.0f%%\n", 100 * RATE(words_inline) / tw,
-                    100 * RATE(words_ool) / tw, 100 * RATE(words_pool) / tw);
+            double ti = RATE(translated_insns) + 1e-9;
+            fprintf(stderr, "  code words: inline %.0f%% out of line %.0f%% literals %.0f%%; per guest insn: inline %.2f, out of "
+                            "line %.2f (exits %.2f, slow paths %.2f, group copies %.2f, branch-cache misses %.2f, other %.2f), "
+                            "literals %.2f\n",
+                    100 * RATE(words_inline) / tw, 100 * RATE(words_ool) / tw, 100 * RATE(words_pool) / tw,
+                    RATE(words_inline) / ti, RATE(words_ool) / ti, RATE(words_cold[HV_COLD_EXIT]) / ti,
+                    RATE(words_cold[HV_COLD_SLOW]) / ti, RATE(words_cold[HV_COLD_GROUP]) / ti,
+                    RATE(words_cold[HV_COLD_IJC]) / ti, RATE(words_cold[HV_COLD_OTHER]) / ti, RATE(words_pool) / ti);
         }
         fprintf(stderr, "  new code pages %.0f/s; waits: tlbi acks %.0f/s %.1f%%, device lock %.0f/s %.1f%%, translation lock %.0f/s %.1f%% (of one CPU)\n",
                 RATE(code_protects), RATE(syncs), RATE(sync_ticks) / 240000.0, RATE(dev_waits), RATE(dev_wait_ticks) / 240000.0,
@@ -716,6 +734,17 @@ static void print_stats(HvCpu *cpu, int force) {
     last = *s;
     last_t = now;
     hv_fp_enter(cpu);
+}
+
+/* Every 4096 dispatcher entries of any CPU: is the stats line due? The CPU that moves the deadline on prints it, so the
+   interval holds while CPU 0 sleeps or runs long chains (it stretched to 107-161 s of 30 on the phone). */
+static void stats_tick(HvCpu *cpu) {
+    static uint64_t due;
+    uint64_t now = mach_absolute_time(), d = __atomic_load_n(&due, __ATOMIC_RELAXED);
+    if (now < d) return;
+    if (__atomic_compare_exchange_n(&due, &d, now + (uint64_t)cpu->m->stats_interval * 24000000ull, 0, __ATOMIC_RELAXED,
+                                    __ATOMIC_RELAXED))
+        print_stats(cpu);
 }
 
 /* Fill the slot of the chainable exit a block just left through, so it jumps
@@ -1101,7 +1130,7 @@ static int run_loop(HvCpu *cpu, int one) {
         cpu->last_stub = 0;
         cpu->icount++;
         st->blocks++;
-        if (m->stats_interval && cpu->index == 0 && (st->blocks & 0xffff) == 0) print_stats(cpu, 0);
+        if (m->stats_interval && (st->blocks & 0xfff) == 0) stats_tick(cpu);
         if (m->gen_checks && ((uint64_t)b->code_off >= m->jit.used || hv_block_jit_gen(m, b) != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)))
             fprintf(stderr, "hengevm: cpu %u entering %p (rx+%llx, used %llx) for va %llx: block gen %u, now %u, maker %u\n", cpu->index, (void *)hv_block_code(m, b), (unsigned long long)b->code_off * 4, (unsigned long long)m->jit.used * 4, (unsigned long long)b->va, hv_block_jit_gen(m, b), m->jit_gen, b->maker);
         hv_enter(cpu, hv_block_code(m, b));
