@@ -70,13 +70,6 @@ typedef struct HengeDualMapping {
 HENGE_EXPORT void henge_ios_jit_install_trap_handler(void);
 
 /*
- * Allocate one dual-mapped region of `bytes`. Returns a mapping whose rw_addr is
- * NULL on failure. `bytes` is rounded up to a 16 KiB page multiple by the caller's
- * contract -- StikDebug prepares whole pages.
- */
-HengeDualMapping henge_ios_jit_allocate(size_t bytes);
-
-/*
  * Claim the JIT region now, at app launch, and hold it until QEMU asks.
  * StikDebug does not stay attached forever, and a first run spends a minute
  * downloading the guest before QEMU starts -- by which time the debugger has
@@ -84,21 +77,9 @@ HengeDualMapping henge_ios_jit_allocate(size_t bytes);
  * will ask for (tb-size).
  */
 HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes);
-/* The high address blocks held for a Mac app's large reservations (Chromium's allocators), handed out once into
-   base[3]/bytes[3]: how many, 0 if none. */
-int henge_ios_take_high_room(void **base, size_t *bytes);
-/* Release unused Mac app address reservations before sizing or creating a native VM.
- * Regions already handed to a Mac app and the prewarmed JIT mapping stay valid. */
-HENGE_EXPORT void henge_ios_jit_prepare_vm_memory(void);
 HENGE_EXPORT bool henge_ios_jit_prewarm_self(size_t bytes);
 
-/*
- * The native runtime shares the prewarmed region with QEMU: it takes bytes from the bottom, QEMU the top. Call before
- * writing anything below `end` (an offset from the region's start); false means QEMU holds that part.
- */
-HENGE_EXPORT bool henge_ios_jit_reserve_bottom(size_t end);
-
-/* Release a mapping obtained from henge_ios_jit_allocate(). */
+/* Release a mapping obtained from the debugger. */
 void henge_ios_jit_release(HengeDualMapping *m);
 
 /*

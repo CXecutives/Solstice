@@ -519,80 +519,6 @@ static void henge_ios_jit_log_map(const char *tag)
 
 static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes);
 
-/*
- * The room for a Mac app's allocators. iOS gives an app with extended virtual addressing 64 GB of high address space,
- * 0x7000000000 to 0x8000000000 (measured on iOS 26; V8's iOS build says the same), and nothing large below it.
- * Chromium's Mac build reserves more than that at start, so the translation layer places those reservations itself
- * (tl_loader.c, room_place), in two blocks held here from launch before anything else can land in them (zero-fill and
- * untouched: no memory). The layout it ends up with:
- *   0x70-0x78  PartitionAlloc's pools (32 GB, aligned to 32), its 16 GB metadata over their unused halves
- *   0x78-0x7C  Oilpan's unused lower half: V8's 8 GB at 0x78, the JIT region's writable view at 0x7A (not held,
- *              2.5 GB after it free for everything else), V8's TrustedRange at 0x7B (held)
- *   0x7C-0x80  Oilpan's upper half (its 32 GB reservation, aligned to 32, only uses this)
- * Let go when QEMU starts.
- */
-#define HENGE_HIGH_BASE 0x7000000000ull
-#define HENGE_JIT_VIEW_AT 0x7A00000000ull
-static const struct { uint64_t at, bytes; } g_high_parts[3] = {
-    {0x7000000000ull, 40ull << 30}, {0x7C00000000ull, 16ull << 30},
-    {0x7B00000000ull, 4ull << 30}, /* 4 GB-aligned slots for V8's smaller aligned reservations (its TrustedRange) */
-};
-static vm_address_t g_high_hold[3];
-static bool g_high_hold_given;
-
-static void henge_ios_hold_high(void)
-{
-    for (int i = 0; i < 3; i++) {
-        if (g_high_hold[i]) continue;
-        vm_address_t a = (vm_address_t)g_high_parts[i].at;
-        kern_return_t kr = vm_allocate(mach_task_self(), &a, (vm_size_t)g_high_parts[i].bytes, VM_FLAGS_FIXED);
-        if (kr == KERN_SUCCESS) {
-            vm_protect(mach_task_self(), a, (vm_size_t)g_high_parts[i].bytes, FALSE, VM_PROT_NONE);
-            g_high_hold[i] = a;
-        }
-        HENGE_LOG("high hold for a Mac app's allocators at %#llx (%llu GB): %s", (unsigned long long)g_high_parts[i].at,
-                  (unsigned long long)(g_high_parts[i].bytes >> 30), mach_error_string(kr));
-    }
-}
-
-static void henge_ios_release_high_hold(void)
-{
-    if (g_high_hold_given) return;
-    uint64_t released = 0;
-    for (int i = 0; i < 3; i++)
-        if (g_high_hold[i]) {
-            kern_return_t kr = vm_deallocate(mach_task_self(), g_high_hold[i], (vm_size_t)g_high_parts[i].bytes);
-            if (kr == KERN_SUCCESS) {
-                released += g_high_parts[i].bytes;
-                g_high_hold[i] = 0;
-            } else {
-                HENGE_LOG("could not release unused Mac app address room: %s", mach_error_string(kr));
-            }
-        }
-    if (released) HENGE_LOG("released %llu MiB of unused Mac app address reservations for the VM", (unsigned long long)(released >> 20));
-}
-
-HENGE_EXPORT void henge_ios_jit_prepare_vm_memory(void)
-{
-    henge_ios_release_high_hold();
-}
-
-/* The held blocks, once, for the translation layer to place large reservations in (they stay held: those are mapped
-   over them). Returns how many (0 if none). */
-HENGE_EXPORT int henge_ios_take_high_room(void **base, size_t *bytes)
-{
-    if (g_high_hold_given) return 0;
-    int n = 0;
-    for (int i = 0; i < 3; i++)
-        if (g_high_hold[i]) {
-            base[n] = (void *)g_high_hold[i];
-            bytes[n] = (size_t)g_high_parts[i].bytes;
-            n++;
-        }
-    g_high_hold_given = n > 0;
-    return n;
-}
-
 static HengeDualMapping henge_prewarmed;
 static bool henge_prewarm_done;
 
@@ -602,7 +528,6 @@ HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes)
         return henge_prewarmed.rw_addr != NULL;
     }
     henge_prewarm_done = true;
-    henge_ios_hold_high();
     henge_prewarmed = henge_ios_jit_allocate_real(bytes);
     fprintf(stderr, "[henge-jit] prewarm %s: %zu bytes\n",
             henge_prewarmed.rw_addr ? "OK" : "FAILED", bytes);
@@ -624,72 +549,10 @@ HENGE_EXPORT bool henge_ios_jit_prewarm_self(size_t bytes)
     return true;
 }
 
-/* The held region, for the native runtime (translation-layer/henge-tl-load.c looks this up by name). */
+/* The held region, for the machine (henge-vm.c). */
 HENGE_EXPORT HengeDualMapping *henge_ios_jit_get_mapping(void)
 {
     return henge_prewarmed.rw_addr ? &henge_prewarmed : NULL;
-}
-
-/*
- * One region, two users. The native runtime writes from the bottom of it and QEMU's TCG takes the top, so an Android app
- * started while Android itself runs (or Android started after one) does not write its code over the other's: that ended in
- * SIGILL inside cpu_tb_exec. Whichever comes second and does not fit gets a failure instead.
- */
-static pthread_mutex_t henge_share_lock = PTHREAD_MUTEX_INITIALIZER;
-static size_t henge_runtime_high;   /* bytes from the bottom the native runtime has taken */
-static size_t henge_qemu_top;       /* bytes at the top QEMU holds */
-
-HENGE_EXPORT bool henge_ios_jit_reserve_bottom(size_t end)
-{
-    pthread_mutex_lock(&henge_share_lock);
-    bool ok = end <= henge_prewarmed.size - henge_qemu_top;
-    if (ok && end > henge_runtime_high) henge_runtime_high = end;
-    pthread_mutex_unlock(&henge_share_lock);
-    if (!ok) {
-        fprintf(stderr, "[henge-jit] the native runtime wants %zu MiB of the JIT region, but QEMU holds its top %zu MiB\n",
-                end >> 20, henge_qemu_top >> 20);
-    }
-    return ok;
-}
-
-HengeDualMapping henge_ios_jit_allocate(size_t bytes)
-{
-    henge_ios_release_high_hold(); /* QEMU is starting: the room is the Mac's */
-    /*
-     * Hand back the prewarmed region when it is big enough. QEMU asks for
-     * exactly tb-size, which is what prewarm was given, so this is the normal
-     * path -- the fallback below only runs if prewarm never happened.
-     */
-    if (henge_prewarmed.rw_addr && henge_prewarmed.size >= bytes) {
-        size_t off = (henge_prewarmed.size - bytes) & ~(size_t)0x3FFF;
-        pthread_mutex_lock(&henge_share_lock);
-        bool fits = henge_runtime_high <= off;
-        if (fits) henge_qemu_top = henge_prewarmed.size - off;
-        pthread_mutex_unlock(&henge_share_lock);
-        if (!fits) {
-            fprintf(stderr, "[henge-jit] the native runtime already uses %zu MiB of the %zu MiB region; no room for %zu MiB of TCG\n",
-                    henge_runtime_high >> 20, henge_prewarmed.size >> 20, bytes >> 20);
-            HengeDualMapping none = { NULL, NULL, 0 };
-            return none;
-        }
-        fprintf(stderr, "[henge-jit] using the top %zu MiB of the prewarmed region (%zu MiB)\n",
-                (henge_prewarmed.size - off) >> 20, henge_prewarmed.size >> 20);
-        HengeDualMapping top = { henge_prewarmed.rw_addr + off, henge_prewarmed.rx_addr + off, henge_prewarmed.size - off };
-        return top;
-    }
-    /*
-     * No second trap after a prewarm already went unanswered.
-     * Inside qemu_init there is even less chance StikDebug is listening, and a
-     * debugger that is attached but not answering keeps the whole process
-     * stopped on the brk, so the app freezes. Failing here lets region.c
-     * fall back to MAP_JIT, or lets qemu_init report the error.
-     */
-    if (henge_prewarm_done) {
-        fprintf(stderr, "[henge-jit] prewarm failed earlier; not trapping again\n");
-        HengeDualMapping none = { NULL, NULL, 0 };
-        return none;
-    }
-    return henge_ios_jit_allocate_real(bytes);
 }
 
 static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
@@ -776,9 +639,8 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
 
     /* Writable alias of the same physical pages. Purely local -- no debugger
      * involvement, and therefore still available after detach. */
-    /* Near the executable view: the translation layer's loader retargets code at this alias with adrp, which reaches +-4 GiB,
-     * and a kernel left to choose (VM_FLAGS_ANYWHERE) can put it hundreds of GiB away (seen on iOS 27). Free addresses after
-     * the region, then before it, in 16 MiB steps out to 2 GiB; anywhere only if none is free. */
+    /* Near the executable view: a kernel left to choose (VM_FLAGS_ANYWHERE) can put it hundreds of GiB away (seen on iOS 27).
+     * Free addresses after the region, then before it, in 16 MiB steps out to 2 GiB; anywhere only if none is free. */
     vm_address_t rw = 0;
     vm_prot_t cur_prot = VM_PROT_NONE, max_prot = VM_PROT_NONE;
     kern_return_t kr = KERN_NO_SPACE;
@@ -791,11 +653,6 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
             kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, /*mask=*/0, VM_FLAGS_FIXED,
                           mach_task_self(), (vm_address_t)rx, /*copy=*/FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
         }
-    }
-    if (kr != KERN_SUCCESS && g_high_hold[0]) {
-        rw = (vm_address_t)HENGE_JIT_VIEW_AT; /* in the room's unheld middle, where Oilpan's lower half goes unused */
-        kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, 0, VM_FLAGS_FIXED, mach_task_self(), (vm_address_t)rx, FALSE,
-                      &cur_prot, &max_prot, VM_INHERIT_NONE);
     }
     if (kr != KERN_SUCCESS) {
         HENGE_LOG("#%llu: no free space within 2 GiB of rx=%p for the writable view: placing it anywhere", (unsigned long long)n, rx);
@@ -1009,21 +866,8 @@ bool henge_ios_jit_mapjit_works(void)
 #else /* !iOS: keep the symbols so host builds and tests link */
 
 void henge_ios_jit_install_trap_handler(void) {}
-static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
-{
-    (void)bytes;
-    HengeDualMapping m = { NULL, NULL, 0 };
-    return m;
-}
-HengeDualMapping henge_ios_jit_allocate(size_t bytes)
-{
-    return henge_ios_jit_allocate_real(bytes);
-}
-int henge_ios_take_high_room(void **base, size_t *bytes) { (void)base, (void)bytes; return 0; }
-void henge_ios_jit_prepare_vm_memory(void) {}
 bool henge_ios_jit_prewarm(size_t bytes) { (void)bytes; return false; }
 bool henge_ios_jit_prewarm_self(size_t bytes) { (void)bytes; return false; }
-bool henge_ios_jit_reserve_bottom(size_t end) { (void)end; return true; }
 void henge_ios_jit_release(HengeDualMapping *m) { (void)m; }
 void henge_ios_jit_detach(void) {}
 bool henge_ios_jit_is_available(void) { return false; }

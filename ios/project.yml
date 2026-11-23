@@ -76,10 +76,6 @@ targets:
           - "-liconv"
           - "-lresolv"
           - "-lcompression"
-          - "-lhengetl"
-          # Henge's AppKit is found by name at run time (objc_getClass): keep every Objective-C class it has.
-          - "-ObjC"
-          - "-lbz2"
           # On-device pairing for Built-in StikJIT (from Husk's src/rppairing-ios).
           - "-lhusk_rppairing"
           - "-framework"
@@ -95,11 +91,7 @@ targets:
           - "-framework"
           - "QuartzCore"
           - "-framework"
-          - "CoreText"
-          - "-framework"
           - "ImageIO"
-          - "-framework"
-          - "CoreVideo"
           - "-framework"
           - "UniformTypeIdentifiers"
     dependencies:
@@ -110,7 +102,7 @@ targets:
         script: |
           set -e
           cd "$SRCROOT/.."
-          make ios-lib build/henge-agent.gz build/tl-samples.dmg
+          make ios-lib build/henge-agent.gz
           ./tools/build_ios_restore.sh
         basedOnDependencyAnalysis: false
     postBuildScripts:
@@ -119,8 +111,6 @@ targets:
         script: |
           set -e
           cp "$SRCROOT/../build/henge-agent.gz" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/henge-agent.gz"
-          rm -f "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/tl-samples.dmg"
-          cp -X "$SRCROOT/../build/tl-samples.dmg" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/tl-samples.dmg"
         basedOnDependencyAnalysis: false
       - name: Embed StikJIT
         # As in Husk: the helper links StikJIT; it lives in the app's Frameworks

@@ -19,17 +19,8 @@ static HvJitRegion jit;
 static HengeDualMapping mapping;
 static int failures;
 static _Atomic int reader_done;
-static int memory_prepared, memory_preparations, installer_started;
-void henge_ios_jit_prepare_vm_memory(void) {
-    memory_prepared = 1;
-    memory_preparations++;
-}
+static int installer_started;
 HengeDualMapping *henge_ios_jit_get_mapping(void) {
-    if (!memory_prepared) {
-        fprintf(stderr, "FAIL: native VM must release unused address reservations before using JIT\n");
-        failures++;
-    }
-    memory_prepared = 0;
     return &mapping;
 }
 void hv_prof_ios_start(void) {}
@@ -246,12 +237,11 @@ int main(void) {
     hv_vm_destroy();
     atomic_store(&reader_done, 1);
     pthread_join(reader, NULL);
-    int before_install = memory_preparations, started_before = installer_started;
+    int started_before = installer_started;
     install_ok = 0;
-    check("installer reaches restore after memory preparation",
+    check("installer reaches restore",
           henge_vm_install(rom, disk, aux, 1, "unused", dir, 64, 2, error, sizeof error) != 0
           && installer_started == started_before + 1 && strstr(error, "installer could not start") != NULL);
-    check("installer prepares VM memory", memory_preparations == before_install + 1);
     /* The installer stub owns no USB workers, so the test can release its board. */
     hv_vm_destroy();
     hv_jit_region_close(&jit);

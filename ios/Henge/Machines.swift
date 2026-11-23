@@ -60,7 +60,6 @@ enum GuestMemory {
     /// Guest RAM is reserved first, in one piece, then the engine's tables (host/vm.c): the largest piece of address
     /// space must leave room for those (sized from the code cache and the CPUs) and for the app.
     static func prepare(_ mac: VirtualMac, cpus: Int) -> UInt64 {
-        henge_ios_jit_prepare_vm_memory()
         let file = mac.directory.appendingPathComponent("ram.tmp")
         setenv("HV_RAM_FILE", file.path, 1)
         let free = (try? mac.directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
