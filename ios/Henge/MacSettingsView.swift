@@ -74,51 +74,7 @@ struct MacSettingsView: View {
                 .padding(17)
                 .deskCard()
 
-                DeskHeading("Size of Things")
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Size", selection: Binding(get: { mac.uiScale ?? 1 }, set: { mac.uiScale = $0 == 1 ? nil : $0; save() })) {
-                        ForEach(VirtualMac.uiScales, id: \.scale) { Text($0.name).tag($0.scale) }
-                    }
-                    .pickerStyle(.segmented)
-                    Text("\(mac.screen.width) × \(mac.screen.height). Large and Larger give macOS a smaller screen of the same shape, so text and buttons are bigger on this \(Device.name), and there is less for the Mac to draw. Changes apply the next time this Mac starts.")
-                        .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                }
-                .padding(17)
-                .deskCard()
-
-                if Device.fittingScreen.height != 1080 {
-                    DeskHeading("Screen")
-                    VStack(alignment: .leading, spacing: 12) {
-                        Picker("Screen", selection: Binding(get: {
-                            if mac.isRetina { return "retina" }
-                            if mac.baseScreen.width == Device.performanceScreen.width,
-                               mac.baseScreen.height == Device.performanceScreen.height { return "performance" }
-                            if mac.baseScreen.width == 1920, mac.baseScreen.height == 1080 { return "wide" }
-                            return "fit"
-                        }, set: { choice in
-                            mac.retina = choice == "retina"
-                            switch choice {
-                            case "retina": break
-                            case "performance": (mac.screenWidth, mac.screenHeight) = Device.performanceScreen
-                            case "wide": (mac.screenWidth, mac.screenHeight) = (1920, 1080)
-                            default: (mac.screenWidth, mac.screenHeight) = Device.fittingScreen
-                            }
-                            save()
-                        })) {
-                            if Device.isPad {
-                                Text("Retina").tag("retina")
-                                Text("Performance").tag("performance")
-                            }
-                            Text("Fit this \(Device.name)").tag("fit")
-                            Text("16:9").tag("wide")
-                        }
-                        .pickerStyle(.segmented)
-                        Text("\(mac.screen.width) × \(mac.screen.height). \(Device.isPad ? "Performance renders about 30% fewer pixels. " : "")Changes apply the next time this Mac starts.")
-                            .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                    }
-                    .padding(17)
-                    .deskCard()
-                }
+                ScreenSettings(mac: $mac, save: save)
 
                 DeskHeading("Storage")
                 VStack(spacing: 11) {
