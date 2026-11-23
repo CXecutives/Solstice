@@ -369,24 +369,7 @@ enum HengeLog {
         log("boot", "build       : \(version) (\(build)) \(commit) built \(built)")
         log("boot", "pid         : \(getpid())")
         log("boot", "log file    : \(logFileURL.path)")
-        // Every iOS 27 device except iPad8,11/8,12 enforces TXM, which is what makes
-        // the debugger-assisted JIT path mandatory rather than optional.
-        log("boot", "TXM expected: \(Self.expectsTXM(model: model) ? "YES" : "no")")
         log("boot", "===============================================")
-    }
-
-    static func expectsTXM(model: String) -> Bool {
-        if #available(iOS 27.0, *) {
-            return model != "iPad8,11" && model != "iPad8,12"
-        }
-        if #available(iOS 26.0, *) {
-            // A14-era and newer: iPhone13,x is A14, so HW major >= 13 for phones.
-            let digits = model.drop { !$0.isNumber }.prefix { $0.isNumber }
-            if let major = Int(digits) {
-                return model.hasPrefix("iPhone") ? major >= 13 : major >= 14
-            }
-        }
-        return false
     }
 
     /// Snapshot of process memory, the figure jetsam kills on.

@@ -22,7 +22,7 @@ struct JITSetupFlow: View {
     var body: some View {
         NavigationStack(path: $path) {
             choose
-                .hengeDestination(for: Step.self) { step in
+                .navigationDestination(for: Step.self) { step in
                     switch step {
                     case .pairOnDevice: pairOnDevice
                     case .importFile: importFile

@@ -85,14 +85,9 @@ enum JITBootstrap {
         return ok
     }
 
-    /// Whether Henge has JIT now: a debugger marked it, or the region is already held. Cheap, and logs nothing.
-    static var ready: Bool {
-        if prewarmed || isLive { return true }
-        // On a TXM device the debugger must also answer the brk that claims the region. CS_DEBUGGED alone is what
-        // a debugger without Henge's script gives, and an install then stops at "Henge has no JIT region" (#23).
-        if debuggedFlag { return !deviceEnforcesTXM }
-        return false
-    }
+    /// Whether Henge has JIT now: the region is held. CS_DEBUGGED alone is not enough: the debugger must also answer
+    /// the brk that claims the region, or an install stops at "Henge has no JIT region" (#23). Cheap, and logs nothing.
+    static var ready: Bool { prewarmed || isLive }
 
     /// True once this process has told the debugger to let go.
     nonisolated(unsafe) static private(set) var detached = false
@@ -133,11 +128,6 @@ enum JITBootstrap {
         detached = true
         HengeLog.log("jit", "after the detach request, traced: \(isTraced ? "yes" : "no")")
     }
-
-    /// Whether this device enforces TXM, so that only a trap servicer can grant
-    /// executable memory. Uses the same rule as the "TXM expected" line in the
-    /// log banner, so the two can never disagree.
-    static let deviceEnforcesTXM: Bool = HengeLog.expectsTXM(model: HengeLog.deviceModel)
 
     /// Why the last prewarm failed, for the UI to show.
     ///

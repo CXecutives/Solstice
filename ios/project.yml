@@ -2,7 +2,7 @@ name: Henge
 options:
   bundleIdPrefix: com.henge
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "26.0"
   createIntermediateGroups: true
 
 settings:
@@ -146,7 +146,6 @@ targets:
   HengeJITHelper:
     type: app-extension
     platform: iOS
-    deploymentTarget: "26.0"
     sources:
       - path: HengeJITHelper
         excludes:

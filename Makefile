@@ -163,7 +163,7 @@ clean:
 IOS_SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
 # A14 is the oldest supported chip: LSE atomics instead of LL/SC loops in the engine's C (the default target is apple-a7).
 IOS_CPU ?= -mcpu=apple-a14
-IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 $(IOS_CPU) -isysroot $(IOS_SDK)
+IOS_CC = xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=26.0 $(IOS_CPU) -isysroot $(IOS_SDK)
 # ios/deps/include/slirp first when it holds libslirp's headers (they are all the engine takes from there).
 IOS_DEPS ?= $(if $(wildcard ios/deps/include/slirp/libslirp.h),$(CURDIR)/ios/deps,$(HOME)/Documents/Coding/Husk/build/ios-arm64/sysroot)
 IOS_CFLAGS = -std=c11 -Wall -Wextra -O2 -g -Icore -Ihost -Idevices -I$(IOS_DEPS)/include/slirp
@@ -234,7 +234,7 @@ $(B)/test_external_screen_plan: ios/Henge/ExternalScreenPlan.swift tests/test_ex
 $(B)/test_legacy_external_display: ios/Henge/LegacyExternalDisplay.swift ios/Henge/ExternalScreenPlan.swift ios/Henge/MacPresentation.swift ios/Henge/DisplayRouter.swift ios/Henge/DisplayTargetSelection.swift tests/test_legacy_external_display.swift tests/display_engine_stub.h | $(B)
 	xcrun --sdk macosx swiftc -import-objc-header tests/display_engine_stub.h $(filter %.swift,$^) -o $@
 
-# Info.plist must declare the external display scene role with ExternalDisplaySceneDelegate, or iOS 17-26 never offer the display.
+# Info.plist must declare the external display scene role with ExternalDisplaySceneDelegate, or iPadOS 26 never offers the display.
 $(B)/test_scene_manifest: tests/test_scene_manifest.swift | $(B)
 	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
 
