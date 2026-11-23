@@ -2,7 +2,8 @@ import AVFAudio
 import Foundation
 import UIKit
 
-/// Keeps iOS from suspending Henge while a Mac is open or macOS is installing.
+/// Keeps iOS from suspending Solstice while a Mac is open or macOS is installing, from the moment it stops being active
+/// until it is active again: in front nothing needs it, and the silence would only cost battery.
 ///
 /// A suspended app is the first thing iOS closes when it wants memory, and Henge holds a lot of it: leaving for a
 /// message used to cost the running Mac, and the screen locking used to end an install. An app that is playing
@@ -23,11 +24,15 @@ enum KeepAlive {
     private static var timer: Timer?
     private static var pressure: DispatchSourceMemoryPressure?
     private static var playing = false
+    /// Not active (willResignActive until didBecomeActive): the silence must be playing before iOS suspends the app.
+    private static var away = false
+    /// Solstice stays awake in the background now (InstantResume waits before saving only then).
+    static var awake: Bool { playing }
 
-    /// Something iOS closing Henge would lose: a Mac running, starting, stopping or paused, or an install.
+    /// Something iOS closing Solstice would lose while it is away: a Mac running, starting, stopping or paused, or an install.
     private static var needed: Bool {
         let s = henge_vm_state()
-        return enabled && (s == HENGE_VM_RUNNING || s == HENGE_VM_STARTING_OR_STOPPING || s == HENGE_VM_PAUSED || Installer.shared.busy)
+        return enabled && away && (s == HENGE_VM_RUNNING || s == HENGE_VM_STARTING_OR_STOPPING || s == HENGE_VM_PAUSED || Installer.shared.busy)
     }
 
     /// Once, at launch: follow what Henge is doing, say in the log what iOS tells it about memory, and follow the heat.
@@ -61,10 +66,25 @@ enum KeepAlive {
                 update()
             }
         }
+        center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                away = true
+                update()
+            }
+        }
+        center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                away = false
+                update()
+            }
+        }
         center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
             HengeLog.log("memory", "iOS sent a memory warning; \(henge_available_memory() >> 20) MB left before Henge's limit")
             HengeLog.logFootprint("memory-warning")
-            MainActor.assumeIsolated { MemoryRelief.warning() }
+            MainActor.assumeIsolated {
+                MemoryRelief.warning()
+                InstantResume.saveNowIfWaiting()
+            }
         }
         center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
             HengeLog.log("app", "iOS is ending Henge (willTerminate)")
@@ -86,7 +106,10 @@ enum KeepAlive {
             let level = data.contains(.critical) ? 2 : data.contains(.warning) ? 1 : 0
             HengeLog.log("memory", "system memory pressure: \(["normal", "warning", "critical"][level]); \(henge_available_memory() >> 20) MB left before Henge's limit")
             HengeLog.logFootprint("pressure")
-            MainActor.assumeIsolated { MemoryRelief.pressure(level) }
+            MainActor.assumeIsolated {
+                MemoryRelief.pressure(level)
+                if level > 0 { InstantResume.saveNowIfWaiting() }
+            }
         }
         source.resume()
         pressure = source
@@ -121,7 +144,7 @@ enum KeepAlive {
             player.stop()
             player.scheduleBuffer(buffer, at: nil, options: [.loops])
             player.play()
-            if !playing { HengeLog.log("keepalive", "on: Henge stays awake in the background while this goes on") }
+            if !playing { HengeLog.log("keepalive", "on: Solstice stays awake in the background while this goes on") }
             playing = true
         } catch {
             // Another app holds the session exclusively (a call): tried again in 2 s.
@@ -134,7 +157,7 @@ enum KeepAlive {
         player?.stop()
         engine?.stop()
         playing = false
-        HengeLog.log("keepalive", "off: nothing left to keep")
+        HengeLog.log("keepalive", away ? "off: nothing left to keep" : "off: Solstice is active")
     }
 
     private static func teardown() {
