@@ -150,8 +150,8 @@ final class SessionController: ObservableObject {
         var used = mac
         used.lastUsed = started
         Machines.shared.update(used)
-        var lastBlocks = henge_vm_blocks()
-        var lastTime = Date()
+        _ = henge_vm_blocks_per_second() // marks the start: each perf line then has the rate over its 10 s
+        var rate: Double = 0
         var lastGPUFrames = henge_vm_gpu_frames()
         var tick = 0
         var inFront: TimeInterval = 0, lastLoop = Date(), counted = false
@@ -172,10 +172,6 @@ final class SessionController: ObservableObject {
                 continue
             }
             if !userCode && henge_vm_guest_el0() != 0 { userCode = true }
-            let now = Date(), blocks = henge_vm_blocks()
-            let rate = Double(blocks &- lastBlocks) / max(now.timeIntervalSince(lastTime), 0.001)
-            lastBlocks = blocks
-            lastTime = now
             // What only Details shows is copied into the view's state only while it shows: each copy redraws the
             // session, once a second, for nothing otherwise (200 log lines among it).
             if hooks.detailsShown() {
@@ -205,6 +201,7 @@ final class SessionController: ObservableObject {
             _ = henge_vm_drop_spent_save() // the saved Mac goes once this one writes its disk
             tick += 1
             if tick % 10 == 0 {
+                rate = henge_vm_blocks_per_second()
                 let gpuFrames = henge_vm_gpu_frames()
                 HengeLog.log("perf", "blocks/s \(String(format: "%.0f", rate)), GPU frames/10s \(gpuFrames &- lastGPUFrames), "
                              + "network tx \(henge_vm_net_frames(1)), rx \(henge_vm_net_frames(0)), dns \(henge_vm_dns(0)) answered \(henge_vm_dns(2)) unanswered, "
