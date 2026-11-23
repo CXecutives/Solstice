@@ -881,6 +881,10 @@ static void test_xhci_input(HvXhci *x) {
     hv_xhci_key_linux(x, 86, 1);
     check("keyboard: the ISO key", x->state[2], 0x64);
     hv_xhci_key_linux(x, 86, 0);
+    /* Forward delete (KEY_DELETE), for the on-screen key row. */
+    hv_xhci_key_linux(x, 111, 1);
+    check("keyboard: forward delete", x->state[2], 0x4c);
+    hv_xhci_key_linux(x, 111, 0);
     x->rhead = x->rtail;
 }
 

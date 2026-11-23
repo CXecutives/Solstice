@@ -99,7 +99,8 @@ static void followDevice(void) {
         if (!news) continue;
         NSString *text = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
         if (!text) continue;
-        dispatch_async(dispatch_get_main_queue(), ^{
+        // On the clipboard before the next request: that request tells the app it is there, and it presses ⌘V.
+        dispatch_sync(dispatch_get_main_queue(), ^{
             NSPasteboard *board = NSPasteboard.generalPasteboard;
             [board clearContents];
             [board setString:text forType:NSPasteboardTypeString];
@@ -149,8 +150,9 @@ int main(void) {
         lastChange = NSPasteboard.generalPasteboard.changeCount;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ followDevice(); });
         keepMounted();
-        // With slack, macOS can fire them together with other wakeups instead of waking a CPU for each.
-        [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) { (void)timer; checkClipboard(); }].tolerance = 0.2;
+        // With slack, macOS can fire them together with other wakeups instead of waking a CPU for each. A copy
+        // reaches the device within about a quarter of a second; checking is only reading a counter.
+        [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) { (void)timer; checkClipboard(); }].tolerance = 0.1;
         [NSTimer scheduledTimerWithTimeInterval:30 repeats:YES block:^(NSTimer *timer) { (void)timer; keepMounted(); }].tolerance = 5;
         [NSRunLoop.mainRunLoop run];
     }

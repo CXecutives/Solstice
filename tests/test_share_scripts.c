@@ -53,6 +53,11 @@ static int status_is(const char *resp, int status) {
     return sscanf(resp, "HTTP/1.1 %d", &got) == 1 && got == status;
 }
 
+static void *long_poll(void *req) {
+    (void)exchange(req, 0);
+    return NULL;
+}
+
 static void test_server(void) {
     /* Only requests made to 10.0.2.4 itself (DNS rebinding sends the attacker's own name). */
     check("Host 10.0.2.4: served", status_is(exchange("GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 200));
@@ -89,6 +94,26 @@ static void test_server(void) {
     char *guest = hv_share_take_clipboard();
     check("the guest's clipboard arrived", guest && !strcmp(guest, "from gues"));
     free(guest);
+
+    /* Paste waits for the helper to have the device's clipboard: its next long poll (since = the newest) says so. */
+    hv_share_set_clipboard("to paste");
+    check("pasted text: not the helper's yet", !hv_share_clipboard_taken());
+    char seq_header[64];
+    snprintf(seq_header, sizeof seq_header, "X-Henge-Seq: %lu\r\n", device_seq);
+    snprintf(req, sizeof req, "GET /.henge/clipboard?since=%lu HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\n\r\n", device_seq + 1000, key);
+    r = exchange(req, 0);
+    check("a since beyond the newest (an earlier run's): answered at once with the newest", status_is(r, 204) && strstr(r, seq_header));
+    check("... and is no acknowledgement", !hv_share_clipboard_taken());
+    static char poll_req[512];
+    snprintf(poll_req, sizeof poll_req, "GET /.henge/clipboard?since=%lu HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\n\r\n", device_seq, key);
+    pthread_t poller;
+    pthread_create(&poller, NULL, long_poll, poll_req);
+    int taken = 0;
+    for (int i = 0; i < 200 && !(taken = hv_share_clipboard_taken()); i++) usleep(10000);
+    check("pasted text: the helper's once it asks for anything newer", taken);
+    hv_share_set_clipboard("wakes the long poll");
+    pthread_join(poller, NULL);
+    check("pasted text: a newer one is not the helper's yet", !hv_share_clipboard_taken());
 
     /* Ranges: the whole file, a part, the last bytes; past the end, backwards or empty ones cannot be given (416). */
     long long from, to;
