@@ -117,7 +117,7 @@ $(B)/test_knobs: tests/test_knobs.c core/knobs.def $(ENGINE)
 $(B)/test_dns_lifecycle: tests/test_dns_lifecycle.c $(B)/dns_proxy.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(B)/test_vm_lifecycle: tests/test_vm_lifecycle.c ios/Henge/Native/henge-vm.c $(ENGINE) $(DEV) $(B)/vm.o $(B)/snapshot.o $(B)/audio_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/usb_host.o
+$(B)/test_vm_lifecycle: tests/test_vm_lifecycle.c ios/Henge/Native/henge-vm.c $(ENGINE) $(DEV) $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/audio_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/usb_host.o
 	$(CC) $(CFLAGS) -Iios/Henge/Native $^ $(SLIRP_LIBS) $(METAL_LIBS) -framework AudioToolbox -lcompression -o $@
 
 test-vm-lifecycle: $(B)/test_vm_lifecycle
@@ -322,8 +322,24 @@ test-touch-gestures: $(B)/test_touch_gestures
 	$(B)/test_touch_gestures
 .PHONY: test-touch-gestures
 
+# Keys go to the Mac in the order they were asked for: a paste that waits holds back what is typed after it.
+$(B)/test_key_queue: ios/Henge/KeyQueue.swift tests/test_key_queue.swift | $(B)
+	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
+
+test-key-queue: $(B)/test_key_queue
+	$(B)/test_key_queue
+.PHONY: test-key-queue
+
+# The installer's download: which failures another attempt can cure, and the hash catching up with a part file.
+$(B)/test_ranged_download: ios/Henge/RangedDownload.swift tests/test_ranged_download.swift | $(B)
+	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
+
+test-ranged-download: $(B)/test_ranged_download
+	$(B)/test_ranged_download
+.PHONY: test-ranged-download
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
 SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons \
-	test-lifecycle test-key-layout test-touch-gestures
+	test-lifecycle test-key-layout test-touch-gestures test-key-queue test-ranged-download
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

@@ -14,8 +14,7 @@ struct LifecycleNotice: View {
             HStack(spacing: 18) {
                 if stuck == .shutdownIgnored {
                     Button("Force Off") {
-                        session.forceOff()
-                        close()
+                        session.forceOff(then: close)
                     }
                     .foregroundStyle(Desk.bad)
                     Button("Keep Running") { session.dismissStuck() }

@@ -185,8 +185,8 @@ struct SessionView: View {
         .defersSystemGestures(on: .all) // a swipe from an edge is the Mac's first; a second one goes to iOS
         .sheet(isPresented: $showDetails) { details }
         .confirmationDialog("Shut down \(mac.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("Shut Down") { if !session.shutDown() { close() } } // macOS shuts down; the view closes once it is off
-            Button("Force Off", role: .destructive) { session.forceOff(); close() }
+            Button("Shut Down") { session.shutDown(off: close) } // macOS shuts down; the view closes once it is off
+            Button("Force Off", role: .destructive) { session.forceOff(then: close) }
         } message: {
             Text("Shut Down asks macOS to close its apps and turn off. Force Off turns it off at once; anything not saved on it is lost.")
         }
@@ -220,8 +220,7 @@ struct SessionView: View {
             if showing { HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll() }
         }
         .onAppear {
-            UIApplication.shared.isIdleTimerDisabled = true
-            HardwareMouse.shared.start()
+            UIApplication.shared.isIdleTimerDisabled = true // the physical mouse starts with each run (SessionController)
         }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
@@ -256,7 +255,7 @@ struct SessionView: View {
                 Spacer()
                 tool("info.circle", "Details") { showDetails = true }
                 Spacer()
-                tool("power", "Shut down", tint: Desk.bad) { stopTapped() }
+                tool("power", "Shut down", tint: Desk.bad) { stopTapped() }.disabled(session.starting).opacity(session.starting ? 0.4 : 1)
             }
             .padding(.horizontal, 22)
             .frame(width: layout.pad.width, height: 54)
@@ -355,7 +354,7 @@ struct SessionView: View {
             Rectangle().fill(Color.white.opacity(0.3))
                 .frame(width: standing ? 22 : 1, height: standing ? 1 : 22)
                 .padding(standing ? .vertical : .horizontal, 4)
-            tool("power", "Shut down", tint: Desk.bad) { stopTapped() }
+            tool("power", "Shut down", tint: Desk.bad) { stopTapped() }.disabled(session.starting).opacity(session.starting ? 0.4 : 1)
         }
         .padding(standing ? .vertical : .horizontal, 8)
         .frame(width: standing ? 50 : nil, height: standing ? nil : 50)

@@ -214,9 +214,9 @@ int henge_vm_boot(const char *rom, const char *disk, const char *aux, uint64_t e
     return boot_or_resume(rom, disk, aux, ecid, seed, ram_mb, cpus, NULL, NULL, err, errlen);
 }
 
-int henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
-                    int cpus, const char *path, const char *ident, char *err, size_t errlen) {
-    return boot_or_resume(rom, disk, aux, ecid, seed, ram_mb, cpus, path, ident, err, errlen);
+HengeVmResume henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed,
+                              uint64_t ram_mb, int cpus, const char *path, const char *ident, char *err, size_t errlen) {
+    return (HengeVmResume)boot_or_resume(rom, disk, aux, ecid, seed, ram_mb, cpus, path, ident, err, errlen);
 }
 
 int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int64_t *saved_at) {
@@ -342,10 +342,12 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
     if (resume) {
         int restored = hv_snapshot_restore(resume, ident, err, errlen);
         if (restored != 0) {
-            /* Refused or unreadable: the Mac starts from cold instead, and its disk then moves past the file. */
-            unlink(resume);
             fprintf(stderr, "solstice: resume failed: %s\n", err);
-            return failed_start();
+            failed_start();
+            if (restored != -2) return HENGE_VM_RESUME_FAILED; /* of the moment: the file is kept for the next try */
+            /* Refused, it can never be resumed: the Mac starts from cold instead, and its disk then moves past the file. */
+            unlink(resume);
+            return HENGE_VM_RESUME_REFUSED;
         }
         /* Kept until the Mac writes its disk (drop_spent_save): a kill before that resumes it again. */
         set_save(resume);

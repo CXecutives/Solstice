@@ -197,7 +197,8 @@ struct Trackpad: UIViewRepresentable {
         }
 
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { lift(touches) }
-        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { lift(touches) }
+        /// iOS took the touches (an alert, a call, a system edge swipe): never a tap; what is down comes up.
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { cancel() }
 
         private func lift(_ touches: Set<UITouch>) {
             var lifted: [Int32] = []
