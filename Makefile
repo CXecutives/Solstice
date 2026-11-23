@@ -311,3 +311,8 @@ $(B)/test_device_identity: ios/Henge/DeviceIdentity.swift tests/test_device_iden
 test-identity: $(B)/test_device_identity
 	$(B)/test_device_identity
 .PHONY: test-identity
+
+# Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
+SWIFT_TESTS = test-display-routing test-jit-advice test-identity
+swift-test: $(SWIFT_TESTS)
+.PHONY: swift-test
