@@ -147,6 +147,9 @@ static void run(void *ctx) {
         dev = q->d;
         want = 1, want_channels = q->channels, want_format = q->format, want_rate = q->rate;
         retries = 0;
+        /* iOS does not send an "ended" for every "began": a new stream tries the player whatever the last one said.
+           If the session is still taken the start fails, and the stream drains by the clock while it retries. */
+        atomic_store(&interrupted, 0);
         break;
     case 1:
         want = 0;

@@ -127,8 +127,8 @@ $(B)/hvsparse: tools/hvsparse_main.c host/hvsparse.c host/hvsparse.h | $(B)
 	$(CC) $(CFLAGS) tools/hvsparse_main.c host/hvsparse.c -o $@
 
 # Block-level tests: test_X.c plus X_programs.S, run natively and through the JIT.
-$(B)/test_devices: tests/test_devices.c tests/devices_programs.S tests/harness.S tests/harness.h $(ENGINE) $(DEV)
-	$(CC) $(CFLAGS) -Itests tests/test_devices.c tests/devices_programs.S tests/harness.S $(ENGINE) $(DEV) $(METAL_LIBS) -o $@
+$(B)/test_devices: tests/test_devices.c host/audio_mac.c tests/devices_programs.S tests/harness.S tests/harness.h $(ENGINE) $(DEV)
+	$(CC) $(CFLAGS) -Itests tests/test_devices.c tests/devices_programs.S tests/harness.S $(ENGINE) $(DEV) $(METAL_LIBS) -framework AudioToolbox -o $@
 # The engine's host memory: the code-cache stress program on machines of 1-4 CPUs, its tables trimmed and refilled.
 $(B)/test_memory: tests/test_memory.c tests/codecache_programs.S tests/harness.S tests/harness.h $(ENGINE)
 	$(CC) $(CFLAGS) -Itests tests/test_memory.c tests/codecache_programs.S tests/harness.S $(ENGINE) -o $@

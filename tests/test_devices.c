@@ -1,3 +1,4 @@
+#define __ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES 0 /* no check() macro from AudioToolbox's headers */
 #include "harness.h"
 
 #include <fcntl.h>
@@ -11,6 +12,8 @@
 
 #include "sysreg.h"
 #include "vmapple.h"
+
+#include "../host/audio_mac.c" /* the player's queue state, for test_audio_lone_began */
 
 DECLARE_PROGRAM(p_timer_irq);
 DECLARE_PROGRAM(p_uart);
@@ -740,6 +743,26 @@ static void *snd_puller(void *arg) {
     return NULL;
 }
 
+/* iOS does not send an "ended" for every "began" (an app back from suspension gets a lone "began"): a new stream from
+   the guest still tries the player, and either it plays or the stream drains by the clock, never silent and stuck. */
+static void audio_queue_done(void *ctx) { (void)ctx; }
+
+static void test_audio_lone_began(void) {
+    HvVirtioSnd *d = board.snd;
+    if (!d) return;
+    hv_audio_attach(d);
+    hv_audio_interrupted();
+    d->backend.start(d->backend.opaque, 2, HV_VSND_FMT_S16, 48000);
+    dispatch_sync_f(queue, NULL, audio_queue_done);
+    check("sound: a stream start after a lone 'began' tries the player", atomic_load(&interrupted), 0);
+    UInt32 playing = 0, size = sizeof playing;
+    if (unit) AudioUnitGetProperty(unit, kAudioOutputUnitProperty_IsRunning, kAudioUnitScope_Global, 0, &playing, &size);
+    check("sound: the player plays, or the stream drains by the clock", playing ? !atomic_load(&d->host_off) : atomic_load(&d->host_off) != 0, 1);
+    hv_audio_detach();
+    d->backend = (HvVirtioSndBackend){0};
+    atomic_store(&d->host_off, 0);
+}
+
 static void test_virtio_snd_forward(void) {
     HvVirtioSnd *d = board.snd;
     if (!d) return;
@@ -986,6 +1009,7 @@ int main(void) {
     test_virtio_net();
     test_virtio_snd_drain();
     test_virtio_snd_forward();
+    test_audio_lone_began();
     test_virtio_balloon();
     puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();

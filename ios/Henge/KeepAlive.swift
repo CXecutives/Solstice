@@ -40,6 +40,8 @@ enum KeepAlive {
         let center = NotificationCenter.default
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { note in
             let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
+            // A "began" told to an app back from suspension has no "ended" to follow: nothing holds the Mac's sound.
+            let suspended = (note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt) == AVAudioSession.InterruptionReason.appWasSuspended.rawValue
             MainActor.assumeIsolated {
                 // A call or an alarm took the session: the silence stopped with it. Start again when it is over
                 // (and try at once too: update() runs every 2 s until it works).
@@ -47,7 +49,7 @@ enum KeepAlive {
                 playing = false
                 if ended { update() }
                 // The Mac's sound stopped with it: its stream runs on by the clock until the session is back.
-                henge_vm_audio_interrupted(ended ? 0 : 1)
+                if ended || !suspended { henge_vm_audio_interrupted(ended ? 0 : 1) }
             }
         }
         center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { _ in
@@ -83,6 +85,9 @@ enum KeepAlive {
         }
         center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
             HengeLog.log("keepalive", "back in the foreground")
+        }
+        center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            henge_vm_audio_interrupted(0) // active again: whatever took the sound is over, even without an "ended"
         }
         // The system running short, whoever is using it: the lines before a kill say why, and the Mac is asked
         // to hand memory back (MemoryRelief) before iOS takes all of Henge's.
