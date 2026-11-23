@@ -504,11 +504,18 @@ static int do_put(Conn *c, Request *r) {
         return gone ? respond_empty(c, r, 409, "Conflict") : respond_empty(c, r, 507, "Insufficient Storage");
     }
     fchmod(fd, 0644);
+    /* Room for it above the floor: known at once with a length, checked as it comes in otherwise. Without room the
+       client is told before it sends the body (no 100 Continue), and the body is not read: the connection ends. */
+    int full = !r->chunked && r->length > free_bytes(fd) - FREE_FLOOR;
+    if (full) {
+        close(fd);
+        unlink(temp);
+        r->close = 1;
+        return respond_empty(c, r, 507, "Insufficient Storage");
+    }
     body_ready(c, r);
     static const size_t piece = 256 * 1024;
     char *buf = malloc(piece);
-    /* Room for it above the floor: known at once with a length, checked as it comes in otherwise. */
-    int full = !r->chunked && r->length > free_bytes(fd) - FREE_FLOOR;
     long long written = 0, checked = 0;
     for (;;) {
         ssize_t got = body_read(c, r, buf, piece);

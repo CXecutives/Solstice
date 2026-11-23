@@ -105,6 +105,16 @@ static void test_server(void) {
     check("the guest's clipboard arrived", guest && !strcmp(guest, "from gues"));
     free(guest);
 
+    /* A PUT too big for the free space is refused before its body is sent: no 100 Continue, and the connection ends. */
+    const char *tmp = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
+    check("the folder", realpath(tmp, root) != NULL);
+    r = exchange("PUT /solstice-too-big HTTP/1.1\r\nHost: 10.0.2.4\r\nContent-Length: 1000000000000000\r\nExpect: 100-continue\r\n\r\n", 0);
+    check("PUT without room: 507 before any 100 Continue", status_is(r, 507) && !strstr(r, "100 Continue"));
+    check("PUT without room: the connection closes", strstr(r, "Connection: close\r\n") != NULL);
+    char left[PATH_MAX];
+    snprintf(left, sizeof left, "%s/solstice-too-big", root);
+    check("PUT without room: nothing written", access(left, F_OK) != 0);
+
     /* Ranges: the whole file, a part, the last bytes; past the end, backwards or empty ones cannot be given (416). */
     long long from, to;
     check("no range: the whole file", range_of(-1, -1, 1000, &from, &to) == 0 && from == 0 && to == 999);
