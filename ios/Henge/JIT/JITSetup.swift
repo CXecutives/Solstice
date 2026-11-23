@@ -64,7 +64,6 @@ final class JITCoordinator: ObservableObject {
     /// "Turn on JIT at launch": when Henge opens without JIT, ask the built-in StikJIT for it straight away, once per launch.
     /// Only when StikJIT can do it unattended -- it is available here and already paired -- so opening Henge never lands in
     /// the setup walkthrough by surprise.
-    static let autoEnableKey = "henge.jit.autoEnable"
     private var autoTried = false
 
     /// JIT at launch opened LocalDevVPN to connect it; the next return to the foreground goes on with the built-in helper.
@@ -72,7 +71,7 @@ final class JITCoordinator: ObservableObject {
     /// Paired a moment ago: the next return to the foreground connects LocalDevVPN, checks the setup and turns JIT on.
     private var continueAfterPairing = false
     /// JIT at launch is on unless turned off in Settings (a pairing turns it on, too).
-    static var autoEnable: Bool { UserDefaults.standard.object(forKey: autoEnableKey) as? Bool ?? true }
+    static var autoEnable: Bool { UserDefaults.standard.object(forKey: SettingKey.jitAtLaunch.rawValue) as? Bool ?? SettingDefault.jitAtLaunch }
 
     func enableAtLaunchIfAsked() {
         if awaitingVPN {
@@ -171,7 +170,7 @@ final class JITCoordinator: ObservableObject {
         error = nil
         // Pairing ends in Settings, with Solstice in the background, where neither LocalDevVPN nor the helper can be
         // started: the next return to the foreground goes on (enableAtLaunchIfAsked), and JIT at launch is on from now.
-        UserDefaults.standard.set(true, forKey: Self.autoEnableKey)
+        UserDefaults.standard.set(true, forKey: SettingKey.jitAtLaunch.rawValue)
         continueAfterPairing = true
     }
 

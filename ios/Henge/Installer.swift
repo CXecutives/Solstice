@@ -99,7 +99,7 @@ final class Installer: NSObject, ObservableObject {
         grace = .invalid
     }
 
-    func start(_ release: MacOSRelease, name: String, ramMB: Int, cpus: Int, keepImage: Bool) {
+    func start(_ release: MacOSRelease, name: String, ramMB: Int, keepImage: Bool) {
         guard !busy else { return }
         phase = .checking
         machineName = name
@@ -126,7 +126,7 @@ final class Installer: NSObject, ObservableObject {
                     while !JITBootstrap.ready { try await Task.sleep(nanoseconds: 1_000_000_000) }
                 }
                 phase = .installing
-                try await install(mac, ipsw: ipsw, cpus: cpus)
+                try await install(mac, ipsw: ipsw)
                 if !keepImage { Self.deleteAfterInstall(ipsw) }
                 HengeLog.log("install", "\(name): installed \(release.name)")
                 phase = .done("\(release.name) is installed on \(name). Starting it now.")
@@ -252,7 +252,8 @@ final class Installer: NSObject, ObservableObject {
 
     // MARK: The restore
 
-    private func install(_ mac: VirtualMac, ipsw: URL, cpus: Int) async throws {
+    private func install(_ mac: VirtualMac, ipsw: URL) async throws {
+        let cpus = mac.cpus
         guard JITBootstrap.ready else { throw message("Turn on JIT first: the installer runs the Mac's own restore system, which needs it.") }
         // The restore needs 2 GB, whatever the Mac is set to use afterwards, and gets at most 4 GB: the restore system
         // caches the ~15 GB it writes, so it fills all the memory it is given, and 10 GB of a 12 GB iPhone's RAM in use

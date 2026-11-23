@@ -11,12 +11,9 @@ struct SessionView: View {
     @StateObject private var display = DisplayRouter()
     @State private var bootAttempt = 0
     @ObservedObject private var power = PowerPolicy.shared // heat: the Mac may be paused for it
-    @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
-    @AppStorage("henge.matchScreenColors") private var matchScreenColors = true
-    @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
-    @AppStorage("henge.cursor.scale") private var cursorScale = Device.isPad ? 1 : 3
-    @AppStorage("henge.cursor.sharp") private var sharpCursor = true
-    @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3
+    private var cpus: Int { mac.cpus }
+    @AppStorage(SettingKey.screenBrightness.rawValue) private var screenBrightness = SettingDefault.screenBrightness
+    @AppStorage(SettingKey.cursorScale.rawValue) private var cursorScale = Device.isPad ? 1 : 3
 
     @State private var typing = false
     @State private var zoomed = false
@@ -24,10 +21,10 @@ struct SessionView: View {
     @State private var controlsHidden = false
     @State private var showRevealHint = false
     @State private var pointerRefused = false
-    @AppStorage("henge.controls.hintsShown") private var revealHintsShown = 0
+    @AppStorage(SettingKey.controlsHintsShown.rawValue) private var revealHintsShown = 0
     /// Once per install: macOS's moving wallpapers and aerial screen saver are video, decoded by the emulated
     /// CPUs (a phone ran about 30% faster with a still one).
-    @AppStorage("henge.tips.stillWallpaperShown") private var stillWallpaperTipShown = false
+    @AppStorage(SettingKey.stillWallpaperTipShown.rawValue) private var stillWallpaperTipShown = false
     @State private var showWallpaperTip = false
     @State private var confirmStop = false
     @State var zoomCentre = CGPoint(x: 0.5, y: 0.5) // where the zoomed view is, 0...1 of the Mac's screen
@@ -395,7 +392,7 @@ struct SessionView: View {
     private func storageCard(_ layout: Layout) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Storage is almost full").font(.system(size: 17, weight: .semibold))
-            Text("\(ByteText.string(UInt64(max(storageFree, 0)))) free. The Mac is paused so its disk cannot fill this \(Device.name); it needs \(ByteText.string(UInt64(StorageGuard.minimumFree))) free. Make room in Settings, General, Storage, then resume it.")
+            Text("\(ByteText.string(UInt64(max(storageFree, 0)))) free. The Mac is paused so its disk cannot fill this \(Device.name); it needs \(ByteText.string(UInt64(StorageGuard.minimumFree))) free. Make room in Settings > General > \(Device.name) Storage, then resume it.")
                 .font(.system(size: 14)).foregroundStyle(Desk.dim)
             Button(storageRoom ? "Resume the Mac" : "Waiting for free storage…") { session.resumeAfterStorage() }
             .disabled(!storageRoom)
@@ -427,7 +424,6 @@ struct SessionView: View {
                     LabeledContent("Up", value: "\(Int(Date().timeIntervalSince(started))) s")
                 }
                 Section("Display") {
-                    Toggle("Color matching", isOn: $matchScreenColors)
                     LabeledContent("Brightness", value: "\(Int(screenBrightness * 100))%")
                     Slider(value: $screenBrightness, in: 0.4...1)
                     Text("Brightness dims only the Mac's screen.")
@@ -440,10 +436,8 @@ struct SessionView: View {
                         Text("3×").tag(3)
                     }
                     .pickerStyle(.segmented)
-                    Toggle("Sharp edges", isOn: $sharpCursor)
-                    LabeledContent("Scroll speed", value: String(format: "%.1f×", scrollSpeed))
-                    Slider(value: $scrollSpeed, in: 0.1...1.5)
-                    Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad. Scroll speed applies at once, to two fingers on the screen as well as to a trackpad or mouse.")
+                    ScrollSpeedRow()
+                    Text("The Mac supplies a small pointer image. Enlarging it can look blurry; 1× is the sharpest on an iPad.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sharing") {
