@@ -19,7 +19,7 @@ eingecheckt): `HANDOFF.local.md`.
 8. Keine unnötige Komplexität: einfach vor schlau; abstrahieren erst beim dritten Mal.
 
 ## Befehle
-- Kein lokaler Build (Windows). Gebaut und getestet wird auf GitHub Actions (App und Schlussprüfungen auf dem `xcode-27`-Runner, schnelle Tests auf `macos-26`; kostenlos, weil öffentlich).
+- Kein lokaler Build (Windows). Gebaut und getestet wird auf GitHub Actions (`xcode-27`-Runner, kostenlos, weil öffentlich).
 - `tools/check.sh test_jit test_mem` – nur die genannten Engine-Tests (berührte Teile).
 - `tools/check-all.sh` – alle Engine-Tests (normal, wie ausgeliefert + ThinLTO, mit UB-Fallen), Registerschutz-Prüfung,
   iOS-Build; die IPA landet in `out/Solstice.ipa`.
