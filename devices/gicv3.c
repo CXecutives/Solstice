@@ -82,7 +82,9 @@ static void hv_gicv3_update_body(HvGic *g) {
         int raised = (irq && !p->irq_line) || (fiq && !p->fiq_line);
         p->irq_line = irq;
         p->fiq_line = fiq;
-        if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]); /* it may be asleep in WFI, or running */
+        /* It may be asleep in WFI, or running. Only woken: no device poll (CPU 0 polls when a device asks for it,
+           hv_machine_wake; before, every interrupt raised for CPU 0, its own timer's included, polled all devices). */
+        if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]);
     }
 }
 

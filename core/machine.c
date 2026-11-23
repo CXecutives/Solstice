@@ -530,15 +530,23 @@ void hv_ret_clear(HvCpu *cpu) {
     cpu->ret_salt[0] = cpu->ret_salt[1] = 1ull << 48;
 }
 
+/* exit_req and SEV reach a running CPU; the condition only one parked on wake_cv, so the mutex is taken only for a CPU
+   that is not running (active 0). No wake is lost: every wait on wake_cv comes after park() stored active = 0 (SEQ_CST)
+   and looks at wake_pending (SEQ_CST, under wake_mu) before it sleeps; this stores wake_pending (SEQ_CST) before it
+   loads active. In the single order of SEQ_CST operations one of the two comes first: if this load saw active = 1, the
+   park comes after it, so the waiter's later load sees wake_pending = 1 and does not sleep; if it saw 0, it signals
+   under wake_mu, which the waiter holds from its look until it sleeps. A wait for CPU_ON (wait_while_off) looks at
+   off/halted instead, which their setters change under wake_mu before they wake it. A wake that comes while the target
+   is on its way out of a wait (wake_pending stored before that wait clears it) is the one that wait took. */
 void hv_cpu_wake(HvCpu *cpu) {
-    HvPerCpu *pw = cpu->pc_state;
-    __atomic_store_n(&pw->poll_req, 1, __ATOMIC_SEQ_CST); /* for CPU 0: its tick polls the devices (vmapple.c) */
+    HvPerCpu *p = cpu->pc_state;
     __atomic_store_n(&cpu->exit_req, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&p->wake_pending, 1, __ATOMIC_SEQ_CST);
     __asm__ volatile("sev" ::: "memory");
     if (cpu->m->stats_interval) hv_stats_here(cpu->m)->kick_src[1]++;
-    HvPerCpu *p = cpu->pc_state;
+    if (__atomic_load_n(&p->active, __ATOMIC_SEQ_CST)) return;
     pthread_mutex_lock(&p->wake_mu);
-    p->wake_pending = 1;
+    __atomic_store_n(&p->wake_pending, 1, __ATOMIC_SEQ_CST);
     pthread_cond_signal(&p->wake_cv);
     pthread_mutex_unlock(&p->wake_mu);
 }
@@ -566,10 +574,23 @@ void hv_machine_halt(HvMachine *m, enum HvHaltReason reason) {
         if (m->cpus[i]) hv_cpu_wake(m->cpus[i]);
 }
 
-/* Device work is for CPU 0, which polls the devices. */
+/* Device work is for CPU 0, which polls the devices: the poll is asked for here (an interrupt raised for a CPU wakes
+   it without one, hv_cpu_wake). */
 void hv_machine_wake(HvMachine *m) {
     if (m->stats_interval) hv_stats_here(m)->kick_src[3]++;
-    if (m->cpu) hv_cpu_wake(m->cpu);
+    if (!m->cpu) return;
+    __atomic_store_n(&m->cpu->pc_state->poll_req, 1, __ATOMIC_SEQ_CST); /* before exit_req: its tick sees it */
+    hv_cpu_wake(m->cpu);
+}
+
+void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on) {
+    uint32_t now = __atomic_load_n(&m->dev_unsignalled, __ATOMIC_RELAXED);
+    if (!!(now & bit) == !!on) return; /* most calls: nothing changes */
+    if (!on) {
+        __atomic_fetch_and(&m->dev_unsignalled, ~bit, __ATOMIC_SEQ_CST);
+        return;
+    }
+    if (!__atomic_fetch_or(&m->dev_unsignalled, bit, __ATOMIC_SEQ_CST)) hv_machine_kicker_poke(m); /* it may sleep long */
 }
 
 void hv_machine_kicker_poke(HvMachine *m) {
@@ -619,7 +640,11 @@ static uint64_t kicker_pass(HvMachine *m, uint64_t now, uint64_t *kicked, uint64
         } else if (due && due < wake) {
             wake = due;
         }
-        if (i == 0) { /* CPU 0 polls the devices while it runs, for work no device signals (vmapple.c) */
+        /* CPU 0 polls the devices while it runs, while one has work it does not signal (hv_machine_unsignalled); the
+           rest comes with hv_machine_wake, its device deadlines (in timer_due) and the safety kick. */
+        if (i == 0 && !__atomic_load_n(&m->dev_unsignalled, __ATOMIC_SEQ_CST)) {
+            *poll = now + HV_POLL_BUSY; /* the first poll one period after some work turns up */
+        } else if (i == 0) {
             if (kick && now >= *poll) {
                 __atomic_store_n(&m->percpu[0].poll_req, 1, __ATOMIC_SEQ_CST);
                 hv_cpu_kick(c);

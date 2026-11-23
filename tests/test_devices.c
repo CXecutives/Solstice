@@ -87,6 +87,23 @@ static void test_gic(void) {
     hv_gicv3_set_irq(g, 33, 0);
     check("level low: no IRQ", m.percpu[0].irq_line, 0);
 
+    /* With more CPUs, an interrupt raised for CPU 0 wakes it (its own timer's too) but asks for no device poll: every
+       one of them polled all the devices. Device work does ask (hv_machine_wake). */
+    int ncpus = m.ncpus;
+    m.ncpus = 2;
+    __atomic_store_n(&m.percpu[0].poll_req, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cpu.exit_req, 0, __ATOMIC_SEQ_CST);
+    hv_gicv3_set_irq(g, 33, 1);
+    check("raised for cpu 0: woken", __atomic_load_n(&cpu.exit_req, __ATOMIC_SEQ_CST), 1);
+    check("raised for cpu 0: no device poll asked", __atomic_load_n(&m.percpu[0].poll_req, __ATOMIC_SEQ_CST), 0);
+    hv_gicv3_set_irq(g, 33, 0);
+    hv_machine_wake(&m);
+    check("device work: a poll asked of cpu 0", __atomic_load_n(&m.percpu[0].poll_req, __ATOMIC_SEQ_CST), 1);
+    m.ncpus = ncpus;
+    __atomic_store_n(&m.percpu[0].poll_req, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cpu.exit_req, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&m.percpu[0].wake_pending, 0, __ATOMIC_SEQ_CST);
+
     /* PMR masks; a higher-priority interrupt preempts a running one. */
     wr32(VMAPPLE_GIC_DIST + 0x84, 3u << 1);
     wr32(VMAPPLE_GIC_DIST + 0x104, 1u << 2);

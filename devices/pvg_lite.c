@@ -746,7 +746,12 @@ void hv_pvg_lite_mapper_done(HvPvgLite *p, uint64_t index) {
     if (p->m->ncpus == 1) hv_machine_wake(p->m);
 }
 
-/* Device work no doorbell took care of: a channel that had to wait for another one's work. */
+/* A channel waiting for another one's stamp is retried at that one's doorbell and at polls: until then, work no
+   thread signals, for which the kicker polls (hv_machine_unsignalled). */
+static void note_chans(HvPvgLite *p) {
+    hv_machine_unsignalled(p->m, HV_UNSIG_PVG_CHAN, p->chan_pending != 0);
+}
+
 /* The next refresh (host time), for CPU 0's deadline: the kicker and WFI wake it then, so the refreshes keep their
    grid whatever else polls the devices. 0 before the guest named its display page. */
 uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
@@ -786,6 +791,7 @@ void hv_pvg_lite_poll(HvPvgLite *p) {
             if (chans & (1u << ch)) do_channel(p, ch);
         if (__atomic_load_n(&p->status, __ATOMIC_ACQUIRE)) hv_gicv3_pend(p->gic, p->gfx_irq);
     }
+    note_chans(p);
 }
 
 static uint64_t gfx_read(void *opaque, uint64_t off, unsigned size) {
@@ -826,6 +832,7 @@ static void gfx_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
             for (uint32_t ch = 1; ch < MAX_CHANNELS; ch++)
                 if (chans & (1u << ch)) do_channel(p, ch);
         }
+        note_chans(p);
         if (__atomic_load_n(&p->status, __ATOMIC_ACQUIRE)) hv_gicv3_pend(p->gic, p->gfx_irq);
     } else if (p->log && off != 0x1020) {
         fprintf(stderr, "hengevm: pvg-lite: write +%llx = %llx\n", (unsigned long long)off, (unsigned long long)v);
@@ -910,6 +917,7 @@ int hv_pvg_lite_set_state(HvPvgLite *p, const void *in, size_t len) {
     memcpy(p->regs, s->regs, sizeof s->regs);
     memcpy(p->io_regs, s->io_regs, sizeof s->io_regs);
     p->root_rp = s->root_rp, p->status = s->status, p->chan_pending = s->chan_pending;
+    note_chans(p);
     p->draining = s->draining, p->stamps_pending = s->stamps_pending;
     p->root_pending = s->root_pending, p->iosfc_pending = s->iosfc_pending, p->old_driver = s->old_driver;
     p->display_pa = s->display_pa, p->swaps = s->swaps;
