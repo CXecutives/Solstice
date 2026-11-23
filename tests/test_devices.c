@@ -1,7 +1,10 @@
+#define __ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES 0 /* no check() macro from AudioToolbox's headers */
 #include "harness.h"
 
 #include <fcntl.h>
 #include <mach/mach_time.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -9,6 +12,8 @@
 
 #include "sysreg.h"
 #include "vmapple.h"
+
+#include "../host/audio_mac.c" /* the player's queue state, for test_audio_lone_began */
 
 DECLARE_PROGRAM(p_timer_irq);
 DECLARE_PROGRAM(p_uart);
@@ -720,6 +725,83 @@ static void test_virtio_snd_drain(void) {
     atomic_store(&d->consumed, 0);
 }
 
+/* The player starting again while a poll that still saw it off drains by the clock: the render callback's pull and
+   the poll both move `consumed`, and it only ever goes forward (a step back would play audio twice and return
+   buffers out of step). While the clock drains, the kicker polls for it (nothing else signals its progress). */
+static _Atomic int snd_race_stop, snd_race_back;
+
+static void *snd_puller(void *arg) {
+    HvVirtioSnd *d = arg;
+    uint8_t buf[256];
+    uint64_t last = 0;
+    while (!atomic_load(&snd_race_stop)) {
+        uint64_t c = atomic_load(&d->consumed);
+        if (c < last) atomic_store(&snd_race_back, 1);
+        last = c;
+        hv_virtio_snd_pull(d, buf, sizeof buf);
+    }
+    return NULL;
+}
+
+/* iOS does not send an "ended" for every "began" (an app back from suspension gets a lone "began"): a new stream from
+   the guest still tries the player, and either it plays or the stream drains by the clock, never silent and stuck. */
+static void audio_queue_done(void *ctx) { (void)ctx; }
+
+static void test_audio_lone_began(void) {
+    HvVirtioSnd *d = board.snd;
+    if (!d) return;
+    hv_audio_attach(d);
+    hv_audio_interrupted();
+    d->backend.start(d->backend.opaque, 2, HV_VSND_FMT_S16, 48000);
+    dispatch_sync_f(queue, NULL, audio_queue_done);
+    check("sound: a stream start after a lone 'began' tries the player", atomic_load(&interrupted), 0);
+    UInt32 playing = 0, size = sizeof playing;
+    if (unit) AudioUnitGetProperty(unit, kAudioOutputUnitProperty_IsRunning, kAudioUnitScope_Global, 0, &playing, &size);
+    check("sound: the player plays, or the stream drains by the clock", playing ? !atomic_load(&d->host_off) : atomic_load(&d->host_off) != 0, 1);
+    hv_audio_detach();
+    d->backend = (HvVirtioSndBackend){0};
+    atomic_store(&d->host_off, 0);
+}
+
+static void test_virtio_snd_forward(void) {
+    HvVirtioSnd *d = board.snd;
+    if (!d) return;
+    d->backend = (HvVirtioSndBackend){fake_start, fake_stop, d};
+    d->running = 1, d->frame_bytes = 4, d->rate_hz = 0; /* the clock's target: clock_start_consumed, set below */
+    atomic_store(&d->written, 1ull << 40);               /* never runs dry */
+    atomic_store(&d->consumed, 0);
+    atomic_store(&d->host_off, 1);
+    hv_virtio_snd_poll(d);
+    check("snd: the clock drains with no buffer waiting: no polling for it", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    uint32_t head = d->phead; /* one buffer waiting, its audio not all played yet */
+    d->phead = head - 1, d->pending_end[(head - 1) % HV_VSND_PENDING] = UINT64_MAX;
+    hv_virtio_snd_poll(d);
+    check("snd: the clock drains with a buffer waiting: the kicker polls for it", (d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK) != 0, 1);
+    d->phead = head;
+    hv_virtio_snd_poll(d);
+    check("snd: no buffer waiting any more: no polling for it", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    d->phead = head - 1;
+    hv_virtio_snd_poll(d);
+    atomic_store(&snd_race_stop, 0);
+    atomic_store(&snd_race_back, 0);
+    pthread_t t;
+    pthread_create(&t, NULL, snd_puller, d);
+    for (int i = 0; i < 200000 && !atomic_load(&snd_race_back); i++) {
+        d->clock_start_consumed = atomic_load(&d->consumed) + 512; /* just ahead: the pull may pass it meanwhile */
+        hv_virtio_snd_poll(d);
+    }
+    atomic_store(&snd_race_stop, 1);
+    pthread_join(t, NULL);
+    check("snd: a poll and a pull together never move consumed backwards", atomic_load(&snd_race_back), 0);
+    atomic_store(&d->host_off, 0);
+    hv_virtio_snd_poll(d);
+    check("snd: the player back, the kicker stops polling for the clock", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    d->phead = head;
+    d->running = 0, d->backend = (HvVirtioSndBackend){0};
+    atomic_store(&d->written, 0);
+    atomic_store(&d->consumed, 0);
+}
+
 /* The memory balloon: a new target reaches the driver (config change interrupt), inflated 16 KB pages go back
    to the OS (with the RAM file under the board, as holes: they read as zero at once), a page with only some
    of its 4 KB quarters stays, a driver listing one page number per 16 KB page works too, and deflate counts. */
@@ -936,6 +1018,8 @@ int main(void) {
     test_virtio_blk_root(&root);
     test_virtio_net();
     test_virtio_snd_drain();
+    test_virtio_snd_forward();
+    test_audio_lone_began();
     test_virtio_balloon();
     puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();
