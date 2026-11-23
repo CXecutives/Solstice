@@ -2,6 +2,7 @@
    methods can be called directly. Needs a Metal device (any Mac, CI's virtual one included). */
 #include "../devices/pvg_metal.m"
 #include <sys/mman.h>
+#include <mach/mach_vm.h>
 
 static int failures;
 
@@ -181,6 +182,161 @@ static void test_video_surface(HvReplay *r) {
     printf("video surface: planes copied as the guest changed them (%s)\n", by_gpu ? "by the GPU" : "by the CPU: no GPU copy here");
 }
 
+/* Guest memory for the remap tests: four 16 KB pages, numbered from 1, and a task table naming them. */
+static uint8_t *fake_ram;
+static uint32_t fake_table[4];
+static void fake_task_pages(HvPvgLite *l, uint32_t task, uint64_t first, uint64_t n, uint32_t *out) {
+    for (uint64_t i = 0; i < n; i++) out[i] = first + i < 4 ? fake_table[first + i] : 0;
+}
+static uint8_t *fake_page(HvPvgLite *l, uint32_t page) { return page >= 1 && page <= 4 ? fake_ram + (uint64_t)(page - 1) * 0x4000 : NULL; }
+
+static BOOL still_mapped(const void *p) {
+    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)p;
+    mach_vm_size_t size;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object;
+    if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) return NO;
+    return a <= (mach_vm_address_t)(uintptr_t)p;
+}
+
+static NSString *const told_kernel = @"#include <metal_stdlib>\n"
+                                      "using namespace metal;\n"
+                                      "struct Told { device const uint *p; };\n"
+                                      "kernel void read_told(device const Told &t [[buffer(0)]], device uint *out [[buffer(1)]]) { out[0] = t.p[0]; }\n";
+
+/* The word at a GPU address, read by a kernel through an argument buffer as the guest's shaders do; the command
+   buffer's status in *ok. The resources made resident are what useResources (render 135/137) would name for o. */
+static uint32_t read_on_gpu(HvReplay *r, uint64_t address, HvObject *o, BOOL *ok) {
+    NSError *err = nil;
+    id<MTLLibrary> lib = [r->device newLibraryWithSource:told_kernel options:nil error:&err];
+    id<MTLComputePipelineState> ps = lib ? [r->device newComputePipelineStateWithFunction:[lib newFunctionWithName:@"read_told"] error:&err] : nil;
+    if (!ps) { printf("  kernel: %s\n", err.localizedDescription.UTF8String); *ok = NO; return 0; }
+    id<MTLBuffer> args = [r->device newBufferWithBytes:&address length:8 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> out = [r->device newBufferWithLength:4 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [r->queue commandBuffer];
+    id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+    [ce setComputePipelineState:ps];
+    [ce setBuffer:args offset:0 atIndex:0];
+    [ce setBuffer:out offset:0 atIndex:1];
+    __unsafe_unretained id<MTLResource> items[8];
+    uint32_t n = with_retired(o, o->object, items, 0, 8);
+    [ce useResources:items count:n usage:MTLResourceUsageRead];
+    [ce dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [ce endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    *ok = cb.status == MTLCommandBufferStatusCompleted;
+    if (!*ok) printf("  kernel: %s\n", cb.error.localizedDescription.UTF8String);
+    return *(const uint32_t *)out.contents;
+}
+
+/* A buffer whose GPU address the guest was told (info 461) and wrote into its argument buffers, and then the guest's
+   pages under it changed (refresh_pages makes a new buffer at a new address). The guest still reads through the old
+   address: that buffer has to stay, with its pages, until the guest frees the object. Before, it was let go at once
+   and the next shader reading through it faulted the GPU, which then ignored every command buffer (iPad Air 4). */
+static void test_told_buffer_outlives_remap(HvReplay *r) {
+    vm_address_t ram = 0;
+    if (vm_allocate(mach_task_self(), &ram, 4 * 0x4000, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) { check("guest pages", 0); return; }
+    fake_ram = (uint8_t *)ram;
+    ((uint32_t *)fake_page(NULL, 1))[0] = 0x5eed0001;
+    ((uint32_t *)fake_page(NULL, 2))[0] = 0x5eed0002;
+    void (*pages_before)(HvPvgLite *, uint32_t, uint64_t, uint64_t, uint32_t *) = r->task_pages;
+    uint8_t *(*page_before)(HvPvgLite *, uint32_t) = r->guest_page;
+    r->task_pages = fake_task_pages, r->guest_page = fake_page;
+    fake_table[0] = 1;
+    uint64_t kept_before = atomic_load(&retired_bytes_live);
+    HvObject *o = [HvObject new];
+    o->length = 0x4000, o->vpage = 0;
+    new_command(r);
+    if (!map_pages(r, 1, o)) { check("mapped", 0); return; }
+    o->plain_buffer = YES;
+    o->object = buffer_over_mapping(r, o);
+    *obj_slot(&r->task_objs[1], 7, YES) = o;
+    uint64_t told = [(id<MTLBuffer>)o->object gpuAddress];
+    const uint8_t *old_mapping = o->mapped;
+    mark_told(o); /* what info 460...463 do */
+    @autoreleasepool {
+        fake_table[0] = 2;
+        new_command(r);
+        refresh_pages(r, 1, o);
+    }
+    check("new pages: a new buffer over them", o->mapped != old_mapping && [(id<MTLBuffer>)o->object contents] == o->mapped);
+    check("the new buffer reads the new page", *(const uint32_t *)o->mapped == 0x5eed0002);
+    check("the told buffer's mapping is still there", still_mapped(old_mapping));
+    check("its bytes counted", atomic_load(&retired_bytes_live) == kept_before + 0x4000);
+    if ([r->device supportsFamily:MTLGPUFamilyMetal3]) {
+        BOOL ok = NO;
+        uint32_t v;
+        @autoreleasepool { v = read_on_gpu(r, told, o, &ok); }
+        check("a shader reading through the told address: no GPU fault", ok);
+        check("and it reads what was there (stale, not garbage)", v == 0x5eed0001);
+    } else puts("  (no Metal 3 GPU here: the told address is not read on the GPU)");
+    @autoreleasepool { /* the guest frees it (op 0x25) */
+        *obj_slot(&r->task_objs[1], 7, NO) = nil;
+        o = nil;
+    }
+    check("freed by the guest: what was kept goes too", atomic_load(&retired_bytes_live) == kept_before);
+    r->task_pages = pages_before, r->guest_page = page_before;
+    puts("remap: a buffer whose address the guest has is kept until the guest frees it");
+}
+
+/* After a GPU fault the queue's context ignores everything: recoverGPU draws on a new queue with objects made again,
+   keeps what the guest has addresses of, and gives up after GPU_RECOVERIES in a minute. */
+static void test_gpu_recovery(HvReplay *r) {
+    double times[GPU_RECOVERIES] = {0};
+    BOOL fits = YES;
+    for (int i = 0; i < GPU_RECOVERIES; i++) fits &= recovery_allowed(times, 100 + i);
+    check("a few recoveries a minute", fits);
+    check("one more in that minute: no", !recovery_allowed(times, 100 + GPU_RECOVERIES));
+    check("a minute after the first: one more", recovery_allowed(times, 160.5));
+    NSError *fault = [NSError errorWithDomain:MTLCommandBufferErrorDomain code:MTLCommandBufferErrorPageFault userInfo:nil];
+    NSError *ignored = [NSError errorWithDomain:@"IOGPU" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Ignored (for causing prior/excessive GPU errors) (00000004:kIOGPUCommandBufferCallbackErrorSubmissionsIgnored)"}];
+    NSError *other = [NSError errorWithDomain:MTLCommandBufferErrorDomain code:MTLCommandBufferErrorTimeout userInfo:nil];
+    check("a page fault loses the context", gpu_context_lost(fault));
+    check("so does 'submissions ignored'", gpu_context_lost(ignored));
+    check("a timeout or no error does not", !gpu_context_lost(other) && !gpu_context_lost(nil));
+
+    id<MTLCommandQueue> before = r->queue;
+    uint32_t generation = atomic_load(&r->queue_generation);
+    HvObject *plain = [HvObject new], *told = [HvObject new];
+    plain->object = [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared];
+    told->object = [r->device newBufferWithLength:64 options:MTLResourceStorageModeShared];
+    mark_told(told);
+    *obj_slot(&r->task_objs[2], 3, YES) = plain;
+    *obj_slot(&r->task_objs[2], 4, YES) = told;
+    [r recoverGPU:1000];
+    check("not poisoned: nothing done", r->queue == before && obj_known(r, 2, 3) == plain);
+    atomic_store(&r->gpu_poisoned, 1);
+    [r recoverGPU:1000];
+    check("poisoned: a new queue", r->queue != before && atomic_load(&r->queue_generation) == generation + 1 && !atomic_load(&r->gpu_poisoned));
+    check("objects made again at next use", obj_known(r, 2, 3) == nil && obj_known(r, 2, 4) == nil);
+    check("one whose address the guest has is kept", [r->told_kept[2] containsObject:told] && ![r->told_kept[2] containsObject:plain]);
+    /* Draws again: a fill on the new queue comes back. */
+    id<MTLBuffer> b = [r->device newBufferWithLength:16 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [r->queue commandBuffer];
+    id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+    [be fillBuffer:b range:NSMakeRange(0, 16) value:0x7e];
+    [be endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    check("the new queue draws", cb.status == MTLCommandBufferStatusCompleted && ((const uint8_t *)b.contents)[15] == 0x7e);
+    /* Fails over and over: after GPU_RECOVERIES in a minute it stays down. */
+    for (int i = 1; i <= GPU_RECOVERIES; i++) {
+        atomic_store(&r->gpu_poisoned, 1);
+        [r recoverGPU:1000 + i];
+    }
+    id<MTLCommandQueue> last = r->queue;
+    check("too many in a minute: down", r->gpu_down);
+    atomic_store(&r->gpu_poisoned, 1);
+    [r recoverGPU:5000];
+    check("and it stays down", r->queue == last);
+    r->gpu_down = NO;
+    memset(r->recoveries, 0, sizeof r->recoveries);
+    r->told_kept[2] = nil;
+    puts("GPU recovery: a new queue, objects made again, told ones kept, at most a few a minute");
+}
+
 /* The screen scaled into a target of ow x oh pixels, read back (BGRA). */
 static uint8_t *scaled(HvReplay *r, id<MTLTexture> src, uint32_t ow, uint32_t oh, HvFit *fit_out) {
     HvFit fit = screen_fit(ow, oh, (uint32_t)src.width, (uint32_t)src.height);
@@ -289,6 +445,8 @@ int main(void) {
         dispatch_sync(r->worker, ^{ test_short_records(r); });
         dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
         dispatch_sync(r->worker, ^{ test_video_surface(r); });
+        dispatch_sync(r->worker, ^{ test_told_buffer_outlives_remap(r); });
+        dispatch_sync(r->worker, ^{ test_gpu_recovery(r); });
         test_scaler(r);
         hv_pvg_metal_destroy(m);
     }

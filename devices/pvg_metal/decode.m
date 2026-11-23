@@ -393,10 +393,11 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
         NSMutableArray *keep = [NSMutableArray new];
         uint32_t have = 0;
         for (uint32_t i = 0; i < count; i++) {
-            id x = [self get:U32(8 + i * 4) task:task];
+            uint32_t ref = U32(8 + i * 4);
+            id x = [self get:ref task:task];
             if (!x || [x conformsToProtocol:@protocol(MTLHeap)]) continue;
             [keep addObject:x];
-            items[have++] = x;
+            have = with_retired([self object:ref task:task], x, items, have, 256);
         }
         if (!have) break;
         if (tag == 135) [e useResources:items count:have usage:(MTLResourceUsage)U32(4)];
@@ -818,6 +819,7 @@ static BOOL bind_range(uint32_t index, uint32_t count, uint32_t limit, NSRange *
                         !to ? "unknown" : to->mapped ? "mapped" : "not mapped", to ? to->length : 0, off, out ? "no object" : "no buffer"]];
         return;
     }
+    if (tag >= 460 && tag <= 463) mark_told([self object:ref task:task]); /* an identifier, address or id the guest keeps */
     SEL index_sel = sel_registerName("resourceIndex");
     uint64_t index = [obj respondsToSelector:index_sel] ? ((uint64_t (*)(id, SEL))objc_msgSend)(obj, index_sel) : 0;
     switch (tag) {

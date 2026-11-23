@@ -1,17 +1,42 @@
 /* An exec: its resources, its command buffers and their completion (part of pvg_metal.m). */
 
+/* A failure that marks the command queue's GPU context: every later command buffer on it is ignored. */
+static BOOL gpu_context_lost(NSError *e) {
+    if (!e) return NO;
+    if ([e.domain isEqualToString:MTLCommandBufferErrorDomain] && (e.code == MTLCommandBufferErrorPageFault || e.code == MTLCommandBufferErrorAccessRevoked))
+        return YES;
+    NSString *d = e.localizedDescription;
+    return [d containsString:@"PageFault"] || [d containsString:@"SubmissionsIgnored"];
+}
+
+/* The last remaps, once, with the first failed command buffer: did the GPU read through an address the guest kept? */
+- (void)showRemaps {
+    if (atomic_exchange(&errors_shown, 1)) return;
+    uint32_t next = remap_next;
+    fprintf(stderr, "hengevm: pvg-metal: %llu remaps so far, %llu KB kept for told addresses; the last:\n", (unsigned long long)remaps,
+            (unsigned long long)(atomic_load(&retired_bytes_live) >> 10));
+    for (uint32_t i = next > REMAP_RING ? next - REMAP_RING : 0; i < next; i++) {
+        HvRemapNote n = remap_ring[i % REMAP_RING];
+        fprintf(stderr, "hengevm: pvg-metal:   remap task %u page %u, %llu KB, told %s, gpu 0x%llx -> 0x%llx\n", n.task, n.vpage,
+                (unsigned long long)(n.length >> 10), n.told ? "yes" : "no", (unsigned long long)n.old_address, (unsigned long long)n.new_address);
+    }
+}
+
 /* One exec: {task, resources, buffers}, {ref, flags} per resource, {offset, length} per buffer. */
 /* Commits without waiting: the next batch can be encoded while the GPU does this one. */
 - (void)commit:(id<MTLCommandBuffer>)cb channel:(uint32_t)ch stamp:(uint32_t)stamp complete:(BOOL)complete {
     static int sync = -1; /* HV_PVG_SYNC: wait for the GPU after every batch */
     if (sync < 0) sync = getenv("HV_PVG_SYNC") != NULL;
     HvPvgLite *l = lite;
+    uint32_t generation = atomic_load(&queue_generation);
     atomic_fetch_add(&inflight, 1);
     dispatch_group_enter(completions);
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         if (done.error) {
             self->failed++;
             fprintf(stderr, "hengevm: pvg-metal: command buffer: %s\n", done.error.localizedDescription.UTF8String);
+            [self showRemaps];
+            if (gpu_context_lost(done.error) && generation == atomic_load(&self->queue_generation)) atomic_store(&self->gpu_poisoned, 1);
         }
         if (complete) hv_pvg_lite_complete(l, ch, stamp);
         atomic_fetch_sub(&self->inflight, 1);
@@ -29,6 +54,69 @@
         return;
     }
     [self commit:[queue commandBuffer] channel:ch stamp:stamp complete:YES];
+}
+
+/* Whether one more GPU recovery fits: fewer than GPU_RECOVERIES in the minute before now. times holds when the last
+   ones were (0: none); a recovery that fits is noted there. */
+static BOOL recovery_allowed(double *times, double now) {
+    int recent = 0, oldest = 0;
+    for (int i = 0; i < GPU_RECOVERIES; i++) {
+        if (times[i] && now - times[i] < 60) recent++;
+        if (times[i] < times[oldest]) oldest = i;
+    }
+    if (recent >= GPU_RECOVERIES) return NO;
+    times[oldest] = now;
+    return YES;
+}
+
+/* Worker: a GPU fault marked the queue's context (completion handler, gpu_context_lost), so nothing committed to it
+   runs any more. Draw on a new queue, and make every object again from guest memory at its next use, as after an
+   instant resume; what only the GPU held is lost (the guest draws it again or the picture is stale for a while).
+   Objects whose addresses the guest has are kept until their task ends: its argument buffers may still name them.
+   Then the screen is shown again. At most GPU_RECOVERIES a minute; past that drawing stays off. */
+- (void)recoverGPU:(double)now {
+    if (!atomic_exchange(&gpu_poisoned, 0) || gpu_down) return;
+    if (!recovery_allowed(recoveries, now)) {
+        gpu_down = YES;
+        fprintf(stderr, "hengevm: pvg-metal: GPU failed again after %d recoveries within a minute: drawing stays off\n", GPU_RECOVERIES);
+        return;
+    }
+    id<MTLCommandQueue> fresh = [device newCommandQueueWithMaxCommandBufferCount:64];
+    if (!fresh) {
+        fprintf(stderr, "hengevm: pvg-metal: GPU failed and no new command queue could be made\n");
+        return;
+    }
+    os_unfair_lock_lock(&screen_lock);
+    queue = fresh;
+    atomic_fetch_add(&queue_generation, 1);
+    os_unfair_lock_unlock(&screen_lock);
+    unsigned dropped = 0, kept = 0;
+    for (uint32_t t = 0; t < HV_TASKS; t++) {
+        HvTaskObjects *objs = &task_objs[t];
+        for (uint32_t p = 0; p < objs->pages; p++)
+            for (uint32_t i = 0; objs->page[p] && i < OBJ_PAGE; i++) {
+                HvObject *o = objs->page[p][i];
+                if (!o) continue;
+                dropped++;
+                if (!o->address_told && !o->retired) continue;
+                if (!told_kept[t]) told_kept[t] = [NSMutableArray new];
+                [told_kept[t] addObject:o];
+                kept++;
+            }
+        obj_clear(objs);
+    }
+    [surfaces removeAllObjects];
+    [mapped_textures removeAllObjects];
+    [planar removeAllObjects];
+    [planar_uses removeAllObjects];
+    [planar_hashes removeAllObjects];
+    surfaces_in = nil;
+    last_cb = nil;
+    int recent = 0;
+    for (int i = 0; i < GPU_RECOVERIES; i++) recent += recoveries[i] && now - recoveries[i] < 60;
+    fprintf(stderr, "hengevm: pvg-metal: GPU context lost: drawing on a new command queue, %u objects to be made again (%u kept: the guest has their addresses), recovery %d of %d this minute\n",
+            dropped, kept, recent, GPU_RECOVERIES);
+    if (on_screen) [self present:on_screen];
 }
 
 /* The pipelines an exec sets or asks about, made before any is waited for: their compiles (makeSerialized) start
@@ -226,7 +314,7 @@
     if (++execs % 2000 == 0) {
         static double t0;
         if (!t0) t0 = now_seconds();
-        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps, %llu surface copies, %.0f s; encoding %.2f s (%.2f s of it waiting for pipelines), waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, (unsigned long long)surfaces_copied, now_seconds() - t0, encode_time, pipe_wait, gpu_wait_time);
+        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps (%llu KB kept for told addresses), %llu surface copies, %.0f s; encoding %.2f s (%.2f s of it waiting for pipelines), waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, (unsigned long long)(atomic_load(&retired_bytes_live) >> 10), (unsigned long long)surfaces_copied, now_seconds() - t0, encode_time, pipe_wait, gpu_wait_time);
         encode_time = gpu_wait_time = pipe_wait = 0;
     }
     return YES;

@@ -19,8 +19,9 @@
         if (replaced) o->retries = 0;
         if ((!o->object || replaced) && (e[0] & 0xff) == OBJ_MAPPED_TEXTURE && o->retries < 600) {
             uint32_t tries = o->retries + 1;
-            o = nil;
             HvObject *again = [HvObject new];
+            inherit_retired(again, o);
+            o = nil;
             memcpy(again->entry, e, 12);
             again->retries = tries;
             *slot = again;
@@ -34,7 +35,9 @@
         if (o->follows->mapped) refresh_pages(self, task, o->follows);
         if (o->follows->generation == o->follows_generation) return o;
     }
+    HvObject *before = o && !memcmp(o->entry, e, 12) ? o : nil; /* the same object made again, not a reused ref */
     o = [HvObject new];
+    inherit_retired(o, before);
     memcpy(o->entry, e, 12);
     *slot = o;
     uint32_t type = e[0] & 0xff, size = e[0] >> 8;
