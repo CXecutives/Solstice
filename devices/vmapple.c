@@ -1,4 +1,5 @@
 #include "vmapple.h"
+#include "knobs.h"
 #include "pvg_lite.h"
 #include "sysreg.h"
 
@@ -129,7 +130,7 @@ static void avp_regs_create(HvVmapple *b, uint64_t ram_size) {
     AvpRegs *ctrr = calloc(1, sizeof *ctrr), *sealed = calloc(1, sizeof *sealed);
     b->ctrr = ctrr, b->sealed = sealed;
     ctrr->name = "avp-ctrr", sealed->name = "avp-sealed-registers";
-    ctrr->log = sealed->log = getenv("HV_AVP_LOG") != NULL;
+    ctrr->log = sealed->log = hv_knob.avp_log;
     avp_put(ctrr, 0x00, 0x63747272, 4);
     avp_put(ctrr, 0x04, 1, 4);
     avp_put(ctrr, 0x0c, 14, 4);
@@ -280,9 +281,9 @@ int hv_vmapple_reserve_ram(HvVmapple *b, uint64_t ram_size) {
        pages and not pages of a mapped file, which it can also write out and
        drop by itself, so the guest can have more RAM than the app may hold.
        The file is unlinked at once and goes away with the process. */
-    const char *ram_file = getenv("HV_RAM_FILE");
+    const char *ram_file = hv_knob.ram_file;
     b->ram = MAP_FAILED;
-    if (!getenv("HV_RAM_NO_LEDGER")) {
+    if (!hv_knob.ram_no_ledger) {
         uint8_t *free_of_footprint = alloc_no_footprint(ram_size);
         if (free_of_footprint) b->ram = free_of_footprint;
     }
@@ -298,7 +299,7 @@ int hv_vmapple_reserve_ram(HvVmapple *b, uint64_t ram_size) {
         if (b->ram == MAP_FAILED) fprintf(stderr, "hengevm: guest RAM file %s failed: %s; using anonymous memory\n", ram_file, strerror(errno));
         else {
             fprintf(stderr, "hengevm: guest RAM (%llu MB) is backed by a file\n", (unsigned long long)(ram_size >> 20));
-            if (!getenv("HV_RAM_NO_PREFAULT")) {
+            if (!hv_knob.ram_no_prefault) {
                 struct PrefaultArgs *a = malloc(sizeof *a);
                 a->ram = b->ram, a->size = ram_size;
                 if (pthread_create(&b->prefault_thread, NULL, prefault_thread, a) == 0) b->prefault_started = 1;
@@ -348,11 +349,11 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, HvDisk *root, HvDi
     b->usb = hv_xhci_create(m, b->pcie);
     b->keyboard = hv_virtio_input_create(m, b->pcie, HV_VINPUT_KEYBOARD);
     b->mouse = hv_virtio_input_create(m, b->pcie, HV_VINPUT_MOUSE);
-    if (!getenv("HV_NO_SOUND")) b->snd = hv_virtio_snd_create(m, b->pcie);
+    if (!hv_knob.no_sound) b->snd = hv_virtio_snd_create(m, b->pcie);
     if ((aux && !b->aux_blk) || (root && !b->root_blk)) return -1;
-    if (getenv("HV_BALLOON")) {
+    if (hv_knob.balloon >= 0) {
         b->balloon = hv_virtio_balloon_create(m, b->pcie, b->ram, VMAPPLE_MEM, ram_size, b->ram_fd);
-        hv_virtio_balloon_set_target(b->balloon, (uint64_t)atoll(getenv("HV_BALLOON")) << 20);
+        hv_virtio_balloon_set_target(b->balloon, (uint64_t)hv_knob.balloon << 20);
     }
     /* Installer boots (the ROM goes to DFU) get the USB device port, as VZ gives it. */
     if (cfg->run_installer1 || cfg->run_installer2) {

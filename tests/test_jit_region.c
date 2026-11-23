@@ -1,4 +1,5 @@
 #include "jit_region.h"
+#include "knobs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@ static int one(const char *what) {
 int main(void) {
     int bad = one("MAP_JIT");
     setenv("HV_JIT_SPLIT", "1", 1);
+    hv_knobs_load(); /* no machine here to load it */
     bad |= one("split");
     return bad;
 }

@@ -1,4 +1,5 @@
 #include "virtio_input.h"
+#include "knobs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,7 +74,7 @@ static void answer(HvVirtioInput *d) {
         break;
     }
     c[2] = (uint8_t)size;
-    if (getenv("HV_INPUT_LOG")) /* debugging: what the guest driver asks */
+    if (hv_knob.input_log) /* debugging: what the guest driver asks */
         fprintf(stderr, "virtio-input %s: select %#x subsel %u -> size %u\n", kbd ? "keyboard" : "mouse", select, subsel, size);
 }
 
@@ -85,7 +86,7 @@ static void config_write(HvVirtio *v, uint32_t off, uint64_t val, unsigned size)
 
 /* The status queue carries LED changes: hand the buffers straight back. */
 static void notify(HvVirtio *v, int q) {
-    if (getenv("HV_INPUT_LOG")) fprintf(stderr, "virtio-input %s: notify queue %d\n", ((HvVirtioInput *)v->dev)->kind == HV_VINPUT_KEYBOARD ? "keyboard" : "mouse", q);
+    if (hv_knob.input_log) fprintf(stderr, "virtio-input %s: notify queue %d\n", ((HvVirtioInput *)v->dev)->kind == HV_VINPUT_KEYBOARD ? "keyboard" : "mouse", q);
     if (q != STATUSQ) return; /* new event buffers: delivered at the next poll */
     static HvVirtqElem e;
     int any = 0;

@@ -35,14 +35,14 @@
 #include <os/lock.h>
 #include <stdatomic.h>
 #include "pvg_lite.h"
+#include "knobs.h"
 #include "pvg_vblank_clock.h"
 #include <mach/mach_time.h>
 
 int hv_pvg_trace_on(void) {
-    static const char *tf;
-    static int read, on;
+    static int on;
     static _Atomic uint64_t next;
-    if (!read) read = 1, tf = getenv("HV_PVG_TRACE_FILE");
+    const char *tf = hv_knob.pvg_trace_file;
     if (!tf) return 0;
     uint64_t now = mach_absolute_time();
     if (now >= atomic_load_explicit(&next, memory_order_relaxed)) {
@@ -535,10 +535,8 @@ static void channel_command(HvPvgLite *p, const uint32_t *table, uint32_t size, 
     uint32_t n = hdr[1] > 12 + skip ? hdr[1] - 12 - skip : 0;
     if (n > sizeof args) n = sizeof args;
     {   /* HV_PVG_OPS=1: the first of each channel command the guest sends, with its words (a driver whose commands differ) */
-        static int on = -1;
         static uint8_t seen[0x10000 / 8];
-        if (on < 0) on = getenv("HV_PVG_OPS") != NULL;
-        if (on && !(seen[op / 8] & (1 << (op % 8)))) {
+        if (hv_knob.pvg_ops && !(seen[op / 8] & (1 << (op % 8)))) {
             seen[op / 8] |= (uint8_t)(1 << (op % 8));
             uint32_t w[16] = {0};
             ring_read(p, table, size, rd + 12 + skip, w, n < sizeof w ? n : sizeof w);
@@ -600,7 +598,7 @@ static void ensure_metal(HvPvgLite *p) {
     os_unfair_lock_lock(&p->layer_lock);
     if (!p->metal_tried) {
         p->metal_tried = 1;
-        HvPvgMetal *metal = getenv("HV_PVG_NO_METAL") ? NULL : hv_pvg_metal_create(p);
+        HvPvgMetal *metal = hv_knob.pvg_no_metal ? NULL : hv_pvg_metal_create(p);
         if (metal && p->layer_set) hv_pvg_metal_set_layer(metal, (void *)p->layer);
         atomic_store_explicit(&p->metal, metal, memory_order_release);
     }
@@ -868,12 +866,12 @@ HvPvgLite *hv_pvg_lite_create(HvMachine *m, HvGic *gic, uint64_t gfx_pa, uint64_
     p->gic = gic;
     p->gfx_irq = gfx_irq;
     p->iosfc_irq = iosfc_irq;
-    p->log = getenv("HV_PVG_LITE_LOG") != NULL;
-    p->tally = getenv("HV_PVG_TALLY") != NULL;
-    /* Read for each Mac: Settings can change the rate between two in one launch (#183). */
-    const char *hz = getenv("HV_HZ"), *refreshes = getenv("HV_PVG_VBLANK");
-    p->hz = hz && atoi(hz) > 0 ? (uint32_t)atoi(hz) : 60;
-    p->vblank_period = !refreshes || atoi(refreshes) ? 24000000ull / p->hz : 0;
+    p->log = hv_knob.pvg_lite_log;
+    p->tally = hv_knob.pvg_tally;
+    /* Read for each Mac: Settings can change the rate between two in one launch (#183). 30..120 as the replay presents
+       (pvg_metal.m): the guest is never told a rate its screen is not refreshed at. */
+    p->hz = (uint32_t)hv_knob.hz;
+    p->vblank_period = hv_knob.pvg_vblank ? 24000000ull / p->hz : 0;
     hv_machine_add_mmio(m, gfx_pa, 0x10000, p, gfx_read, gfx_write, "gfx");
     hv_machine_add_mmio(m, iosfc_pa, 0x10000, p, iosfc_read, iosfc_write, "iosurface");
     return p;

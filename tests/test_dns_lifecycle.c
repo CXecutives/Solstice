@@ -1,4 +1,5 @@
 #include "dns_proxy.h"
+#include "knobs.h"
 #include "machine.h"
 #include <dns_sd.h>
 #include <pthread.h>
@@ -19,7 +20,7 @@ static atomic_int immediate, active, started, sent, block_send, release_send, st
 static atomic_int fail_lookup;
 static int failures;
 /* The standalone resolver test supplies the engine's runtime settings. */
-int hv_knob[HV_K_COUNT];
+HvKnobs hv_knob;
 
 DNSServiceErrorType DNSServiceQueryRecord(DNSServiceRef *ref, DNSServiceFlags flags,
         uint32_t interface, const char *name, uint16_t type, uint16_t cls,
@@ -90,7 +91,7 @@ int main(void) {
     memcpy(dns + 12, question, sizeof question);
 
     check("disabled DNS proxy passes queries through", !hv_dns_proxy_take(packet, 14 + iplen, send_frame));
-    hv_knob[HV_K_DNSPROXY] = 1;
+    hv_knob.dns_proxy = 1;
     hv_dns_proxy_start();
     check("pending query accepted", hv_dns_proxy_take(packet, 14 + iplen, send_frame));
     wait_for(&started, 1);
@@ -142,7 +143,7 @@ int main(void) {
     hv_dns_proxy_stop();
 
     /* Machine initialization restores the configured knob before network attach. */
-    hv_knob[HV_K_DNSPROXY] = 1;
+    hv_knob.dns_proxy = 1;
     hv_dns_proxy_start();
     query_reply(packet, 14 + iplen);
     check("restart after fallback gets a fresh failure streak", hv_dns_proxy_on());

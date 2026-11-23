@@ -1,0 +1,167 @@
+/* Every engine setting read from the environment (HV_*), one line each: the single source for core/knobs.{h,c},
+   ios/Henge/EngineKnobs.generated.swift, KNOBS.md and the CI gates (tools/knobs.py).
+
+   KNOB(field, "HV_NAME", TYPE, default, low, high, "purpose")
+     field     hv_knob.field in C, EngineKnob.field (camel case) in Swift; HV_NAME is "HV_" + its upper case.
+     FLAG      on when the variable is set at all, whatever its value (even 0).
+     BOOL      0 off; any other number, or an empty value, on.
+     INT       a whole number (atoi); outside low..high it falls back to the default (said once, at the load).
+     DOUBLE    a number (atof), with low..high as for INT.
+     HEX       a 64-bit number in hex (strtoull base 16), as an address.
+     STR       the text itself (NULL or the default when unset).
+   Set the environment, then hv_knobs_load() (each machine creation, the Mac tool's main, the app's EngineTuning).
+   Keep each line on one line: tools/knobs.py reads them. */
+
+/* ---- The translator and the dispatcher (several can also be set while a Mac runs: hv_knob_set) ---- */
+KNOB(superblocks, "HV_SUPERBLOCKS", BOOL, 0, 0, 0, "Blocks continue past direct branches into one longer translation.")
+KNOB(groups, "HV_GROUPS", BOOL, 0, 0, 0, "Neighbouring memory accesses checked as one group.")
+KNOB(no_ras, "HV_NO_RAS", BOOL, 0, 0, 0, "Every return goes through the indirect-branch cache (no return prediction).")
+KNOB(k2, "HV_K2", BOOL, 0, 0, 0, "Testing: each block in one part (hot and cold code together).")
+KNOB(k3, "HV_K3", BOOL, 0, 0, 0, "Testing: every guest register spilled around helper calls.")
+/* Table-major unless asked: 9-20% faster in 5 of 6 paired rounds of the mix. */
+KNOB(tlbt, "HV_TLBT", BOOL, 1, 0, 0, "TLB laid out table-major (0: entry-major).")
+KNOB(jit_cap, "HV_JIT_CAP", INT, 0, 0, 65536, "Testing: MB of the code region used from the start (0: all of it).")
+/* The exact check costs ~13% of the code (Mac 2026-11-09: 296-300 against 259-261 bytes a block); without it Golden
+   Gate's boot and login send 80-240K such accesses a second to the helper on the phone, whose code cache fills every
+   40-60 s: worth a phone A/B (HV_RECHECK 0 vs 1 over a login), not a Mac one (~7K such accesses/s). */
+KNOB(recheck, "HV_RECHECK", BOOL, 1, 0, 0, "Exact check for accesses in a page's last 15 bytes in their out-of-line path.")
+KNOB(sync_wait, "HV_SYNC_WAIT", BOOL, 0, 0, 0, "A CPU waiting for TLB acknowledgements sleeps after 64 spins.")
+/* Off unless asked since 2026-11-09: a checked skip on the phone found a kept user entry out of date (a stack page, no
+   mapping), the stale state that flush exists to retire (xnu reusing a hardware ASID, which can leave every process's
+   kept entries stale, not just the incoming one's). It was worth ~3% on a process-spawn loop; not worth guest memory. */
+KNOB(switch_flush, "HV_SWITCH_FLUSH", INT, 0, 0, 3, "Skip the local TLB flush xnu issues after a process switch (1-3: ways of checking it).")
+KNOB(range_drop, "HV_RANGE_DROP", INT, 0, 0, 1048576, "TLB range invalidations of up to this many pages in one pass (0: off).")
+/* Off: no measured gain (Mac mix 24.1 s either way, 2026-11-08); the tests pass with it on (HV_MOVIMM=1 make test). */
+KNOB(movimm, "HV_MOVIMM", BOOL, 0, 0, 0, "Constants built in registers instead of loaded from the literal pool.")
+KNOB(predstat, "HV_PREDSTAT", BOOL, 0, 0, 0, "Measuring: every access through the C helper, with prediction statistics.")
+/* On unless asked: the Mac bench (2026-11-08) posted 130-400 raced remote drops/s with it against 710-1370 without
+   (most walks a drop met were of other pages), and the phone's login storm waits up to 24% of a CPU. */
+KNOB(walk_log, "HV_WALK_LOG", BOOL, 1, 0, 0, "Remote TLB drops skip CPUs whose page walks did not touch the page.")
+KNOB(hoist_check, "HV_HOIST_CHECK", BOOL, 0, 0, 0, "The exit check of backward branches hoisted out of loops.")
+/* On unless asked: a code change used to drop every CPU's whole branch cache (~100/s with JavaScriptCore's JIT on the
+   Mac bench, 300-390K refills/s after); now only the page's targets (Mac 2026-11-09: resets 195 -> 2/s, a JIT check of
+   200 recompiled functions correct; bench times the same within noise). */
+KNOB(ijc_pages, "HV_IJC_PAGES", BOOL, 1, 0, 0, "A code change drops only that page's branch-cache targets.")
+KNOB(dns_proxy, "HV_DNS_PROXY", BOOL, 1, 0, 0, "The guest's DNS through the host's resolver.")
+KNOB(wfi_spin, "HV_WFI_SPIN", INT, 0, 0, 1000000, "Microseconds an idle CPU watches for work before sleeping.")
+KNOB(flush, "HV_FLUSH", INT, 0, 0, 2, "Disk flush: 0 fsync, 1 none, 2 F_BARRIERFSYNC.")
+KNOB(no_fast_resume, "HV_NO_FAST_RESUME", FLAG, 0, 0, 0, "Every exception entry and return through the dispatcher.")
+KNOB(wfe_spin, "HV_WFE_SPIN", FLAG, 0, 0, 0, "A WFE always leaves for the dispatcher instead of waiting in place.")
+KNOB(no_stash, "HV_NO_STASH", FLAG, 0, 0, 0, "A process switch drops the user TLB entries instead of stashing them.")
+KNOB(ic_ivau, "HV_IC_IVAU", FLAG, 0, 0, 0, "IC IVAU drops the page's translations (as before they were kept).")
+KNOB(ic_flush, "HV_IC_FLUSH", FLAG, 0, 0, 0, "IC IALLU drops every translation (as before they were kept).")
+KNOB(exit_checks, "HV_EXIT_CHECKS", FLAG, 0, 0, 0, "Debugging: every chained exit checks for an exit request.")
+KNOB(no_xchain, "HV_NO_XCHAIN", FLAG, 0, 0, 0, "Branches to another page never chain.")
+KNOB(inline_xjump, "HV_INLINE_XJUMP", FLAG, 0, 0, 0, "Each branch to another page does its own cache lookup instead of the shared thunk.")
+KNOB(c_excl, "HV_C_EXCL", FLAG, 0, 0, 0, "Debugging: every exclusive access through the C helper.")
+KNOB(tlbi_leaves, "HV_TLBI_LEAVES", FLAG, 0, 0, 0, "Every TLBI ends its block, as before.")
+KNOB(slow_mem, "HV_SLOW_MEM", FLAG, 0, 0, 0, "Debugging: every load and store through the C helper.")
+KNOB(big_lock, "HV_BIG_LOCK", FLAG, 0, 0, 0, "Debugging: one CPU in guest code at a time.")
+KNOB(jit_poison, "HV_JIT_POISON", FLAG, 0, 0, 0, "Debugging: freed code poisoned, and each block's flush generation checked as it runs.")
+KNOB(code_check, "HV_CODE_CHECK", FLAG, 0, 0, 0, "Debugging: which code pages changed since they were translated.")
+KNOB(ijc_debug, "HV_IJC_DEBUG", FLAG, 0, 0, 0, "Debugging: what came before branch-cache misses that were cached.")
+KNOB(psci_log, "HV_PSCI_LOG", FLAG, 0, 0, 0, "Debugging: every PSCI call.")
+KNOB(block_dump, "HV_BLOCK_DUMP", STR, NULL, 0, 0, "Measuring: a file for sampled translated blocks (guest and host words, for bench/hvdis.py).")
+KNOB(block_dump_every, "HV_BLOCK_DUMP_EVERY", INT, 64, 0, INT_MAX, "Measuring: HV_BLOCK_DUMP keeps every Nth block.")
+KNOB(prof_fn, "HV_PROF_FN", STR, "run", 0, 0, "Measuring: the function the profiler shows per offset.")
+KNOB(kva_hist, "HV_KVA_HIST", FLAG, 0, 0, 0, "Measuring: which kernel VAs get TLB fills, per bucket.")
+KNOB(kva_base, "HV_KVA_BASE", HEX, 0xfffffe0000000000ull, 0, 0, "Measuring: where HV_KVA_HIST's buckets start.")
+KNOB(kva_shift, "HV_KVA_SHIFT", INT, 30, 17, 40, "Measuring: log2 of the bytes in each HV_KVA_HIST bucket.")
+KNOB(stats, "HV_STATS", INT, 0, 0, 86400, "Seconds between engine stats lines in the log (0: none).")
+KNOB(stats_deep, "HV_STATS_DEEP", BOOL, 0, 0, 0, "The stats lines with the costly diagnostics too.")
+
+/* ---- The display ---- */
+KNOB(hz, "HV_HZ", INT, 60, 30, 120, "The refresh rate macOS is told its display has.")
+KNOB(saving_hz, "HV_SAVING_HZ", INT, 0, 0, 120, "Frames a second shown while saving power (hot device); 0: every frame.")
+KNOB(pvg_vblank, "HV_PVG_VBLANK", BOOL, 1, 0, 0, "The display's refresh interrupts (0: none).")
+KNOB(pvg_trace_file, "HV_PVG_TRACE_FILE", STR, NULL, 0, 0, "GPU command trace while this file exists (checked as it runs).")
+KNOB(pvg_trace, "HV_PVG_TRACE", INT, 0, 0, INT_MAX, "Mac tool: the graphics device's register accesses (level).")
+KNOB(pvg_ops, "HV_PVG_OPS", FLAG, 0, 0, 0, "Debugging: the first of each channel command the guest sends.")
+KNOB(pvg_no_metal, "HV_PVG_NO_METAL", FLAG, 0, 0, 0, "Testing: the graphics device without its Metal replay.")
+KNOB(pvg_lite_log, "HV_PVG_LITE_LOG", FLAG, 0, 0, 0, "Debugging: the graphics device's own log.")
+KNOB(pvg_tally, "HV_PVG_TALLY", FLAG, 0, 0, 0, "Measuring: counts of the guest's graphics commands.")
+KNOB(pvg_half, "HV_PVG_HALF", STR, NULL, 0, 0, "\"linear\": half-float surfaces shown as linear at start.")
+KNOB(pvg_fail_libs, "HV_PVG_FAIL_LIBS", FLAG, 0, 0, 0, "Testing: every shader library refused, as an OS that cannot load them does.")
+KNOB(pvg_no_relabel, "HV_PVG_NO_RELABEL", FLAG, 0, 0, 0, "Shader libraries never relabelled for iOS.")
+KNOB(pvg_relabel, "HV_PVG_RELABEL", INT, 0, 0, 3, "Testing: every shader library relabelled at this stage from the start (0: as needed).")
+KNOB(pvg_relabel_quiet, "HV_PVG_RELABEL_QUIET", FLAG, 0, 0, 0, "No log line for libraries loaded relabelled at the stage asked for.")
+KNOB(shader_dump, "HV_SHADER_DUMP", INT, -1, -1, INT_MAX, "Shader libraries kept while tracing: 0 none, other numbers all and blend states (-1: the first relabelled ones).")
+KNOB(pvg_archive, "HV_PVG_ARCHIVE", STR, NULL, 0, 0, "Saved pipelines: \"0\" none, \"reset\" start again.")
+KNOB(pvg_archive_mb, "HV_PVG_ARCHIVE_MB", INT, 768, 1, INT_MAX, "MB of saved pipelines at most.")
+KNOB(pvg_heap_log, "HV_PVG_HEAP_LOG", FLAG, 0, 0, 0, "Debugging: each GPU heap the guest makes.")
+KNOB(pvg_host_dump, "HV_PVG_HOST_DUMP", STR, NULL, 0, 0, "Debugging: file prefix for the first host surfaces before the guest's pixels.")
+KNOB(pvg_surface_dump, "HV_PVG_SURFACE_DUMP", STR, NULL, 0, 0, "Debugging: file prefix for the first multi-plane surfaces.")
+KNOB(pvg_desc_dump, "HV_PVG_DESC_DUMP", FLAG, 0, 0, 0, "Debugging: texture descriptors as read.")
+KNOB(pvg_planar_copy, "HV_PVG_PLANAR_COPY", FLAG, 0, 0, 0, "Every plane of multi-plane surfaces copied, not just the first.")
+KNOB(pvg_plane0, "HV_PVG_PLANE0", FLAG, 0, 0, 0, "Multi-plane surfaces read from plane 0 only.")
+KNOB(pvg_passdump, "HV_PVG_PASSDUMP", INT, 0, 0, INT_MAX, "Debugging: the first N render pass records, raw and as read.")
+KNOB(pvg_sync, "HV_PVG_SYNC", FLAG, 0, 0, 0, "Debugging: each GPU command buffer waited for.")
+KNOB(pvg_cursor_log, "HV_PVG_CURSOR_LOG", FLAG, 0, 0, 0, "Debugging: pointer glyphs and visibility.")
+KNOB(pvg_gpu_test, "HV_PVG_GPU_TEST", FLAG, 0, 0, 0, "Mac tool: the phone's GPU path, drawn into a layer for screenshots.")
+KNOB(pvg_shot, "HV_PVG_SHOT", STR, NULL, 0, 0, "Mac tool: a file for screenshots of the drawable.")
+KNOB(pvg_shot_secs, "HV_PVG_SHOT_SECS", DOUBLE, 5, 0.01, 86400, "Mac tool: seconds between HV_PVG_SHOT screenshots.")
+KNOB(shot_secs, "HV_SHOT_SECS", DOUBLE, 5, 0.01, 86400, "Mac tool: seconds between named screenshots (for timing a boot).")
+KNOB(color_probe, "HV_COLOR_PROBE", FLAG, 0, 0, 0, "Measuring: what the display is told and shown, for colour problems.")
+KNOB(color_probe_dir, "HV_COLOR_PROBE_DIR", STR, NULL, 0, 0, "Measuring: HV_COLOR_PROBE's folder (default Documents/colorprobe).")
+KNOB(color_probe_secs, "HV_COLOR_PROBE_SECS", DOUBLE, 0, 0, 86400, "Measuring: seconds between HV_COLOR_PROBE captures (0: on trigger only).")
+KNOB(color_probe_metrics_secs, "HV_COLOR_PROBE_METRICS_SECS", DOUBLE, 15, 0, 86400, "Measuring: seconds between HV_COLOR_PROBE metrics lines.")
+KNOB(color_probe_max, "HV_COLOR_PROBE_MAX", INT, 8, 0, INT_MAX, "Measuring: HV_COLOR_PROBE captures at most.")
+
+/* ---- Devices ---- */
+KNOB(ram_file, "HV_RAM_FILE", STR, NULL, 0, 0, "Guest RAM backed by this file (unlinked at once) when it cannot be kept out of the footprint.")
+KNOB(ram_no_ledger, "HV_RAM_NO_LEDGER", FLAG, 0, 0, 0, "Guest RAM never kept out of the app's memory footprint.")
+KNOB(ram_no_prefault, "HV_RAM_NO_PREFAULT", FLAG, 0, 0, 0, "File-backed guest RAM not touched ahead of the guest.")
+KNOB(balloon, "HV_BALLOON", INT, -1, -1, INT_MAX, "The memory balloon, asking for this many MB (-1: no balloon).")
+KNOB(no_sound, "HV_NO_SOUND", FLAG, 0, 0, 0, "No sound device.")
+KNOB(write_cache, "HV_WRITE_CACHE", BOOL, 1, 0, 0, "Disk writes through the host's cache (0: F_NOCACHE, for the restore).")
+KNOB(blk_stats, "HV_BLK_STATS", INT, -1, -1, INT_MAX, "Measuring: disk stats every N seconds (0: 10; -1: none).")
+KNOB(blk_seg_max, "HV_BLK_SEG_MAX", INT, 8, 1, INT_MAX, "Segments a disk request may have.")
+KNOB(virtio_cfg_log, "HV_VIRTIO_CFG_LOG", FLAG, 0, 0, 0, "Debugging: virtio queue sizes and config reads.")
+KNOB(pci_log, "HV_PCI_LOG", INT, -1, -1, INT_MAX, "Debugging: config reads of this PCI slot (-1: none).")
+KNOB(input_log, "HV_INPUT_LOG", FLAG, 0, 0, 0, "Debugging: what the guest's input driver asks.")
+KNOB(snd_log, "HV_SND_LOG", FLAG, 0, 0, 0, "Debugging: the sound device.")
+KNOB(vusb_log, "HV_VUSB_LOG", FLAG, 0, 0, 0, "Debugging: the USB device port.")
+KNOB(xhci_log, "HV_XHCI_LOG", FLAG, 0, 0, 0, "Debugging: the USB controller.")
+KNOB(avp_log, "HV_AVP_LOG", FLAG, 0, 0, 0, "Debugging: the AVP devices.")
+
+/* ---- Host: networking, sharing, installing, the clock ---- */
+KNOB(net_log, "HV_NET_LOG", FLAG, 0, 0, 0, "Debugging: one line per network frame.")
+KNOB(net_fwd, "HV_NET_FWD", STR, NULL, 0, 0, "Mac tool: \"hostport:guestport\" from loopback into the guest.")
+KNOB(share_log, "HV_SHARE_LOG", FLAG, 0, 0, 0, "Debugging: every request to the shared-folder server.")
+KNOB(install_log, "HV_INSTALL_LOG", FLAG, 0, 0, 0, "Debugging: the restore's own logs.")
+KNOB(libusb_log, "HV_LIBUSB_LOG", FLAG, 0, 0, 0, "Debugging: the restore's USB traffic.")
+KNOB(usb_out_chunk, "HV_USB_OUT_CHUNK", INT, 16384, 1, 1048576, "Bytes of each USB transfer to the guest at most.")
+KNOB(vusb_probe, "HV_VUSB_PROBE", FLAG, 0, 0, 0, "Debugging: probe the USB device port at start.")
+KNOB(jit_split, "HV_JIT_SPLIT", FLAG, 0, 0, 0, "The code region as two mappings (writable and executable), as on iOS.")
+KNOB(qos, "HV_QOS", STR, NULL, 0, 0, "Testing: the guest CPUs' QoS class (ui, init or default).")
+KNOB(resume_clock, "HV_RESUME_CLOCK", STR, NULL, 0, 0, "\"continuous\": no time passes for the guest while it is paused.")
+KNOB(resume_skew, "HV_RESUME_SKEW", INT, 0, INT_MIN, INT_MAX, "Testing: a resume as if away this many seconds longer.")
+KNOB(prof_ios, "HV_PROF_IOS", INT, -1, -1, INT_MAX, "Measuring: the iOS sampling profiler (2: with words; -1: off).")
+KNOB(prof_ios_secs, "HV_PROF_IOS_SECS", INT, 30, 0, INT_MAX, "Measuring: seconds between iOS profiler reports.")
+
+/* ---- The Mac tool (host/main.c) ---- */
+KNOB(no_net, "HV_NO_NET", FLAG, 0, 0, 0, "No network.")
+KNOB(jit_mb, "HV_JIT_MB", INT, 0, 0, 65536, "Debugging: MB of code region (0: the default).")
+KNOB(agent, "HV_AGENT", STR, NULL, 0, 0, "The guest agent served to macOS.")
+KNOB(input_file, "HV_INPUT_FILE", STR, NULL, 0, 0, "Commands (keys, clicks, knob NAME VALUE) read from this file.")
+KNOB(clicks, "HV_CLICKS", STR, NULL, 0, 0, "Debugging: \"seconds:x,y;...\" clicks on a timetable.")
+KNOB(watch, "HV_WATCH", INT, -1, -1, INT_MAX, "Debugging: what each CPU is at, every N seconds (-1: off).")
+KNOB(type_at, "HV_TYPE_AT", INT, -1, -1, INT_MAX, "Debugging: types \"abc\" after N seconds (-1: off).")
+KNOB(type_no_keys, "HV_TYPE_NO_KEYS", FLAG, 0, 0, 0, "Debugging: HV_TYPE_AT moves the pointer only.")
+KNOB(prof_all, "HV_PROF_ALL", FLAG, 0, 0, 0, "Measuring: the profiler samples every thread.")
+KNOB(prof_pcs, "HV_PROF_PCS", INT, -1, -1, INT_MAX, "Measuring: per-PC profile (2 or more: every PC; -1: off).")
+KNOB(hook_switch, "HV_HOOK_SWITCH", FLAG, 0, 0, 0, "Debugging: the hash hook moves to memcmp once a page is compared.")
+KNOB(hook_out, "HV_HOOK_OUT", STR, NULL, 0, 0, "Debugging: a file for what the hooks see.")
+KNOB(hook_both, "HV_HOOK_BOTH", FLAG, 0, 0, 0, "Debugging: both hooks at once.")
+KNOB(hook_bcmp, "HV_HOOK_BCMP", FLAG, 0, 0, 0, "Debugging: the memcmp hook instead of the hash one.")
+KNOB(ram_grep, "HV_RAM_GREP", STR, NULL, 0, 0, "Debugging: guest RAM lines with any of these words (the kernel's log) at the end.")
+KNOB(ram_grep_out, "HV_RAM_GREP_OUT", STR, "/dev/stderr", 0, 0, "Debugging: where HV_RAM_GREP writes.")
+KNOB(boot_display_dump, "HV_BOOT_DISPLAY_DUMP", STR, NULL, 0, 0, "Debugging: a file for the boot framebuffer (raw BGRA).")
+KNOB(install_stop_at_end, "HV_INSTALL_STOP_AT_END", FLAG, 0, 0, 0, "The Mac tool ends when an install ends.")
+
+/* ---- Read by the app (Swift) or the tests only, listed so nothing unknown is set ---- */
+KNOB(safe, "HV_SAFE", STR, NULL, 0, 0, "App: 1 or 0 decides safe mode (upstream's engine settings) by hand.")
+KNOB(log_console, "HV_LOG_CONSOLE", STR, NULL, 0, 0, "App: a copy of the log on the original stderr (for devicectl --console).")
+KNOB(trace, "HV_TRACE", FLAG, 0, 0, 0, "Tests: every block traced.")
+KNOB(dump, "HV_DUMP", STR, NULL, 0, 0, "Tests: a file for test_bench's translated code.")
+KNOB(test_work, "HV_TEST_WORK", STR, NULL, 0, 0, "Tests: test_devices' work folder.")

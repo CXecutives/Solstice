@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "usb_host.h"
+#include "knobs.h"
 
 static HvVirtioUsb *g_usb;
 static int g_log;
@@ -37,7 +38,7 @@ void hv_libusb_shim_attach(HvVirtioUsb *d) {
     pthread_rwlock_wrlock(&g_usb_lock);
     g_usb = d;
     pthread_rwlock_unlock(&g_usb_lock);
-    g_log = getenv("HV_LIBUSB_LOG") != NULL;
+    g_log = hv_knob.libusb_log;
 }
 
 /* The device is about to be freed (its machine is released after a restore). It leaves the bus first, which
@@ -286,8 +287,7 @@ static void run(Xfer *x) {
            posted reads one after another; here each request is one read,
            which must fit the guest's buffer (16 KB, usbmux's receive size; a
            bigger one panics the guest's driver). So send it in pieces. */
-        static int chunk;
-        if (!chunk) chunk = getenv("HV_USB_OUT_CHUNK") ? atoi(getenv("HV_USB_OUT_CHUNK")) : 16384;
+        int chunk = hv_knob.usb_out_chunk;
         acks = 0;
         if (t->length == 0) { /* a zero-length packet: this link delimits transfers itself */
             complete(x, LIBUSB_TRANSFER_COMPLETED, 0);

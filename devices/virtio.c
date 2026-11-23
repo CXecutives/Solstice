@@ -1,4 +1,5 @@
 #include "virtio.h"
+#include "knobs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,7 +95,7 @@ static void common_write(HvVirtio *v, uint64_t off, uint64_t val, unsigned size)
         else if (q) /* the driver would index its rings by a size we do not use: say so */
             fprintf(stderr, "virtio %04x: queue %u size %llu refused (max %d)\n", v->pci.config[2] | v->pci.config[3] << 8,
                     v->qsel, (unsigned long long)val, HV_VIRTQ_MAX_SIZE);
-        if (getenv("HV_VIRTIO_CFG_LOG"))
+        if (hv_knob.virtio_cfg_log)
             fprintf(stderr, "virtio %04x: queue %u size %llu\n", v->pci.config[2] | v->pci.config[3] << 8, v->qsel, (unsigned long long)val);
         break;
     case 0x1c: if (q) q->enabled = val & 1; break;
@@ -119,9 +120,7 @@ static uint64_t bar_read(HvPciDev *d, int bar, uint64_t off, unsigned size) {
         uint64_t r = 0;
         uint32_t o = (uint32_t)(off - DEVICE);
         if (o < v->config_len) memcpy(&r, v->config + o, size > v->config_len - o ? v->config_len - o : size);
-        static int cfg_log = -1;
-        if (cfg_log < 0) cfg_log = getenv("HV_VIRTIO_CFG_LOG") != NULL;
-        if (cfg_log) /* debugging: which device config fields the driver reads */
+        if (hv_knob.virtio_cfg_log) /* debugging: which device config fields the driver reads */
             fprintf(stderr, "virtio %04x:%04x config read +%u (%u) = %llx\n", v->pci.config[0] | v->pci.config[1] << 8,
                     v->pci.config[2] | v->pci.config[3] << 8, o, size, (unsigned long long)r);
         return r;

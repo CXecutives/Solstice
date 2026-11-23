@@ -64,8 +64,10 @@ enum HengeVmOutcome {
 };
 int henge_vm_exit_outcome(void);
 void henge_vm_stop(void);
-/* Testing: sets a translation knob (core/machine.h) in the running machine; nonzero if it exists. */
+/* Testing: sets a whole-number engine setting (core/knobs.def) in the running machine; nonzero if it exists. */
 int henge_vm_knob(const char *name, int value);
+/* The engine settings read again from the environment (EngineTuning.apply, after it sets them). */
+void henge_vm_knobs_load(void);
 /* The power profile (PowerPolicy.swift), live and kept for the Macs started later: 0 normal; 1 (Low Power Mode) an
    idle CPU sleeps at once (no HV_WFI_SPIN); 2 (a serious thermal state) also at most HV_SAVING_HZ frames a second go
    to the screen (macOS is still refreshed at its mode's rate); 3 (critical) is the same here, the app pauses the Mac. */

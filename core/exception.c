@@ -1,4 +1,5 @@
 #include "exception.h"
+#include "knobs.h"
 
 #include <sched.h>
 #include <stdio.h>
@@ -138,9 +139,7 @@ static HvCpu *cpu_by_mpidr(HvMachine *m, uint64_t mpidr) {
 
 /* PSCI 1.0. */
 static uint64_t psci(HvCpu *cpu, uint64_t fn) {
-    static int log = -1;
-    if (log < 0) log = getenv("HV_PSCI_LOG") != NULL;
-    if (log && ((uint32_t)fn >> 24 == 0x84 || (uint32_t)fn >> 24 == 0xc4))
+    if (hv_knob.psci_log && ((uint32_t)fn >> 24 == 0x84 || (uint32_t)fn >> 24 == 0xc4))
         fprintf(stderr, "psci %#llx x1 %#llx x2 %#llx x3 %#llx pc %llx\n", (unsigned long long)fn, (unsigned long long)cpu->x[1],
                 (unsigned long long)cpu->x[2], (unsigned long long)cpu->x[3], (unsigned long long)cpu->pc);
     switch ((uint32_t)fn) {

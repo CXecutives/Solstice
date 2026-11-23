@@ -1,4 +1,5 @@
 #include "vm.h"
+#include "knobs.h"
 #include "pvg_lite.h"
 
 #include <TargetConditionals.h>
@@ -279,6 +280,7 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
         signals_installed = 1;
     }
     signal(SIGPIPE, SIG_IGN); /* a guest connection closing at the far end must not end the machine */
+    hv_knobs_load(); /* before the disks and guest RAM read theirs; the engine loads them again with the machine */
     if (hv_disk_open(&disk, c->disk, 0, 0) != 0) return fail(err, errlen, "Cannot open the disk image.");
     if (hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, 0) != 0)
         return fail(err, errlen, "Cannot open the auxiliary storage.");
@@ -289,10 +291,10 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     int r = c->jit_rx ? hv_machine_init_jit(&m, c->jit_rx, c->jit_rw, jit) : hv_machine_init(&m, jit);
     if (r != 0) return fail(err, errlen, "Cannot set up the JIT region and the engine's tables.");
     m.log = c->log;
-    m.gen_checks = getenv("HV_JIT_POISON") != NULL;
-    if (getenv("HV_SLOW_MEM")) m.slow_mem = 1; /* debugging: every load and store through the helper */
+    m.gen_checks = hv_knob.jit_poison;
+    if (hv_knob.slow_mem) m.slow_mem = 1; /* debugging: every load and store through the helper */
     ncpus = c->ncpus < 1 ? 1 : c->ncpus > HV_MAX_CPUS ? HV_MAX_CPUS : c->ncpus;
-    m.big_lock_on = ncpus > 1 && getenv("HV_BIG_LOCK"); /* debugging: one CPU in guest code at a time */
+    m.big_lock_on = ncpus > 1 && hv_knob.big_lock; /* debugging: one CPU in guest code at a time */
     HvCfgParams cfg = {.nr_cpus = (uint32_t)ncpus, .ecid = c->ecid, .seed = c->seed, .mac_en0 = {0x02, 0x48, 0x56, 0x4d, 0x00, 0x01},
                        .serial = c->serial, .model = c->model, .soc_name = c->soc_name};
     if (c->installer) cfg.run_installer1 = cfg.run_installer2 = 1;
@@ -312,7 +314,7 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     pause_state = 0;
     board.poll = board_poll;
     hv_stats_io = io_stats;
-    if (board.vusb && getenv("HV_VUSB_PROBE")) hv_usb_probe_start(board.vusb);
+    if (board.vusb && hv_knob.vusb_probe) hv_usb_probe_start(board.vusb);
     // The setter and publication share this lock: an older preboot target can
     // never overwrite a monitor change made while the board was being built.
     os_unfair_lock_lock(&display_lock);
@@ -398,7 +400,7 @@ void hv_vm_prepare_cpu_thread(void) {
 void hv_vm_cpu_qos(void) {
     hv_vm_prepare_cpu_thread();
     /* HV_QOS=ui|init|default (testing): the class the guest's CPUs run at. */
-    const char *q = getenv("HV_QOS");
+    const char *q = hv_knob.qos;
 #if TARGET_OS_IPHONE
     qos_class_t c = QOS_CLASS_USER_INITIATED;
 #else
@@ -516,12 +518,12 @@ int hv_vm_trim(void) {
    that long does (its display goes off for being idle: hv_vm_start nudges the pointer after it). HV_RESUME_CLOCK=
    continuous: no time passes for the guest at all (its clock is then behind until macOS sets it, which can be hours). */
 uint64_t hv_vm_resume_counter(uint64_t counter, int64_t wall_ns) {
-    const char *how = getenv("HV_RESUME_CLOCK");
+    const char *how = hv_knob.resume_clock;
     if (how && !strcmp(how, "continuous")) return counter;
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
     int64_t gone = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec - wall_ns;
-    if (getenv("HV_RESUME_SKEW")) gone += (int64_t)atoll(getenv("HV_RESUME_SKEW")) * 1000000000; /* testing: as if away longer */
+    gone += (int64_t)hv_knob.resume_skew * 1000000000; /* testing: as if away longer */
     atomic_store(&nudge_after_start, 1);
     return gone > 0 ? counter + (uint64_t)gone / 125 * 3 : counter; /* 24 MHz: 3 ticks every 125 ns */
 }

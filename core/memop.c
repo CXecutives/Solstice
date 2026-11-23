@@ -1,4 +1,5 @@
 #include "memop.h"
+#include "knobs.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -675,7 +676,7 @@ int hv_mem_emulate(HvCpu *cpu, uint32_t insn, uint64_t pc) {
     default:
         break;
     }
-    if (hv_knob[HV_K_PREDSTAT]) pred_stat(cpu, &op, va, pc, el);
+    if (hv_knob.predstat) pred_stat(cpu, &op, va, pc, el);
 
     int rc = 0;
     switch (op.kind) {

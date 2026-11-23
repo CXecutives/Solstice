@@ -1,4 +1,5 @@
 #include "virtio_snd.h"
+#include "knobs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,9 +30,7 @@
 #define CHMAP_FR 4
 
 static int logging(void) {
-    static int on = -1;
-    if (on < 0) on = getenv("HV_SND_LOG") != NULL;
-    return on;
+    return hv_knob.snd_log;
 }
 
 static uint64_t now_ns(void) {

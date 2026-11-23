@@ -1,4 +1,5 @@
 #include "dispatch.h"
+#include "knobs.h"
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -18,8 +19,8 @@
 
 void hv_flush_blocks(HvMachine *m) {
     /* Every other CPU is parked (stop_the_world): the one moment the TLB layout can change. */
-    if ((hv_knob[HV_K_TLBT] != 0) != hv_tlb_tmajor) {
-        hv_tlb_tmajor = hv_knob[HV_K_TLBT] != 0;
+    if ((hv_knob.tlbt != 0) != hv_tlb_tmajor) {
+        hv_tlb_tmajor = hv_knob.tlbt != 0;
         for (int i = 0; i < m->ncpus; i++)
             if (m->cpus[i]) {
                 m->cpus[i]->nkernel_fills = HV_KERNEL_FILLS + 1; /* the logs hold slots of the old layout: clear it all */
@@ -42,13 +43,11 @@ void hv_flush_blocks(HvMachine *m) {
     m->nxchained = 0;
     for (int i = 0; i < m->nram; i++) hv_pages_zero(m->ram[i].xhead, m->ram[i].npages * sizeof *m->ram[i].xhead); /* slots restart from 0 */
     hv_jit_reset(&m->jit);
-    m->jit.limit = hv_knob[HV_K_JITCAP] > 0 ? ((size_t)hv_knob[HV_K_JITCAP] << 20) / sizeof(uint32_t) : 0; /* MB of it to use (testing) */
+    m->jit.limit = hv_knob.jit_cap > 0 ? ((size_t)hv_knob.jit_cap << 20) / sizeof(uint32_t) : 0; /* MB of it to use (testing) */
     hv_cc_reset(m); /* after the limit: segments of what is used */
     /* HV_JIT_POISON: nothing old is left to run, so a stale pointer faults where it is used. */
-    static int poison = -1;
-    if (poison < 0) poison = getenv("HV_JIT_POISON") != NULL;
-    m->gen_checks = poison;
-    if (poison) hv_jit_poison(&m->jit, m->jit.base, m->jit.capacity); /* writable first: MAP_JIT faulted here on the Mac */
+    m->gen_checks = hv_knob.jit_poison;
+    if (hv_knob.jit_poison) hv_jit_poison(&m->jit, m->jit.base, m->jit.capacity); /* writable first: MAP_JIT faulted here on the Mac */
 }
 
 /* Parked: not running guest code, nor using its TLB, so other CPUs need not
@@ -85,9 +84,9 @@ static void unpark(HvCpu *cpu) {
    Once, before any block runs (run_loop). */
 static void light_init(void) {
     uint32_t f = 0;
-    if (!getenv("HV_NO_FAST_RESUME")) f |= HV_LIGHT_RESUME; /* HV_NO_FAST_RESUME: every exception and return through the dispatcher */
+    if (!hv_knob.no_fast_resume) f |= HV_LIGHT_RESUME; /* HV_NO_FAST_RESUME: every exception and return through the dispatcher */
     uint32_t timebase = *(volatile uint8_t *)(uintptr_t)HV_COMMPAGE_TIMEBASE_TYPE;
-    if (!getenv("HV_WFE_SPIN") && timebase) f |= HV_LIGHT_WFE_WAIT; /* HV_WFE_SPIN: a WFE always leaves for the dispatcher */
+    if (!hv_knob.wfe_spin && timebase) f |= HV_LIGHT_WFE_WAIT; /* HV_WFE_SPIN: a WFE always leaves for the dispatcher */
     /* The host's WFE wakes at its event stream (about every microsecond on the Mac); if it does not come back that
        soon (no event stream), waits spin instead. */
     __asm__ volatile("sevl; wfe" ::: "memory"); /* clear the event register */
@@ -111,12 +110,12 @@ static pthread_once_t light_once = PTHREAD_ONCE_INIT;
 static void block_dump(const HvMachine *m, const HvBlock *b, const uint32_t *code) {
     static FILE *f;
     static int on = -1;
-    static uint32_t count, every = 64; /* HV_BLOCK_DUMP_EVERY: the sampling */
+    static uint32_t count, every; /* HV_BLOCK_DUMP_EVERY: the sampling */
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     if (on < 0) {
-        const char *path = getenv("HV_BLOCK_DUMP");
+        const char *path = hv_knob.block_dump;
         on = path && (f = fopen(path, "wb")) != NULL;
-        if (getenv("HV_BLOCK_DUMP_EVERY")) every = (uint32_t)atoi(getenv("HV_BLOCK_DUMP_EVERY"));
+        every = (uint32_t)hv_knob.block_dump_every;
         if (!every) every = 1;
     }
     if (!on || __atomic_add_fetch(&count, 1, __ATOMIC_RELAXED) % every) return;
@@ -415,7 +414,7 @@ static int wait_for_interrupt(HvCpu *cpu) {
     /* A thread on another CPU often has something for this one microseconds later
        (a pipe, a Mach message: macOS is made of these), and waking a sleeping host
        thread takes far longer than that: watch for it a little first. HV_WFI_SPIN: microseconds. */
-    int spin_us = hv_knob[HV_K_WFI_SPIN];
+    int spin_us = hv_knob.wfi_spin;
     if (spin_us) {
         int sleep_ok = (__atomic_load_n(&hv_light_flags, __ATOMIC_RELAXED) & HV_LIGHT_WFE_SLEEP) != 0; /* light_init */
         uint64_t until = mach_absolute_time() + (uint64_t)spin_us * 24;
@@ -462,8 +461,7 @@ static void print_profile(HvMachine *m) {
             outside++;
             Dl_info di;
             const char *name = dladdr(pc, &di) && di.dli_sname ? di.dli_sname : "?";
-            static const char *detail;
-            if (!detail) detail = getenv("HV_PROF_FN") ? getenv("HV_PROF_FN") : "run";
+            const char *detail = hv_knob.prof_fn;
             if (!strcmp(name, detail)) { /* per-offset detail for one function (HV_PROF_FN, default the dispatcher loop) */
                 uint32_t off = (uint32_t)((uint8_t *)pc - (uint8_t *)di.dli_saddr);
                 int r = 0;
@@ -496,7 +494,7 @@ static void print_profile(HvMachine *m) {
         fprintf(stderr, " %s %.1f%%", fn[best].name, 100.0 * fn[best].n / total);
         fn[best].n = 0;
     }
-    fprintf(stderr, "\n  %s+:", getenv("HV_PROF_FN") ? getenv("HV_PROF_FN") : "run");
+    fprintf(stderr, "\n  %s+:", hv_knob.prof_fn);
     for (int k = 0; k < 12; k++) {
         int best = -1;
         for (int i = 0; i < nrun; i++)
@@ -1035,9 +1033,8 @@ static int run_loop(HvCpu *cpu, int one) {
             uint64_t *ent = t + (size_t)hv_ijc_index(tag) * 2;
             if (why == 5 && (ent[0] == tag || ent[2] == tag)) {
                 why = 4; /* it was cached: not a miss */
-                static int dbg = -1, shown;
-                if (dbg < 0) dbg = getenv("HV_IJC_DEBUG") != NULL;
-                if (dbg) { /* what instruction came just before the target (put_exit leaves with pc + 4) */
+                static int shown;
+                if (hv_knob.ijc_debug) { /* what instruction came just before the target (put_exit leaves with pc + 4) */
                     static uint64_t hist[4], total;
                     uint32_t before = 0;
                     uint64_t off = b->pa - hv_block_ram(m, b)->pa;

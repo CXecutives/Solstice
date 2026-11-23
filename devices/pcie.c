@@ -1,4 +1,5 @@
 #include "pcie.h"
+#include "knobs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,7 +76,7 @@ static uint64_t ecam_read(void *opaque, uint64_t off, unsigned size) {
     if (!d) return size == 8 ? ~0ull : (1ull << (size * 8)) - 1;
     uint64_t v = 0;
     memcpy(&v, d->config + reg, size > 4096 - reg ? 4096 - reg : size);
-    if (getenv("HV_PCI_LOG") && slot == (uint32_t)atoi(getenv("HV_PCI_LOG"))) /* debugging: one slot's config space */
+    if (hv_knob.pci_log >= 0 && slot == (uint32_t)hv_knob.pci_log) /* debugging: one slot's config space */
         fprintf(stderr, "pci %u: read %03x (%u) = %llx\n", slot, reg, size, (unsigned long long)v);
     return v;
 }

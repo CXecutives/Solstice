@@ -591,19 +591,19 @@ static void cp_tick(HvReplay *r) {
 }
 
 static void cp_start(HvReplay *r) {
-    if (!getenv("HV_COLOR_PROBE")) return;
+    if (!hv_knob.color_probe) return;
     cp.on = 1;
     cp.t0 = now_seconds();
-    const char *dir = getenv("HV_COLOR_PROBE_DIR"), *home = getenv("HOME");
+    const char *dir = hv_knob.color_probe_dir, *home = getenv("HOME");
     if (dir) snprintf(cp.dir, sizeof cp.dir, "%s", dir);
     else snprintf(cp.dir, sizeof cp.dir, "%s/Documents/colorprobe", home ? home : "/tmp");
     mkdir(cp.dir, 0755);
     snprintf(cp.trigger, sizeof cp.trigger, "%s/trigger", cp.dir);
     snprintf(cp.mode_linear, sizeof cp.mode_linear, "%s/mode-linear", cp.dir);
     snprintf(cp.mode_encoded, sizeof cp.mode_encoded, "%s/mode-encoded", cp.dir);
-    cp.every = getenv("HV_COLOR_PROBE_SECS") ? atof(getenv("HV_COLOR_PROBE_SECS")) : 0;
-    cp.metrics_every = getenv("HV_COLOR_PROBE_METRICS_SECS") ? atof(getenv("HV_COLOR_PROBE_METRICS_SECS")) : 15;
-    cp.max = getenv("HV_COLOR_PROBE_MAX") ? (unsigned)atoi(getenv("HV_COLOR_PROBE_MAX")) : 8;
+    cp.every = hv_knob.color_probe_secs;
+    cp.metrics_every = hv_knob.color_probe_metrics_secs;
+    cp.max = (unsigned)hv_knob.color_probe_max;
     cp.last_auto = now_seconds();
     cp_log("probe_start", "dir=%s every_s=%.0f metrics_every_s=%.0f max_captures=%u mode=%s built=\"%s %s\"", cp.dir, cp.every, cp.metrics_every, cp.max, cp_mode_name(hv_half_mode_get()), __DATE__, __TIME__);
     cp_log("color_mode", "mode=%s was=none why=start", cp_mode_name(hv_half_mode_get()));

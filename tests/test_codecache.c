@@ -5,6 +5,7 @@
 // full flushes and the stats line in between in one of the runs, and the phone's sleeping TLBI waits in another. Every
 // run's x0 must be the native run's, and the cache must have gone round hundreds of times.
 #include "harness.h"
+#include "knobs.h"
 
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -85,9 +86,9 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         printf("%s: machine init failed\n", name);
         return 1;
     }
-    int changes = opts & RUN_CHANGES, sync_wait = hv_knob[HV_K_SYNCWAIT];
+    int changes = opts & RUN_CHANGES, sync_wait = hv_knob.sync_wait;
     if (opts & RUN_STATS) m.stats_interval = 2;
-    if (opts & RUN_SYNC_WAIT) hv_knob[HV_K_SYNCWAIT] = 1;
+    if (opts & RUN_SYNC_WAIT) hv_knob.sync_wait = 1;
     hv_machine_add_ram(&m, (uint64_t)(uintptr_t)codecache_programs_begin, codecache_programs_finish - codecache_programs_begin,
                        (void *)codecache_programs_begin, 1);
     uint8_t *stack = aligned_alloc(16384, 65536);
@@ -138,7 +139,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
         if (bad || laps >= want_laps || t >= max_s) break;
         /* Full flushes (a knob change), twice, while evictions are under way. */
         if (changes && flushes_asked < 2 && laps >= (flushes_asked + 1) * want_laps / 3) {
-            hv_knob_set(&m, "HV_RECHECK", hv_knob[HV_K_RECHECK]);
+            hv_knob_set(&m, "HV_RECHECK", hv_knob.recheck);
             flushes_asked++;
         }
     }
@@ -177,7 +178,7 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     for (int i = 0; i < ncpu; i++) free(w[i].cpu);
     hv_machine_free(&m);
     free(stack);
-    hv_knob[HV_K_SYNCWAIT] = sync_wait;
+    hv_knob.sync_wait = sync_wait;
     return failed;
 }
 

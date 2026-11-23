@@ -1,4 +1,5 @@
 #include "codecache.h"
+#include "knobs.h"
 
 #include <mach/mach_time.h>
 #include <sched.h>
@@ -128,7 +129,7 @@ int hv_cc_init(HvMachine *m) {
     cc->words_cap = 2 * SCAN_STEP;
     cc->words = malloc(cc->words_cap * sizeof *cc->words);
     if (!cc->rec_len || !cc->rec_next || !cc->evicted || !cc->words) return -1;
-    cc->poison = getenv("HV_JIT_POISON") != NULL;
+    cc->poison = hv_knob.jit_poison;
     hv_cc_reset(m);
     return 0;
 }
