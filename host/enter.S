@@ -224,7 +224,9 @@ _hv_helper_entry:
     ldr x0, [x28, #CPU_SP]
     mov sp, x0
     // Back into the block, or (after an exception or ERET) to the start of the next
-    // one, which wants guest x0 live as well; host x15 is scratch.
+    // one, which wants guest x0 live as well; host x15 is scratch. A next block from
+    // this CPU's branch cache needs no ISB: hv_helper then set helper_came_from to it
+    // as well (see hv_resume).
     cbnz x15, 1f
     ldr x15, [x28, #CPU_HELPER_RET]
     ldr x0, [x28]

@@ -54,9 +54,15 @@ uintptr_t hv_resume(HvCpu *cpu) {
     if ((int)((va >> 55) & 1) != kernel || (va & 3)) return 0;
     uint64_t tag = va ^ cpu->ijc_salt[kernel];
     const uint64_t *ent = p->ijc + (size_t)(flags & (HV_IJC_TABLES - 1)) * (HV_IJC_TABLE_BYTES / 8) + (size_t)hv_ijc_index(tag) * 2;
+    /* From this CPU's cache: no ISB. Only this CPU fills it, each time before an ISB of its own (hv_enter, the thunks
+       after hv_ijc_resolve, and below), and the code an entry leads to stays until this CPU drops the entry (a code
+       segment is freed only after every CPU emptied its cache, hv_cc_service; a flush empties them all). Translated
+       code's own lookups (put_ijc_jump) rely on the same. */
     uintptr_t code = ent[0] == tag ? (uintptr_t)ent[1] : ent[2] == tag ? (uintptr_t)ent[3] : 0;
-    if (!code) code = (uintptr_t)hv_ijc_resolve(cpu, va, flags); /* made already but not cached: cache it */
-    if (code) code |= 1; /* an ISB first: the block may be one another CPU just wrote */
+    if (!code) { /* made already but not cached: cache it, and an ISB first (it may be one another CPU just wrote) */
+        code = (uintptr_t)hv_ijc_resolve(cpu, va, flags);
+        if (code) code |= 1;
+    }
     if (code) {
         cpu->exit_reason = HV_EXIT_BRANCH;
         if (stats) p->own.stats.fast_resumes++;

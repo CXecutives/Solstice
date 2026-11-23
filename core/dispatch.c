@@ -257,11 +257,13 @@ flush:
 }
 
 /* After an exception or ERET, hv_helper_entry goes on at the CPU's next block instead of leaving, if hv_resume found
-   one (a hundred thousand round trips a second). */
+   one (a hundred thousand round trips a second); without an ISB when it came from this CPU's branch cache, which
+   helper_came_from = the target says (see hv_helper_entry). */
 static int resume_at(HvCpu *cpu) {
     uintptr_t code = hv_resume(cpu);
     if (!code) return 0;
     cpu->helper_ret = code & ~(uintptr_t)1;
+    if (!(code & 1)) cpu->helper_came_from = cpu->helper_ret;
     return 1;
 }
 
