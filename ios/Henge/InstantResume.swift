@@ -7,9 +7,8 @@ import UIKit
 /// writes its disk (henge_vm_drop_spent_save); this side decides when to save, and says which build and settings a
 /// file belongs to.
 enum InstantResume {
-    static let key = "henge.instantResume"
     /// On unless turned off in Settings.
-    static var enabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+    static var enabled: Bool { UserDefaults.standard.object(forKey: SettingKey.instantResume.rawValue) as? Bool ?? SettingDefault.instantResume }
     /// How long Solstice is away (and kept awake, KeepAlive) before the Mac is written out: a save is 1-2 GB of flash,
     /// so a quick look at a message costs none.
     static let saveAfter: TimeInterval = 20
@@ -52,7 +51,7 @@ enum InstantResume {
         let build = info["CFBundleVersion"] as? String ?? "?"
         let commit = info["HengeBuildCommit"] as? String ?? "unstamped"
         let stamp = info["HengeBuildDate"] as? String ?? "?"
-        return "Henge \(version) (\(build)) \(commit) \(stamp) mac \(mac.id.uuidString) ram \(ramMB) cpus \(cpus) "
+        return "Solstice \(version) (\(build)) \(commit) \(stamp) mac \(mac.id.uuidString) ram \(ramMB) cpus \(cpus) "
             + "screen \(mac.screen.width)x\(mac.screen.height) retina \(mac.isRetina)"
     }
 
@@ -87,7 +86,7 @@ enum InstantResume {
 
     /// Per Mac: its balloon was asked and handed over nothing (no balloon driver in that macOS), so rest() does not
     /// wait the 3 s for it again; asked once more whenever the balloon shows it moved.
-    private static func balloonIdleKey(_ mac: VirtualMac) -> String { "solstice.balloonIdle.\(mac.id.uuidString)" }
+    private static func balloonIdleKey(_ mac: VirtualMac) -> String { SettingKey.balloonIdle.forMac(mac.id) }
 
     /// Solstice is in the background and stays awake there (KeepAlive): the Mac waits, paused, until Solstice is back,
     /// using no CPU and no GPU (which is not Solstice's in the background). With instant resume on, pause() and

@@ -25,7 +25,7 @@ private enum HengeJITWork {
         } else if request.operation != .resetDDI {
             // Henge found no advertised port. StikJIT's 49152 is closed when the device picked another at boot.
             let lookup = RSDPortResolver.resolve()
-            NSLog("[HengeJIT] RemotePairing port: %@", lookup.detail)
+            NSLog("[SolsticeJIT] RemotePairing port: %@", lookup.detail)
             // Every Apple device on the network advertises the service: take only a port open on this device.
             let open = lookup.candidates.map(\.port).filter {
                 !RSDPortScanner.openPorts(host: configuration.deviceAddress, range: $0...$0, waitMs: 800).isEmpty
@@ -63,7 +63,7 @@ private enum HengeJITWork {
             case .prepare:
                 let readiness = StikJIT.prepareDevice(
                     pairingFile: pairingURL, paths: paths, configuration: configuration,
-                    progress: { NSLog("[HengeJIT] prepare: %@", String(describing: $0)) })
+                    progress: { NSLog("[SolsticeJIT] prepare: %@", String(describing: $0)) })
                 switch readiness {
                 case .ready(let security):
                     return .init(success: true,
@@ -80,7 +80,7 @@ private enum HengeJITWork {
                       let scriptBase64 = request.scriptBase64, !scriptBase64.isEmpty else {
                     throw NSError(domain: "HengeJITHelper", code: 2,
                                   userInfo: [NSLocalizedDescriptionKey:
-                                    "The target process or Henge's JIT script was not provided."])
+                                    "The target process or Solstice's JIT script was not provided."])
                 }
                 try StikJIT.enableJIT(
                     targetPID: targetPID,
@@ -89,9 +89,9 @@ private enum HengeJITWork {
                     configuration: configuration,
                     script: .customBase64(scriptBase64),
                     forceScript: true,
-                    preparationProgress: { NSLog("[HengeJIT] prepare: %@", String(describing: $0)) },
-                    progress: { NSLog("[HengeJIT] %@", $0) })
-                return .init(success: true, message: "Henge detached cleanly from its built-in JIT helper." + portNote,
+                    preparationProgress: { NSLog("[SolsticeJIT] prepare: %@", String(describing: $0)) },
+                    progress: { NSLog("[SolsticeJIT] %@", $0) })
+                return .init(success: true, message: "Solstice detached cleanly from its built-in JIT helper." + portNote,
                              txmPresent: StikJIT.isTXMPresent)
             case .resetDDI:
                 preconditionFailure("Handled above")
@@ -116,7 +116,7 @@ private enum HengeJITWork {
         let last = UInt16(exactly: UserDefaults.standard.integer(forKey: lastPortKey)) ?? 0
         if last != 0, works(last) { return last }
         let open = RSDPortScanner.openPorts(host: base.deviceAddress)
-        NSLog("[HengeJIT] open ports: %@", open.map(String.init).joined(separator: ","))
+        NSLog("[SolsticeJIT] open ports: %@", open.map(String.init).joined(separator: ","))
         guard let port = open.first(where: works) else { return nil }
         UserDefaults.standard.set(Int(port), forKey: lastPortKey)
         return port
@@ -137,7 +137,7 @@ final class HengeJITHelperHandler: NSObject, NSExtensionRequestHandling {
             if let data, let request = try? JSONDecoder().decode(HengeJITRequest.self, from: data) {
                 response = HengeJITWork.handle(request)
             } else {
-                response = .init(success: false, message: "Henge's JIT helper received no request.",
+                response = .init(success: false, message: "Solstice's JIT helper received no request.",
                                  txmPresent: nil)
             }
             let item = NSExtensionItem()

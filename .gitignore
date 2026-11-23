@@ -1,7 +1,7 @@
 build/
 out/
-henge.log
-henge-stream.log
+solstice.log
+solstice-stream.log
 .claude/
 tools/*.log
 HANDOFF.local.md

@@ -99,12 +99,12 @@ final class Installer: NSObject, ObservableObject {
         grace = .invalid
     }
 
-    func start(_ release: MacOSRelease, name: String, ramMB: Int, cpus: Int, keepImage: Bool) {
+    func start(_ release: MacOSRelease, name: String, ramMB: Int, keepImage: Bool) {
         guard !busy else { return }
         phase = .checking
         machineName = name
         UIApplication.shared.isIdleTimerDisabled = true // the screen locking would suspend the download and the restore
-        grace = UIApplication.shared.beginBackgroundTask(withName: "Henge install") {
+        grace = UIApplication.shared.beginBackgroundTask(withName: "Solstice install") {
             MainActor.assumeIsolated { Installer.shared.endGrace() }
         }
         Task {
@@ -126,7 +126,7 @@ final class Installer: NSObject, ObservableObject {
                     while !JITBootstrap.ready { try await Task.sleep(nanoseconds: 1_000_000_000) }
                 }
                 phase = .installing
-                try await install(mac, ipsw: ipsw, cpus: cpus)
+                try await install(mac, ipsw: ipsw)
                 if !keepImage { Self.deleteAfterInstall(ipsw) }
                 HengeLog.log("install", "\(name): installed \(release.name)")
                 phase = .done("\(release.name) is installed on \(name). Starting it now.")
@@ -252,7 +252,8 @@ final class Installer: NSObject, ObservableObject {
 
     // MARK: The restore
 
-    private func install(_ mac: VirtualMac, ipsw: URL, cpus: Int) async throws {
+    private func install(_ mac: VirtualMac, ipsw: URL) async throws {
+        let cpus = mac.cpus
         guard JITBootstrap.ready else { throw message("Turn on JIT first: the installer runs the Mac's own restore system, which needs it.") }
         // The restore needs 2 GB, whatever the Mac is set to use afterwards, and gets at most 4 GB: the restore system
         // caches the ~15 GB it writes, so it fills all the memory it is given, and 10 GB of a 12 GB iPhone's RAM in use
@@ -274,7 +275,7 @@ final class Installer: NSObject, ObservableObject {
             step = Int(henge_install_step())
             stepProgress = henge_install_progress()
             if step == 100 { break }
-            if step == 101 { throw message("The restore failed. The log (Settings, or Documents/henge.log) says why.") }
+            if step == 101 { throw message("The restore failed. The log (Settings, or Documents/solstice.log) says why.") }
             if henge_vm_state() == HENGE_VM_STOPPED && step < 100 {
                 // The restore ends with the machine restarting, and idevicerestore finishes a
                 // little after; a stop with no result after that is a failure.
@@ -306,7 +307,7 @@ final class Installer: NSObject, ObservableObject {
     }
 
     private func message(_ text: String) -> NSError {
-        NSError(domain: "Henge", code: 2, userInfo: [NSLocalizedDescriptionKey: text])
+        NSError(domain: "Solstice", code: 2, userInfo: [NSLocalizedDescriptionKey: text])
     }
 }
 

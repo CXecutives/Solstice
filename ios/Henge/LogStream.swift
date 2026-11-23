@@ -15,10 +15,6 @@ import UIKit
 final class LogStream: ObservableObject {
     static let shared = LogStream()
 
-    static let enabledKey = "henge.logstream.enabled"
-    static let hostKey = "henge.logstream.host"
-    static let portKey = "henge.logstream.port"
-    static let defaultPort = 7777
 
     enum State: Equatable {
         case off
@@ -87,10 +83,10 @@ final class LogStream: ObservableObject {
     /// setting changes; safe from any thread.
     func applySettings() {
         let d = UserDefaults.standard
-        let on = d.bool(forKey: Self.enabledKey)
-        let host = (d.string(forKey: Self.hostKey) ?? "").trimmingCharacters(in: .whitespaces)
-        let raw = d.integer(forKey: Self.portKey)
-        let port = raw > 0 && raw < 65_536 ? UInt16(raw) : UInt16(Self.defaultPort)
+        let on = d.bool(forKey: SettingKey.logStreamOn.rawValue)
+        let host = (d.string(forKey: SettingKey.logStreamHost.rawValue) ?? "").trimmingCharacters(in: .whitespaces)
+        let raw = d.integer(forKey: SettingKey.logStreamPort.rawValue)
+        let port = raw > 0 && raw < 65_536 ? UInt16(raw) : UInt16(SettingDefault.logStreamPort)
         lock.lock()
         enabled = on && !host.isEmpty
         let want = enabled ? Target(host: host, port: port) : nil
@@ -295,8 +291,8 @@ final class LogStream: ObservableObject {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
         let build = info["CFBundleVersion"] as? String ?? "?"
-        return "---- Henge log from \(HengeLog.deviceModel) (\(d.systemName) \(d.systemVersion)), "
-             + "Henge \(version) (\(build)), to \(want.host):\(want.port) ----"
+        return "---- Solstice log from \(HengeLog.deviceModel) (\(d.systemName) \(d.systemVersion)), "
+             + "Solstice \(version) (\(build)), to \(want.host):\(want.port) ----"
     }
 
     private static func describe(_ error: NWError) -> String {

@@ -164,7 +164,7 @@ static int init_rest(HvMachine *m) {
     }
     m->locks_initialized = 1;
     /* HV_JIT_CAP (testing): from the start, not only after the first full flush, so a device reaches its full flushes
-       in minutes (henge-env.txt on iOS). */
+       in minutes (solstice-env.txt on iOS). */
     m->jit.limit = hv_knob.jit_cap > 0 ? ((size_t)hv_knob.jit_cap << 20) / sizeof(uint32_t) : 0;
     hv_tlb_tmajor = hv_knob.tlbt != 0; /* the TLB layout (cpu.h) */
     /* Records, slots and buckets for the whole region (table_counts), mapped, so what no block uses costs nothing. */

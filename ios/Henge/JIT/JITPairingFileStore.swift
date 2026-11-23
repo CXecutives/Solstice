@@ -9,7 +9,6 @@ import Security
 enum JITPairingFileStore {
     private static let service = "com.henge.app.jit-pairing"
     private static let account = "pairingFile"
-    private static let sourceKey = "henge.jitPairingSource"
 
     /// Where older versions kept it (Documents/StikJIT), moved into the Keychain on first use.
     private static var legacyURL: URL {
@@ -27,7 +26,7 @@ enum JITPairingFileStore {
 
     static var source: JITPairingSource? {
         guard exists else { return nil }
-        return UserDefaults.standard.string(forKey: sourceKey).flatMap(JITPairingSource.init(rawValue:)) ?? .imported
+        return UserDefaults.standard.string(forKey: SettingKey.jitPairingSource.rawValue).flatMap(JITPairingSource.init(rawValue:)) ?? .imported
     }
 
     static func data() throws -> Data {
@@ -55,7 +54,7 @@ enum JITPairingFileStore {
                             "That is not a remote pairing file. Make one with the StikDebug pairing-file guide and try again."])
         }
         try save(data)
-        UserDefaults.standard.set(source.rawValue, forKey: sourceKey)
+        UserDefaults.standard.set(source.rawValue, forKey: SettingKey.jitPairingSource.rawValue)
     }
 
     // MARK: Keychain

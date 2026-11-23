@@ -88,8 +88,8 @@ static double henge_now_ms(void)
 
 #define HENGE_LOG(fmt, ...)                                                     \
     do {                                                                       \
-        os_log(OS_LOG_DEFAULT, "[henge-jit] " fmt, ##__VA_ARGS__);              \
-        fprintf(stderr, "[%9.2fms][henge-jit] " fmt "\n",                       \
+        os_log(OS_LOG_DEFAULT, "[solstice-jit] " fmt, ##__VA_ARGS__);              \
+        fprintf(stderr, "[%9.2fms][solstice-jit] " fmt "\n",                       \
                 henge_now_ms(), ##__VA_ARGS__);                                 \
         fflush(stderr);                                                        \
     } while (0)
@@ -357,7 +357,7 @@ HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes)
     }
     henge_prewarm_done = true;
     henge_prewarmed = henge_ios_jit_allocate_real(bytes);
-    fprintf(stderr, "[henge-jit] prewarm %s: %zu bytes\n",
+    fprintf(stderr, "[solstice-jit] prewarm %s: %zu bytes\n",
             henge_prewarmed.rw_addr ? "OK" : "FAILED", bytes);
     return henge_prewarmed.rw_addr != NULL;
 }
@@ -438,7 +438,7 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
     if (rx != NULL && (uint64_t)(uintptr_t)rx + bytes > HENGE_JIT_LOW_LIMIT) {
         /* Calling into it would hang the app with the debugger still attached. */
         HENGE_LOG("#%llu: the JIT region came back at %p, above %#llx where generated code does not run; "
-                  "giving it back. Quit Henge and open it again.", (unsigned long long)n, rx, HENGE_JIT_LOW_LIMIT);
+                  "giving it back. Quit Solstice and open it again.", (unsigned long long)n, rx, HENGE_JIT_LOW_LIMIT);
         vm_deallocate(mach_task_self(), (vm_address_t)rx, bytes);
         return region;
     }

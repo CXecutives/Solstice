@@ -1,5 +1,6 @@
 #include "xhci.h"
 #include "knobs.h"
+#include "brand.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -81,7 +82,7 @@ static const uint8_t kbd_config_desc[34] = {
     7, 5, 0x81, 3, 8, 0, 10,                  /* EP1 IN, interrupt, 8 bytes, every 10 ms */
 };
 
-static const char *const kbd_strings[] = {NULL, "HengeVM", "HengeVM USB Keyboard", "1"};
+static const char *const kbd_strings[] = {NULL, SOLSTICE_NAME, SOLSTICE_DEVICE_KEYBOARD, "1"};
 
 /* Port 2: an Apple Magic Trackpad 2 (vendor 0x05AC, product 0x0265). The report
    descriptor is the real device's: a boot-mouse face (report ID 2), a 16-byte
@@ -136,7 +137,7 @@ static const uint8_t tp_config_desc[34] = {
     7, 5, 0x81, 3, 64, 0, 4,                  /* EP1 IN, interrupt, 64 bytes, every 4 ms */
 };
 
-static const char *const tp_strings[] = {NULL, "Apple Inc.", "Magic Trackpad 2", "HengeVM"};
+static const char *const tp_strings[] = {NULL, "Apple Inc.", "Magic Trackpad 2", SOLSTICE_DEVICE_TRACKPAD};
 
 /* Port 3: an absolute pointer, QEMU's usb-tablet report without the wheels: three
    buttons, then X and Y, 0..32767 across the screen. macOS takes any HID pointer with
@@ -167,7 +168,7 @@ static const uint8_t ptr_config_desc[34] = {
     7, 5, 0x81, 3, 8, 0, 4,                   /* EP1 IN, interrupt, 8 bytes, every 4 ms */
 };
 
-static const char *const ptr_strings[] = {NULL, "HengeVM", "HengeVM USB Pointer", "1"};
+static const char *const ptr_strings[] = {NULL, SOLSTICE_NAME, SOLSTICE_DEVICE_POINTER, "1"};
 
 struct HvXhciDev {
     const char *const *strings;

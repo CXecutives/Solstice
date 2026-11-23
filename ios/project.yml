@@ -101,7 +101,7 @@ targets:
         script: |
           set -e
           cd "$SRCROOT/.."
-          make ios-lib build/henge-agent.gz
+          make ios-lib build/solstice-agent.gz
           ./tools/build_ios_restore.sh
         basedOnDependencyAnalysis: false
     postBuildScripts:
@@ -109,7 +109,7 @@ targets:
         # What runs inside macOS for the clipboard and shared folder (tools/henge-agent.m).
         script: |
           set -e
-          cp "$SRCROOT/../build/henge-agent.gz" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/henge-agent.gz"
+          cp "$SRCROOT/../build/solstice-agent.gz" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/solstice-agent.gz"
         basedOnDependencyAnalysis: false
       - name: Embed StikJIT
         # As in Husk: the helper links StikJIT; it lives in the app's Frameworks

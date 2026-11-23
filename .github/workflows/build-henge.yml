@@ -1,6 +1,8 @@
 # .github/workflows/build-henge.yml
 #
 # Solstice's only build: engine tests, Swift tests and/or the IPA, on GitHub-hosted macOS runners (no Mac needed).
+# What ships (the IPA, the as-shipped and UB-trap test runs) builds on the Xcode 27 image; the quick test jobs run on the
+# ordinary macOS image, a separate pool.
 # It runs only on demand and does just what the inputs ask; tools/check.sh and tools/check-all.sh start it.
 # The parts run as parallel jobs, so a full check takes about as long as its slowest part.
 #
@@ -39,20 +41,29 @@ permissions:
   contents: read
 
 jobs:
-  engine:
-    name: Engine tests
-    if: inputs.tests != 'none'
-    runs-on: xcode-27
-    timeout-minutes: 30
+  # No "Henge" in what a person can see, no setting around core/knobs.def (python3 only: a free Linux runner, no macOS slot).
+  brand:
+    name: Brand gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 tools/brand_gate.py
       # Every HV_ setting through core/knobs.def (no getenv("HV_ elsewhere, no name it lacks), and what is generated
-      # from it as checked in.
-      - name: Settings table
+      # (tools/regen.sh) as checked in.
+      - name: Settings table and generated files
         run: |
           python3 tools/knobs.py --check
           bash tools/regen.sh
           git diff --exit-code
+
+  engine:
+    name: Engine tests
+    if: inputs.tests != 'none'
+    runs-on: macos-26 # the ordinary image, a pool of its own; the shipped toolchain is covered by "shipped"
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Engine tests
         env:
           TESTS: ${{ inputs.tests }}
@@ -96,7 +107,7 @@ jobs:
   swift:
     name: Swift tests
     if: inputs.ipa
-    runs-on: xcode-27
+    runs-on: macos-26 # pure Swift logic built for the Mac
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

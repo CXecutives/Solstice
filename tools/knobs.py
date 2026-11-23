@@ -98,7 +98,7 @@ def doc(knobs) -> str:
         return default, rng
     out = ["# Engine settings", "", f"<!-- {HEADER} -->", "",
            "Environment variables the engine reads, all from `core/knobs.def`. The app sets them from "
-           "`ios/Henge/EngineTuning.swift` and `Documents/henge-env.txt`; the Mac tool and the tests take them from "
+           "`ios/Henge/EngineTuning.swift` and `Documents/solstice-env.txt`; the Mac tool and the tests take them from "
            "the environment. FLAG: on when set at all; BOOL: 0 off, other numbers or empty on; INT and DOUBLE outside "
            "their range fall back to the default."]
     section = None

@@ -1,5 +1,5 @@
-// Runs inside macOS on a Henge virtual Mac, as a LaunchAgent. It keeps the clipboard in step with the device,
-// and keeps the shared folder mounted. It talks to host/share.c at 10.0.2.4, which only exists inside Henge.
+// Runs inside macOS on a Solstice virtual Mac, as a LaunchAgent. It keeps the clipboard in step with the device,
+// and keeps the shared folder mounted. It talks to host/share.c at 10.0.2.4, which only exists inside Solstice.
 #import <AppKit/AppKit.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+
+#include "../host/brand.h"
 
 #define HOST "10.0.2.4"
 
@@ -44,7 +46,7 @@ static NSData *request(NSString *method, NSString *path, NSData *body, int *stat
         return nil;
     }
     NSString *key = currentToken();
-    NSString *head = [NSString stringWithFormat:@"%@ %@ HTTP/1.1\r\nHost: " HOST "\r\nX-Henge-Token: %@\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n",
+    NSString *head = [NSString stringWithFormat:@"%@ %@ HTTP/1.1\r\nHost: " HOST "\r\n" SOLSTICE_HEADER_TOKEN ": %@\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n",
                                                 method, path, key ?: @"", (unsigned long)body.length];
     const char *text = head.UTF8String;
     if (send_all(fd, text, strlen(text)) != 0 || (body.length && send_all(fd, body.bytes, body.length) != 0)) {
@@ -63,7 +65,7 @@ static NSData *request(NSString *method, NSString *path, NSData *body, int *stat
     if (end.location == NSNotFound) return nil;
     NSString *headers = [[NSString alloc] initWithData:[all subdataWithRange:NSMakeRange(0, end.location)] encoding:NSUTF8StringEncoding];
     if (sscanf(headers.UTF8String, "HTTP/1.1 %d", status) != 1) return nil;
-    NSRange found = [headers rangeOfString:@"X-Henge-Seq: "];
+    NSRange found = [headers rangeOfString:@SOLSTICE_HEADER_SEQ ": "];
     if (found.location != NSNotFound && seq) *seq = strtoul(headers.UTF8String + NSMaxRange(found), NULL, 10);
     NSUInteger start = NSMaxRange(end);
     return [all subdataWithRange:NSMakeRange(start, all.length - start)];
@@ -75,7 +77,7 @@ static NSInteger lastChange;
 static BOOL haveToken(void) {
     if (currentToken()) return YES;
     int status = 0;
-    NSData *body = request(@"GET", @"/.henge/token", nil, &status, NULL);
+    NSData *body = request(@"GET", @SOLSTICE_URL_PREFIX "token", nil, &status, NULL);
     NSString *key = body && status == 200 ? [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding] : nil;
     if (!key.length) return NO;
     @synchronized([NSProcessInfo processInfo]) { token = key; }
@@ -88,7 +90,7 @@ static void followDevice(void) {
     for (BOOL first = YES;; first = NO) {
         int status = 0;
         unsigned long now = seq;
-        NSData *body = haveToken() ? request(@"GET", [NSString stringWithFormat:@"/.henge/clipboard?since=%lu", first ? ULONG_MAX >> 1 : seq], nil, &status, &now) : nil;
+        NSData *body = haveToken() ? request(@"GET", [NSString stringWithFormat:@SOLSTICE_URL_PREFIX "clipboard?since=%lu", first ? ULONG_MAX >> 1 : seq], nil, &status, &now) : nil;
         if (status == 403) forgetToken(); // the app started again: a new key
         if (!body || status == 403) {
             sleep(status == 403 ? 1 : 5);
@@ -121,16 +123,16 @@ static void checkClipboard(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         for (int tries = 0; tries < 2 && haveToken(); tries++) {
             int status = 0;
-            request(@"PUT", @"/.henge/clipboard", data, &status, NULL);
+            request(@"PUT", @SOLSTICE_URL_PREFIX "clipboard", data, &status, NULL);
             if (status != 403) break;
             forgetToken(); // the app started again: once more with its new key
         }
     });
 }
 
-static NSString *mountPoint(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Henge"]; }
+static NSString *mountPoint(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@SOLSTICE_SHARE_NAME]; }
 
-// The shared folder, at ~/Henge. mount_webdav needs an empty folder it owns, and is a no-op failure if it is mounted.
+// The shared folder, at ~/Solstice. mount_webdav needs an empty folder it owns, and is a no-op failure if it is mounted.
 static void keepMounted(void) {
     NSString *point = mountPoint();
     [NSFileManager.defaultManager createDirectoryAtPath:point withIntermediateDirectories:YES attributes:nil error:NULL];
@@ -139,7 +141,7 @@ static void keepMounted(void) {
     if (folder.st_dev != parent.st_dev) return; // already something else's volume: mounted
     NSTask *task = [NSTask new];
     task.executableURL = [NSURL fileURLWithPath:@"/sbin/mount_webdav"];
-    task.arguments = @[ @"-S", @"-v", @"Henge", @"http://" HOST "/", point ];
+    task.arguments = @[ @"-S", @"-v", @SOLSTICE_SHARE_NAME, @"http://" HOST "/", point ];
     task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
     task.standardError = NSFileHandle.fileHandleWithNullDevice;
     [task launchAndReturnError:NULL];

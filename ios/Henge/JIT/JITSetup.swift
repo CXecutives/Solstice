@@ -52,7 +52,7 @@ final class JITCoordinator: ObservableObject {
 
     /// What turning JIT on will do, for screens that show it.
     var methodDescription: String {
-        hasPairing ? "Henge will use its paired built-in helper." : "Pair this device to use Henge's built-in helper."
+        hasPairing ? "Solstice will use its paired built-in helper." : "Pair this device to use Solstice's built-in helper."
     }
 
     func refreshPairingStatus() {
@@ -64,7 +64,6 @@ final class JITCoordinator: ObservableObject {
     /// "Turn on JIT at launch": when Henge opens without JIT, ask the built-in StikJIT for it straight away, once per launch.
     /// Only when StikJIT can do it unattended -- it is available here and already paired -- so opening Henge never lands in
     /// the setup walkthrough by surprise.
-    static let autoEnableKey = "henge.jit.autoEnable"
     private var autoTried = false
 
     /// JIT at launch opened LocalDevVPN to connect it; the next return to the foreground goes on with the built-in helper.
@@ -72,7 +71,7 @@ final class JITCoordinator: ObservableObject {
     /// Paired a moment ago: the next return to the foreground connects LocalDevVPN, checks the setup and turns JIT on.
     private var continueAfterPairing = false
     /// JIT at launch is on unless turned off in Settings (a pairing turns it on, too).
-    static var autoEnable: Bool { UserDefaults.standard.object(forKey: autoEnableKey) as? Bool ?? true }
+    static var autoEnable: Bool { UserDefaults.standard.object(forKey: SettingKey.jitAtLaunch.rawValue) as? Bool ?? SettingDefault.jitAtLaunch }
 
     func enableAtLaunchIfAsked() {
         if awaitingVPN {
@@ -109,7 +108,7 @@ final class JITCoordinator: ObservableObject {
             return
         }
         // The helper reaches this device through LocalDevVPN. When it is not connected, connect it first: LocalDevVPN
-        // connects and comes back (henge://), and the return to the foreground goes on above.
+        // connects and comes back (solstice://), and the return to the foreground goes on above.
         if LocalDevVPN.isInstalled, !LocalDevVPN.isConnected {
             log("JIT at launch: LocalDevVPN is not connected; opening it to connect")
             awaitingVPN = true
@@ -171,7 +170,7 @@ final class JITCoordinator: ObservableObject {
         error = nil
         // Pairing ends in Settings, with Solstice in the background, where neither LocalDevVPN nor the helper can be
         // started: the next return to the foreground goes on (enableAtLaunchIfAsked), and JIT at launch is on from now.
-        UserDefaults.standard.set(true, forKey: Self.autoEnableKey)
+        UserDefaults.standard.set(true, forKey: SettingKey.jitAtLaunch.rawValue)
         continueAfterPairing = true
     }
 
@@ -214,7 +213,7 @@ final class JITCoordinator: ObservableObject {
     func enableBuiltIn(attempt: Int = 1) {
         guard let pairing = builtInPairing() else { return }
         guard let script = JITBootstrap.scriptBase64 else {
-            error = "Henge's JIT script is missing from this installation. Reinstall Henge."
+            error = "Solstice's JIT script is missing from this installation. Reinstall Solstice."
             return
         }
 
@@ -223,7 +222,7 @@ final class JITCoordinator: ObservableObject {
         error = nil
         connectionProblem = nil
         advice = nil
-        if attempt == 1 { status = "Starting Henge's JIT helper…" }
+        if attempt == 1 { status = "Starting Solstice's JIT helper…" }
         log("enabling JIT with the built-in helper" + (attempt > 1 ? " (attempt \(attempt))" : ""))
         var readiness: Timer?
         var finished = false

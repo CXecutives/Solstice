@@ -17,7 +17,6 @@ struct InstallView: View {
     @State private var stageStarted = Date()
     @State private var stageSeen = -1
     @State private var confirmDeleteDownload = false
-    @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
 
     var body: some View {
         NavigationStack {
@@ -115,7 +114,7 @@ struct InstallView: View {
         .deskCard()
 
         Button(Installer.haveImage(release) ? "Install" : "Download and Install") {
-            installer.start(release, name: name.isEmpty ? "Mac" : name, ramMB: ramGB * 1024, cpus: cpus, keepImage: !deleteAfter)
+            installer.start(release, name: name.isEmpty ? "Mac" : name, ramMB: ramGB * 1024, keepImage: !deleteAfter)
         }
         .buttonStyle(DeskButtonStyle(enabled: !Device.chipTooOld))
         .disabled(Device.chipTooOld)
@@ -202,7 +201,7 @@ struct InstallView: View {
             .deskCard(radius: 30)
             .padding(.bottom, 16)
         }
-        Text("\(release.name) on this \(Device.name). Keep Henge open.")
+        Text("\(release.name) on this \(Device.name). Keep Solstice open.")
             .font(.system(size: 16))
             .foregroundStyle(Desk.dim)
             .frame(maxWidth: .infinity, alignment: .leading)
