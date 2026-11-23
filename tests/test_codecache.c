@@ -5,6 +5,8 @@
 // full flushes and the stats line in between in one of the runs, and the phone's sleeping TLBI waits in another. Every
 // run's x0 must be the native run's, and the cache must have gone round hundreds of times.
 #include "harness.h"
+#include "light.h"
+#include "mmu.h"
 #include "stats.h"
 
 #include <mach/mach_time.h>
@@ -207,10 +209,61 @@ static int run(const char *name, int cap_mb, int ncpu, int opts, double min_laps
     return failed;
 }
 
+/* Hot code that runs only chained and through branch caches never reaches the dispatcher's lookups: what marks its
+   segment as in use (the second chance) are the light paths into it, a branch-cache miss resolved without the
+   dispatcher (hv_ijc_resolve) and the return into code an exception stopped (hv_resume). Without them a tenured segment
+   of such code went before one of code the dispatcher sees at every exit. */
+static int light_marks(void) {
+    setenv("HV_JIT_CAP", "32", 1); /* segments, and room for the whole program */
+    if (hv_machine_init(&m, 32 << 20) != 0) return printf("light marks: machine init failed: FAIL\n"), 1;
+    hv_machine_add_ram(&m, (uint64_t)(uintptr_t)codecache_programs_begin, codecache_programs_finish - codecache_programs_begin,
+                       (void *)codecache_programs_begin, 1);
+    uint8_t *stack = aligned_alloc(16384, 65536);
+    hv_machine_add_ram(&m, (uint64_t)(uintptr_t)stack, 65536, stack, 0);
+    m.stop_pc = (uint64_t)(uintptr_t)prog.end;
+    HvCpu *cpu = aligned_alloc(16384, (sizeof(HvCpu) + 16383) & ~(size_t)16383);
+    memset(cpu, 0, sizeof *cpu);
+    hv_cpu_reset_index(cpu, &m, 0);
+    seed_cpu(cpu, 1, (uint64_t)(uintptr_t)stack + 16384);
+    cpu->x[20] = 0; /* no TLBIs: at EL0, where the branch caches take these low (user) addresses */
+    cpu->x[21] = 1;
+    cpu->el = 0;
+    cpu->spsel = 0;
+    cpu->cpacr_el1 = 3u << 20;
+    cpu->pc = (uint64_t)(uintptr_t)prog.start;
+    int failed = 0, r = hv_run(cpu);
+    if (r != HV_EXIT_HALT || m.cc.nseg < 2) {
+        printf("light marks: run ended %d, %u segments: FAIL\n", r, m.cc.nseg);
+        failed++;
+    }
+    uint64_t va = (uint64_t)(uintptr_t)prog.start;
+    uint32_t flags = hv_block_flags(cpu);
+    for (int way = 0; way < 2 && !failed; way++) {
+        memset(m.cc.used, 0, sizeof m.cc.used);
+        cpu->pc = va;
+        uintptr_t code = way ? hv_resume(cpu) : (uintptr_t)hv_ijc_resolve(cpu, va, flags);
+        const char *what = way ? "a return from an exception (hv_resume)" : "a light branch-cache fill (hv_ijc_resolve)";
+        if (!code) {
+            printf("light marks: %s found no code: FAIL\n", what);
+            failed++;
+            break;
+        }
+        uint32_t s = (uint32_t)((((code & ~(uintptr_t)3) - (uintptr_t)m.jit.base) >> 2) >> m.cc.seg_shift);
+        int marked = s < m.cc.nseg && m.cc.used[s];
+        printf("light marks: %s into segment %u: %s\n", what, s, marked ? "marked in use" : "not marked: FAIL");
+        failed += !marked;
+    }
+    free(cpu);
+    hv_machine_free(&m);
+    free(stack);
+    return failed;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setenv("HV_JIT_POISON", "1", 1); /* read once, at the first machine */
     int failed = 0;
+    failed += light_marks();
     /* Each about 300 times round the cache (at least 100), at most a minute. */
     failed += run("1 cpu, 2 MB", 2, 1, 0, 100, 300, 60);
     failed += run("3 cpus, 2 MB, code changes, full flushes, stats", 2, 3, RUN_CHANGES | RUN_STATS, 100, 300, 60);
