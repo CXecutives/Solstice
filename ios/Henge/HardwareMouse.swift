@@ -9,14 +9,13 @@ import GameController
 /// (main thread, which hand over to the queue) runs on it.
 final class HardwareMouse {
     static let shared = HardwareMouse()
-    static let speedKey = "henge.mouse.speed"
-    static let reverseKey = "henge.mouse.reverse"
-    static let scrollSpeedKey = "henge.mouse.scrollSpeed"
-    static let defaultScrollSpeed = 0.3
+    /// What Settings offers (ScrollSpeedRow), and all the engine takes.
+    static let scrollSpeeds = 0.1...1.5
+    static let speeds = 0.5...3.0
 
     /// The Scroll speed setting as a factor, 1 at the default: how much faster than the Mac's own scrolling.
     static func scrollFactor(_ speed: Double) -> CGFloat {
-        CGFloat((speed.isFinite ? min(max(speed, 0.1), 1.5) : defaultScrollSpeed) / defaultScrollSpeed)
+        CGFloat((speed.isFinite ? min(max(speed, scrollSpeeds.lowerBound), scrollSpeeds.upperBound) : SettingDefault.scrollSpeed) / SettingDefault.scrollSpeed)
     }
 
     private let queue = DispatchQueue(label: "henge.mouse", qos: .userInteractive)
@@ -45,10 +44,10 @@ final class HardwareMouse {
 
     func start() {
         let defaults = UserDefaults.standard
-        let speed: Float = defaults.object(forKey: Self.speedKey) == nil ? 1 : Float(defaults.double(forKey: Self.speedKey))
-        let reverse = defaults.bool(forKey: Self.reverseKey)
+        let speed: Float = defaults.object(forKey: SettingKey.mouseSpeed.rawValue) == nil ? Float(SettingDefault.mouseSpeed) : Float(defaults.double(forKey: SettingKey.mouseSpeed.rawValue))
+        let reverse = defaults.bool(forKey: SettingKey.reverseScrolling.rawValue)
         releaseButtons()
-        let swapButtons = defaults.bool(forKey: PhysicalMouseButtons.swapKey)
+        let swapButtons = defaults.bool(forKey: SettingKey.swapMouseButtons.rawValue)
         HengeLog.log("input", "physical mouse: swap right/middle \(swapButtons ? "on" : "off")")
         queue.async {
             self.speed = speed
@@ -85,7 +84,7 @@ final class HardwareMouse {
     /// Main thread: the setting, for the queue.
     private func readScrollSpeed() {
         let defaults = UserDefaults.standard
-        let speed = defaults.object(forKey: Self.scrollSpeedKey) == nil ? Self.defaultScrollSpeed : defaults.double(forKey: Self.scrollSpeedKey)
+        let speed = defaults.object(forKey: SettingKey.scrollSpeed.rawValue) == nil ? SettingDefault.scrollSpeed : defaults.double(forKey: SettingKey.scrollSpeed.rawValue)
         let scale = Float(Self.scrollFactor(speed))
         queue.async { self.scrollScale = scale }
     }

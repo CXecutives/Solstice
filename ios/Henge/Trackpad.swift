@@ -20,10 +20,10 @@ struct Trackpad: UIViewRepresentable {
 
     /// This surface lies over the Mac's screen, so Direct touch can apply to it.
     let overScreen: Bool
-    @AppStorage(PointerMode.key) private var mode = PointerMode.trackpad
-    @AppStorage(TouchTiming.holdKey) private var hold = TouchTiming.defaultHold
-    @AppStorage(TouchTiming.tapDragKey) private var tapDrag = TouchTiming.defaultTapDrag
-    @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = HardwareMouse.defaultScrollSpeed
+    @AppStorage(SettingKey.touchMode.rawValue) private var mode = PointerMode.trackpad
+    @AppStorage(SettingKey.touchHold.rawValue) private var hold = SettingDefault.touchHold
+    @AppStorage(SettingKey.touchTapDrag.rawValue) private var tapDrag = SettingDefault.touchTapDrag
+    @AppStorage(SettingKey.scrollSpeed.rawValue) private var scrollSpeed = SettingDefault.scrollSpeed
 
     init(overScreen: Bool = false) { self.overScreen = overScreen }
 
