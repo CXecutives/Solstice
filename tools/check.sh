@@ -24,6 +24,10 @@ for _ in $(seq 1 36); do
 done
 [ -n "$run" ] || { echo "the run did not show up" >&2; exit 1; }
 echo "run $run: tests=$tests ipa=$ipa san=$san"
+for _ in $(seq 1 20); do # a run just dispatched can answer 404 for a few seconds
+  gh run view "$run" --json status > /dev/null 2>&1 && break
+  sleep 3
+done
 gh run watch "$run" --exit-status --interval 30 > /dev/null || {
   gh run view "$run" --log-failed | tail -60
   exit 1
