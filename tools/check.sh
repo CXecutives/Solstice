@@ -26,7 +26,7 @@ gh run watch "$run" --exit-status --interval 30 > /dev/null || {
   exit 1
 }
 if [ "$ipa" = true ]; then
-  # Only the new IPA replaces the old one; out/ also keeps the other apps to sideload (GetMoreRam).
+  # Only the new IPA replaces the old one; anything else in out/ stays.
   tmp=$(mktemp -d)
   gh run download "$run" -n Solstice-ipa -D "$tmp"
   mkdir -p out && mv -f "$tmp"/*.ipa out/ && rm -rf "$tmp"

@@ -41,6 +41,13 @@ int main(void) {
         check("lighten: the daemon's label", system(cmd) == 0);
         snprintf(cmd, sizeof cmd, "plutil -extract ProgramArguments.2 raw -o - '%s' | grep -qx 'kern.ticket_lock_spins=8'", path);
         check("lighten: the daemon sets kern.ticket_lock_spins to 8", system(cmd) == 0);
+        static const char *const slack[] = {"kern.timer_coalesce_bg_ns_max=250000000", "kern.timer_coalesce_tier3_ns_max=150000000"};
+        for (int i = 0; i < 2; i++) {
+            snprintf(cmd, sizeof cmd, "plutil -extract ProgramArguments.%d raw -o - '%s' | grep -qx '%s'", 3 + i, path, slack[i]);
+            check("lighten: the daemon sets the background timer slack", system(cmd) == 0);
+            snprintf(cmd, sizeof cmd, "sysctl -n %.*s >/dev/null 2>&1", (int)(strchr(slack[i], '=') - slack[i]), slack[i]);
+            check("lighten: macOS has that timer setting (on this runner)", system(cmd) == 0);
+        }
         snprintf(cmd, sizeof cmd, "plutil -extract RunAtLoad raw -o - '%s' | grep -qx true", path);
         check("lighten: the daemon runs at every boot", system(cmd) == 0);
     }
