@@ -9,18 +9,8 @@ struct SessionView: View {
     let close: () -> Void
 
     @StateObject private var display = DisplayRouter()
-    @State private var error: String?
-    @State private var state: Int32 = 0
     @State private var bootAttempt = 0
-    @State private var cpusOn: Int32 = 0
-    @State private var userCode = false
-    @State private var blocksPerSecond: Double = 0
-    @State private var framesOut: UInt64 = 0
-    @State private var framesIn: UInt64 = 0
-    @State private var log: [String] = []
-    @State private var started = Date()
     @ObservedObject private var power = PowerPolicy.shared // heat: the Mac may be paused for it
-    @State private var bootRAM: UInt64 = 0 /* what the Mac was started with, which a save is for */
     @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
     @AppStorage("henge.matchScreenColors") private var matchScreenColors = true
     @AppStorage("henge.display.brightness") private var screenBrightness = 1.0
@@ -43,14 +33,32 @@ struct SessionView: View {
     @State var zoomCentre = CGPoint(x: 0.5, y: 0.5) // where the zoomed view is, 0...1 of the Mac's screen
     @State var map: UIImage?
     @State private var zoomFollowing: Task<Void, Never>?
-    @State private var helperRunning = false
     @State var shown = CGSize(width: 0.5, height: 0.5) // how much of the Mac's screen the zoomed view shows
-    /// Paused because storage ran short (StorageGuard), and whether there is room to run on again.
-    @State private var storagePaused = false
-    @State private var storageRoom = false
-    @State private var storageFree: Int64 = 0
     @Environment(\.scenePhase) private var scenePhase
+    /// The Mac's lifecycle: starting it, the engine's state while it runs, storage, shutting down.
+    @StateObject private var session: SessionController
 
+    init(mac: VirtualMac, close: @escaping () -> Void) {
+        self.mac = mac
+        self.close = close
+        _session = StateObject(wrappedValue: SessionController(mac: mac))
+    }
+
+    // What the view shows of the running Mac, from the session.
+    private var error: String? { session.error }
+    private var state: Int32 { session.state }
+    private var cpusOn: Int32 { session.cpusOn }
+    private var userCode: Bool { session.userCode }
+    private var blocksPerSecond: Double { session.blocksPerSecond }
+    private var framesOut: UInt64 { session.framesOut }
+    private var framesIn: UInt64 { session.framesIn }
+    private var log: [String] { session.log }
+    private var started: Date { session.started }
+    private var bootRAM: UInt64 { session.bootRAM }
+    private var helperRunning: Bool { session.helperRunning }
+    private var storagePaused: Bool { session.storagePaused }
+    private var storageRoom: Bool { session.storageRoom }
+    private var storageFree: Int64 { session.storageFree }
 
     var body: some View {
         GeometryReader { geo in
@@ -203,7 +211,7 @@ struct SessionView: View {
         .onChange(of: showDetails) { showing in
             if showing {
                 HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll()
-                refreshDetails() // the loop fills them in only while they show
+                session.refreshDetails() // the loop fills them in only while they show
             }
         }
         .onChange(of: confirmStop) { showing in
@@ -223,9 +231,9 @@ struct SessionView: View {
             HardwareMouse.shared.stop()
         }
         .modifier(ExternalMacDisplayModifier(presentation: MacPresentation(display: display, aspect: mac.aspect)))
-        .task(id: bootAttempt) { await run() }
+        .task(id: bootAttempt) { await start() }
         .task { await Sharing.followMacClipboard() }
-        .task { await watchStorage() }
+        .task { await session.watchStorage() }
     }
 
     /// When there is something of the app's to point at, iPadOS gets its own pointer back.
@@ -375,11 +383,7 @@ struct SessionView: View {
             Text("Storage is almost full").font(.system(size: 17, weight: .semibold))
             Text("\(ByteText.string(UInt64(max(storageFree, 0)))) free. The Mac is paused so its disk cannot fill this \(Device.name); it needs \(ByteText.string(UInt64(StorageGuard.minimumFree))) free. Make room in Settings, General, Storage, then resume it.")
                 .font(.system(size: 14)).foregroundStyle(Desk.dim)
-            Button(storageRoom ? "Resume the Mac" : "Waiting for free storage…") {
-                StorageGuard.holding = false
-                storagePaused = false
-                InstantResume.releaseStorageHold()
-            }
+            Button(storageRoom ? "Resume the Mac" : "Waiting for free storage…") { session.resumeAfterStorage() }
             .disabled(!storageRoom)
             .font(.system(size: 15, weight: .semibold)).foregroundStyle(storageRoom ? Desk.accentLight : Desk.dim)
         }
@@ -387,33 +391,6 @@ struct SessionView: View {
         .frame(width: min(layout.touch.width, 390) - 32, alignment: .leading)
         .background(Desk.raised, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .position(x: (layout.fillsPhone ? layout.touch.midX : layout.pad.midX), y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
-    }
-
-    /// Every 10 s (2 s while paused for it): free storage against StorageGuard's floor.
-    private func watchStorage() async {
-        while !Task.isCancelled {
-            if let free = StorageGuard.freeBytes() {
-                if storagePaused || free < StorageGuard.minimumFree { storageFree = free } // only shown then
-                if !storagePaused && !StorageGuard.holding && free < StorageGuard.minimumFree && henge_vm_state() == 1 {
-                    storagePaused = true
-                    storageRoom = false
-                    StorageGuard.holding = true
-                    HengeLog.log("storage", "\(free >> 20) MB free, under \(StorageGuard.minimumFree >> 20) MB: pausing the Mac")
-                    InstantResume.holdForStorage { paused in
-                        guard !paused else { return }
-                        // It was not running after all (stopping, or paused by Henge): nothing to hold.
-                        StorageGuard.holding = false
-                        storagePaused = false
-                    }
-                }
-                if storagePaused { storageRoom = free >= StorageGuard.resumeAt }
-            }
-            if storagePaused && henge_vm_state() == 2 { // shut down meanwhile
-                StorageGuard.holding = false
-                storagePaused = false
-            }
-            try? await Task.sleep(nanoseconds: storagePaused ? 2_000_000_000 : 10_000_000_000)
-        }
     }
 
     private var phase: String {
@@ -504,146 +481,30 @@ struct SessionView: View {
 
     // MARK: Running
 
-    private func run() async {
-        error = nil
-        state = 0
-        userCode = false
-        cpusOn = 0
-        blocksPerSecond = 0
-        framesOut = 0
-        framesIn = 0
+    /// Starts the Mac (again): the view's own state first, then the session runs it.
+    private func start() async {
         zoomed = false
         controlsHidden = false
         showRevealHint = false
         zoomCentre = CGPoint(x: 0.5, y: 0.5)
         map = nil
         showWallpaperTip = false
-        while henge_vm_state() == 3 && !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-        guard !Task.isCancelled else { return }
-        UIApplication.shared.isIdleTimerDisabled = true
-        HardwareMouse.shared.start()
-        let ram = GuestMemory.prepare(mac, cpus: cpus)
-        HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB")
-        guard ram >= 1024 else {
-            error = "There is not room for this Mac's memory: it needs a few GB of free storage."
-            return
-        }
-        var buffer = [CChar](repeating: 0, count: 256)
-        JITBootstrap.releaseLingeringDebugger()
-        Sharing.prepare()
-        EngineTuning.apply()
-        henge_vm_set_display(UInt32(mac.screen.width), UInt32(mac.screen.height))
-        if mac.isRetina {
-            henge_vm_set_display_mm(UInt32(mac.retinaMM.width), UInt32(mac.retinaMM.height))
-        } else {
-            henge_vm_set_display_mm(0, 0)
-        }
-        HengeLog.log("session", "screen \(mac.screen.width)x\(mac.screen.height) retina \(mac.isRetina)")
-        if mac.reportHostIdentity == true {
-            let modelID = Device.snappedModelIdentifier(forOS: mac.osName)
-            henge_vm_set_identity(Device.chipName, Device.marketingName,
-                                  mac.reportHostModelID == true ? modelID : nil)
-            HengeLog.log("session", "About This Mac reports \(Device.marketingName) (model \(modelID))")
-        } else {
-            henge_vm_set_identity(nil, nil, nil)
-        }
-        var rc: Int32 = -1
-        if InstantResume.enabled, let at = InstantResume.saved(for: mac, ramMB: ram, cpus: cpus) {
-            HengeLog.log("resume", "picking up the Mac saved \(Int(Date().timeIntervalSince(at))) s ago")
-            let t0 = Date()
-            rc = henge_vm_resume(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus),
-                                 InstantResume.file(for: mac).path, InstantResume.ident(for: mac, ramMB: ram, cpus: cpus), &buffer, buffer.count)
-            if rc == 0 {
-                HengeLog.log("resume", String(format: "resumed in %.1f s", Date().timeIntervalSince(t0)))
-            } else {
-                HengeLog.log("resume", "could not resume (\(String(cString: buffer))); starting it from cold")
-                buffer = [CChar](repeating: 0, count: 256)
-            }
-        }
-        InstantResume.discard(for: mac) /* used or out of date: the disk moves on from here */
-        if rc != 0 {
-            rc = henge_vm_boot(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus), &buffer, buffer.count)
-        }
-        if rc != 0 {
-            error = String(cString: buffer)
-            return
-        }
-        bootRAM = ram
-        started = Date()
-        StorageGuard.holding = false
-        storagePaused = false
-        if scenePhase != .background { SafeMode.macLive(true) } // a crash or hang from here on counts (SafeMode)
-        var used = mac
-        used.lastUsed = started
-        Machines.shared.update(used)
-        var lastBlocks = henge_vm_blocks()
-        var lastTime = Date()
-        var lastGPUFrames = henge_vm_gpu_frames()
-        var tick = 0
-        while !Task.isCancelled {
-            let now_state = henge_vm_state()
-            if now_state != state { state = now_state }
-            if state == 3 || state == 4 { /* starting, stopping, or paused (Henge in the background, or storage short) */
-                try? await Task.sleep(nanoseconds: storagePaused ? 1_000_000_000 : 100_000_000)
-                continue
-            }
-            if !userCode && henge_vm_guest_el0() != 0 { userCode = true }
-            let now = Date(), blocks = henge_vm_blocks()
-            let rate = Double(blocks &- lastBlocks) / max(now.timeIntervalSince(lastTime), 0.001)
-            lastBlocks = blocks
-            lastTime = now
-            // What only Details shows is copied into the view's state only while it shows: each copy redraws the
-            // session, once a second, for nothing otherwise (200 log lines among it).
-            if showDetails {
-                blocksPerSecond = rate
-                refreshDetails()
-            }
-            if Sharing.helperRunning != helperRunning { helperRunning = Sharing.helperRunning }
-            if state == 2 {
-                SafeMode.macLive(false)
+        await session.run(cpus: cpus, hooks: SessionController.Hooks(
+            detailsShown: { showDetails },
+            inBackground: { scenePhase == .background },
+            stopped: {
                 typing = false
                 showDetails = false
                 confirmStop = false
                 zoomFollowing?.cancel()
-                StickyKeys.shared.releaseAll()
-                HardwareKeys.releaseAll()
-                HardwareMouse.shared.stop()
-                UIApplication.shared.isIdleTimerDisabled = false
-                HengeLog.log("session", "showing stopped Mac: \(String(cString: henge_vm_exit_reason()))")
-                if henge_vm_exit_outcome() == Int32(HENGE_VM_OUTCOME_RESTART.rawValue) && henge_vm_can_start() != 0 {
-                    bootAttempt += 1
-                }
-                break
-            }
-            tick += 1
-            if tick % 10 == 0 {
-                let gpuFrames = henge_vm_gpu_frames()
-                HengeLog.log("perf", "blocks/s \(String(format: "%.0f", rate)), GPU frames/10s \(gpuFrames &- lastGPUFrames), "
-                             + "network tx \(henge_vm_net_frames(1)), rx \(henge_vm_net_frames(0)), dns \(henge_vm_dns(0)) answered \(henge_vm_dns(2)) unanswered, "
-                             + "thermal \(PowerPolicy.label(power.thermal))")
-                lastGPUFrames = gpuFrames
-                JITBootstrap.releaseLingeringDebugger()
-            }
-            if tick == 60 { AutoStart.succeeded() } // a minute up: the auto-start guard counts afresh
-            if tick == 60 && !stillWallpaperTipShown { // about when the desktop is up after a login
+            },
+            restart: { bootAttempt += 1 },
+            minuteUp: {
+                guard !stillWallpaperTipShown else { return } // about when the desktop is up after a login
                 stillWallpaperTipShown = true
                 showWallpaperTip = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 10) { showWallpaperTip = false }
-            }
-            if tick % 30 == 0 { HengeLog.logFootprint("session") } // how close to the limit, for a memory kill leaves no crash report
-            if tick % 60 == 0 { MacPreview.save(for: mac) }
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-        }
-    }
-
-    /// What Details shows of the running Mac, now.
-    private func refreshDetails() {
-        cpusOn = henge_vm_cpus_on()
-        framesOut = henge_vm_net_frames(1)
-        framesIn = henge_vm_net_frames(0)
-        log = Array(HengeLog.recentLines(200))
+            }))
     }
 
     private func stopTapped() {
@@ -651,13 +512,7 @@ struct SessionView: View {
     }
 
     private func finish() {
-        SafeMode.macLive(false)
-        StorageGuard.holding = false
-        if state == 1 || state == 4 {
-            MacPreview.saveNow(for: mac)
-            henge_vm_stop()
-        }
-        InstantResume.discard(for: mac) /* turned off: nothing to pick up */
+        session.shutDown()
         close()
     }
 }

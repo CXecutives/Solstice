@@ -70,7 +70,6 @@ extension SessionView {
         }
     }
 
-
     // MARK: Zoom
 
     /// The whole screen, small, with where the zoomed view is on it.
