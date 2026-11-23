@@ -6,7 +6,8 @@
 
 /* The code cache in segments (codecache.c). The JIT region is cut into equal segments that two streams of blocks fill
    in turn: young blocks, and tenured ones (blocks translated again soon after an eviction dropped them: the working
-   set), which may hold about three quarters and are evicted only when they hold more. When only one free segment is
+   set), which may hold about seven eighths and are evicted only when they hold more, a segment in use since its
+   last chance getting a second one. When only one free segment is
    left, the oldest full segment of one stream is condemned: nothing new may lead
    into it, the chained exits into it go back to their stubs, its blocks leave the hash, and every CPU is asked to drop
    what its branch caches and return predictions hold into it. Once every CPU has been back at the top of its dispatcher loop since then (or was parked), nothing
@@ -72,7 +73,7 @@ typedef struct HvCodeCache {
 } HvCodeCache;
 
 /* A block of the segment its tag names was found by a lookup or chained to (the dispatcher, never translated code):
-   the segment is in use (hv_cc_* gives a tenured one in use a second chance). */
+   the segment is in use (an eviction gives a tenured one in use a second chance). */
 static inline void hv_cc_touch(HvCodeCache *cc, uint32_t stag) {
     uint8_t *u = &cc->used[(stag >> 24) & (HV_CC_MAX_SEGS - 1)];
     if (!__atomic_load_n(u, __ATOMIC_RELAXED)) __atomic_store_n(u, 1, __ATOMIC_RELAXED);

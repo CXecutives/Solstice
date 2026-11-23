@@ -69,11 +69,6 @@ static inline uint32_t tenure_key(const HvCodeCache *cc, uint64_t va, uint64_t p
     return (uint32_t)(h >> 32) & cc->evicted_mask;
 }
 
-static int cc_test(void) { /* EXPERIMENT */
-    const char *v = getenv("HV_CC_TEST");
-    return v ? atoi(v) : 0;
-}
-
 /* As many segments as fit, about 16 (at most 64, at least 128 KB each); under 4, none. */
 static void geometry(HvMachine *m) {
     HvCodeCache *cc = &m->cc;
@@ -85,11 +80,11 @@ static void geometry(HvMachine *m) {
     if (n < 4 || cc->too_big) n = 0;
     cc->seg_shift = shift;
     cc->nseg = (uint32_t)n;
-    /* Tenured code may hold about three quarters (half, with few segments): the working set should fit, and the
+    /* Tenured code may hold about seven eighths (half, with few segments): the working set should fit, and the
        young stream need only hold code until it is evicted and marked (a block wanted again within two laps of that
-       comes back tenured). A starting point, to be set from the stats line of long device sessions. */
-    cc->tenure_max = n >= 8 ? (uint32_t)n * 3 / 4 - 1 : n ? (uint32_t)n / 2 - 1 : 0;
-    if (n >= 8 && (cc_test() & 2)) cc->tenure_max = (uint32_t)n * 7 / 8 - 1; /* EXPERIMENT */
+       comes back tenured). Three quarters translated a quarter more a run in test_codecache's workload whose hot
+       pages fill the cache 0.7 times (the phone: 308 of 363 evictions were of tenured segments). */
+    cc->tenure_max = n >= 8 ? (uint32_t)n * 7 / 8 - 1 : n ? (uint32_t)n / 2 - 1 : 0;
 }
 
 void hv_cc_reset(HvMachine *m) {
@@ -314,9 +309,9 @@ static int take_back(HvMachine *m, int force) {
         k = pick(cc);
     }
     if (k < 0) return 0;
-    /* EXPERIMENT (HV_CC_TEST bit 0): a tenured segment entered since it filled or since its last chance goes to the
-       back once instead (all of them: the oldest after all). */
-    if (k == HV_CC_TENURED && (cc_test() & 1))
+    /* A tenured segment entered since it filled or since its last chance (hv_cc_touch) goes to the back once instead
+       (when all of them were: the oldest after all). 4-7% fewer translations a run in test_codecache. */
+    if (k == HV_CC_TENURED)
         for (uint32_t i = 0; i < cc->fifo_len[k]; i++) {
             uint32_t h = cc->fifo[k][cc->fifo_head[k]];
             if (!__atomic_load_n(&cc->used[h], __ATOMIC_RELAXED)) break;
