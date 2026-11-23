@@ -23,7 +23,7 @@ METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -frame
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
         $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
-        $(B)/test_pvg_lifecycle $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue
+        $(B)/test_pvg_lifecycle $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue $(B)/test_knobs
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 
@@ -108,6 +108,10 @@ $(B)/test_share_scripts: tests/test_share_scripts.c host/share.c host/share.h $(
 
 $(B)/test_shutdown: tests/test_shutdown.c $(ENGINE)
 	$(CC) $(CFLAGS) $^ -o $@
+
+# The settings table (core/knobs.def): parsing, ranges, unknown names, a machine reading them again.
+$(B)/test_knobs: tests/test_knobs.c core/knobs.def $(ENGINE)
+	$(CC) $(CFLAGS) tests/test_knobs.c $(ENGINE) -o $@
 
 # Native app lifecycle with real devices and networking; no restore assets.
 $(B)/test_dns_lifecycle: tests/test_dns_lifecycle.c $(B)/dns_proxy.o
