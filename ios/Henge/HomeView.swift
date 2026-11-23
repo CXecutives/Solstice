@@ -212,20 +212,22 @@ private struct MacHero: View {
     }
 
     @ViewBuilder private var preview: some View {
-        ZStack {
-            Desk.raised.opacity(0.5)
-            if let image = UIImage(contentsOfFile: MacPreview.file(for: mac).path) {
-                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
-            } else {
-                Image(systemName: "macwindow.on.rectangle")
-                    .font(.system(size: 46, weight: .light))
-                    .foregroundStyle(Desk.faint)
+        // The picture is an overlay: a filling image inside the stack would size the card by its own pixels, wider than
+        // an iPhone.
+        Desk.raised.opacity(0.5)
+            .aspectRatio(mac.aspect, contentMode: .fit)
+            .overlay {
+                if let image = UIImage(contentsOfFile: MacPreview.file(for: mac).path) {
+                    Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 46, weight: .light))
+                        .foregroundStyle(Desk.faint)
+                }
             }
-        }
-        .aspectRatio(mac.aspect, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Desk.hairline, lineWidth: 0.5))
-        .accessibilityHidden(true)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Desk.hairline, lineWidth: 0.5))
+            .accessibilityHidden(true)
     }
 }
 
