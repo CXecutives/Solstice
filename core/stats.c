@@ -1,3 +1,4 @@
+/* The engine's measurements read as rates (stats.h). */
 #include "stats.h"
 
 double hv_stats_blocks_rate(HvMachine *m, HvRateMark *mark, uint64_t now) {
