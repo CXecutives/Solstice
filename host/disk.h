@@ -16,6 +16,7 @@ typedef struct HvDisk {
     uint64_t writes; /* writes completed (atomic), and how many a flush had made safe: a flush with none since is free */
     uint64_t flushed;
     uint64_t syncs;  /* flushes that went to the file system (tests, stats) */
+    uint64_t punched; /* bytes given back to the device as holes (atomic, stats) */
 } HvDisk;
 
 int hv_disk_open(HvDisk *d, const char *path, uint64_t offset, int readonly);

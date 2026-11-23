@@ -73,15 +73,6 @@ int pipe2(int fds[2], int flags)
     return 0;
 }
 
-/* TCG's own W^X toggle. pthread_jit_write_protect_np() is marked unavailable in
- * the iOS SDK -- the symbol exists but the header refuses it -- so QEMU pokes
- * the APRR registers through the comm page instead. This file is compiled
- * inside QEMU's tcg/ directory, so the same header is the right one to use, and
- * using anything else would risk testing a different mechanism from the one the
- * emulator will actually run on. */
-#define CONFIG_DARWIN 1 /* the header is QEMU's (UTM, LGPL-2.1), vendored as is */
-#include "tcg-apple-jit.h"
-
 /* Maximum verbosity by default: this path is nearly impossible to debug after the
  * fact on device, and every line here is printed at most a handful of times per
  * session. Goes to os_log (visible in Console.app) and stderr both. */
@@ -291,169 +282,6 @@ static bool henge_jit_selftest(const HengeDualMapping *m)
     return true;
 }
 
-
-/* ------------------------------------------------------------ self-granted */
-/*
- * Executable memory without a trap servicer. This is how TrollStore and jailbreaks give an app JIT:
- *
- *   - TrollStore apps cannot use banned entitlements such as dynamic-codesigning on affected systems
- *     (see https://github.com/opa334/TrollStore#banned-entitlements), so they cannot rely on the normal entitlement-based JIT path.
- *     TrollStore's "Open with JIT" / enable-jit instead attaches with ptrace and detaches, leaving the process debugged.
- *   - Dopamine similarly allows invalid executable pages for jailbreak processes, while its csops hook may hide CS_DEBUGGED
- *     unless "Allow JIT in Apps" is enabled.
- *   - Debugger-based JIT methods such as AltJIT, SideJITServer and StikDebug use the same general mechanism on affected iOS versions.
- *
- * Under W^X restrictions, memory cannot be simultaneously writable and executable through the same mapping. The fallback path:
- *   1. Allocates backing memory with RWX maximum protection.
- *   2. Creates a separate RW alias with vm_remap() for code generation.
- *   3. Demotes the executable mapping to RX with vm_protect().
- * This gives separate RW and RX views of the same backing pages.
- */
-/* csops straight to the kernel: Dopamine hooks the libc function to hide CS_DEBUGGED (systemhook's csops_hook). */
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-static bool henge_kernel_debugged(void)
-{
-    uint32_t flags = 0;
-    return syscall(169 /* SYS_csops */, getpid(), 0 /* CS_OPS_STATUS */, &flags, sizeof(flags)) == 0 && (flags & 0x10000000u);
-}
-#pragma clang diagnostic pop
-
-static bool henge_page_is_executable(void *p);
-
-static sigjmp_buf g_self_jump;
-static volatile sig_atomic_t g_self_running;
-
-static void henge_self_fault(int sig)
-{
-    if (g_self_running) siglongjmp(g_self_jump, 1);
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
-
-static bool henge_self_selftest(uint8_t *rx, uint8_t *rw)
-{
-    /* movz w0, #0x5a5a ; ret */
-    static const uint32_t code[2] = { 0x528B4B40u, 0xD65F03C0u };
-    if (!henge_page_is_executable(rx)) return false;
-    struct sigaction sa, ob, os, oi;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = henge_self_fault;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGBUS, &sa, &ob); sigaction(SIGSEGV, &sa, &os); sigaction(SIGILL, &sa, &oi);
-    bool ok = false;
-    g_self_running = 1;
-    if (sigsetjmp(g_self_jump, 1) == 0) {
-        memcpy(rw, code, sizeof(code));
-        sys_icache_invalidate(rx, sizeof(code));
-        ok = ((int (*)(void))(void *)rx)() == 0x5a5a;
-    }
-    g_self_running = 0;
-    sigaction(SIGBUS, &ob, NULL); sigaction(SIGSEGV, &os, NULL); sigaction(SIGILL, &oi, NULL);
-    return ok;
-}
-
-/* A writable alias of [rx, rx + size), placed right after it if possible and within 2 GiB either way. */
-static uint8_t *henge_rw_alias(uint8_t *rx, size_t size, bool fixed)
-{
-    vm_address_t alias = (vm_address_t)(rx + size);
-    vm_prot_t cur, max;
-    kern_return_t kr = vm_remap(mach_task_self(), &alias, size, 0,
-                                fixed ? (VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) : VM_FLAGS_ANYWHERE,
-                                mach_task_self(), (vm_address_t)rx, FALSE, &cur, &max, VM_INHERIT_NONE);
-    if (kr != KERN_SUCCESS) {
-        HENGE_LOG("self: vm_remap failed: %d (%s)", (int)kr, mach_error_string(kr));
-        return NULL;
-    }
-    long long dist = (long long)alias - (long long)(uintptr_t)rx;
-    if (dist > (2LL << 30) || dist < -(2LL << 30) ||
-        vm_protect(mach_task_self(), alias, size, FALSE, VM_PROT_READ | VM_PROT_WRITE) != KERN_SUCCESS) {
-        HENGE_LOG("self: writable alias unusable (distance %lld)", dist);
-        vm_deallocate(mach_task_self(), alias, size);
-        return NULL;
-    }
-    return (uint8_t *)alias;
-}
-
-/* How the held region was made, for Settings: NULL until it is, then "MAP_JIT" or "plain". */
-static const char *volatile g_self_route;
-
-const char *henge_ios_jit_self_route(void) { return g_self_route; }
-
-static void henge_ios_jit_release_low_hold(size_t bytes);
-
-static HengeDualMapping henge_self_dual_mapping(size_t bytes)
-{
-    HengeDualMapping none = { NULL, NULL, 0 };
-    if (__builtin_available(iOS 26.0, *)) {
-        HENGE_LOG("self: iOS 26 enforces TXM; only a debugger can grant executable memory here");
-        return none;
-    }
-    size_t size = (bytes + 0x3fff) & ~(size_t)0x3fff;
-    /* No debugger will take the reserved block on this route, and it would keep this mapping out of the low window. */
-    henge_ios_jit_release_low_hold(size);
-
-    /* 1. MAP_JIT: requires dynamic-codesigning. Refused with EPERM elsewhere, harmlessly. */
-    uint8_t *rx = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
-    if (rx == MAP_FAILED) {
-        HENGE_LOG("self: MAP_JIT refused (%s)", strerror(errno));
-    } else {
-        uint8_t *rw = henge_rw_alias(rx, size, false);
-        if (rw && vm_protect(mach_task_self(), (vm_address_t)rx, size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE) == KERN_SUCCESS && henge_self_selftest(rx, rw)) {
-            HengeDualMapping m = { rw, rx, size };
-            atomic_store(&g_jit_available, true);
-            g_self_route = "MAP_JIT";
-            HENGE_LOG("self: PASS -- %zu MiB from MAP_JIT (dynamic-codesigning), rx=%p rw=%p", size >> 20, (void *)rx, (void *)rw);
-            return m;
-        }
-        HENGE_LOG("self: MAP_JIT region did not pass its test");
-        if (rw) vm_deallocate(mach_task_self(), (vm_address_t)rw, size);
-        munmap(rx, size);
-    }
-
-    /* 2. Plain memory made executable: only where invalid pages are known to be allowed. */
-    bool debugged = henge_kernel_debugged();
-    bool jailbroken = access("/var/jb", F_OK) == 0;
-    if (!debugged && !jailbroken) {
-        HENGE_LOG("self: not marked as debugged and not jailbroken; nothing else is safe to try");
-        return none;
-    }
-    uint8_t *base = mmap(NULL, size * 2, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (base == MAP_FAILED) {
-        HENGE_LOG("self: could not reserve %zu MiB: %s", (size * 2) >> 20, strerror(errno));
-        return none;
-    }
-    /* Two layouts: writable+executable asked for and then made read+execute (the kernel drops execute from the first), or
-     * read+execute from the start, as UTM and Dolphin map it. Each step that fails says so (#127: an A15 on iOS 18 with
-     * CS_DEBUGGED set failed one of them without saying which). */
-    static const int first_prot[2] = { PROT_READ | PROT_WRITE | PROT_EXEC, PROT_READ | PROT_EXEC };
-    static const char *const layout[2] = { "rwx then rx", "rx" };
-    for (int i = 0; i < 2; i++) {
-        rx = mmap(base, size, first_prot[i], MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (rx == MAP_FAILED) { HENGE_LOG("self: plain (%s): mmap failed: %s", layout[i], strerror(errno)); continue; }
-        uint8_t *rw = henge_rw_alias(rx, size, true);
-        if (!rw) { HENGE_LOG("self: plain (%s): no writable alias", layout[i]); continue; }
-        kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)rx, size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-        if (kr != KERN_SUCCESS) {
-            HENGE_LOG("self: plain (%s): vm_protect r-x failed: %d (%s)", layout[i], (int)kr, mach_error_string(kr));
-            continue;
-        }
-        if (!henge_page_is_executable(rx)) { HENGE_LOG("self: plain (%s): the kernel did not keep execute on the page", layout[i]); continue; }
-        if (henge_self_selftest(rx, rw)) {
-            HengeDualMapping m = { rw, rx, size };
-            atomic_store(&g_jit_available, true);
-            g_self_route = "plain";
-            HENGE_LOG("self: PASS -- %zu MiB of plain memory (%s, %s), rx=%p rw=%p", size >> 20,
-                     debugged ? "process is debugged" : "jailbreak allows invalid pages", layout[i], (void *)rx, (void *)rw);
-            return m;
-        }
-        HENGE_LOG("self: plain (%s): code written through the alias faulted or returned the wrong value", layout[i]);
-    }
-    HENGE_LOG("self: plain memory did not execute (%s)", debugged ? "debugged" : "jailbroken");
-    munmap(base, size * 2);
-    return none;
-}
-
 /* ------------------------------------------------------------- allocation */
 
 /*
@@ -519,80 +347,6 @@ static void henge_ios_jit_log_map(const char *tag)
 
 static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes);
 
-/*
- * The room for a Mac app's allocators. iOS gives an app with extended virtual addressing 64 GB of high address space,
- * 0x7000000000 to 0x8000000000 (measured on iOS 26; V8's iOS build says the same), and nothing large below it.
- * Chromium's Mac build reserves more than that at start, so the translation layer places those reservations itself
- * (tl_loader.c, room_place), in two blocks held here from launch before anything else can land in them (zero-fill and
- * untouched: no memory). The layout it ends up with:
- *   0x70-0x78  PartitionAlloc's pools (32 GB, aligned to 32), its 16 GB metadata over their unused halves
- *   0x78-0x7C  Oilpan's unused lower half: V8's 8 GB at 0x78, the JIT region's writable view at 0x7A (not held,
- *              2.5 GB after it free for everything else), V8's TrustedRange at 0x7B (held)
- *   0x7C-0x80  Oilpan's upper half (its 32 GB reservation, aligned to 32, only uses this)
- * Let go when QEMU starts.
- */
-#define HENGE_HIGH_BASE 0x7000000000ull
-#define HENGE_JIT_VIEW_AT 0x7A00000000ull
-static const struct { uint64_t at, bytes; } g_high_parts[3] = {
-    {0x7000000000ull, 40ull << 30}, {0x7C00000000ull, 16ull << 30},
-    {0x7B00000000ull, 4ull << 30}, /* 4 GB-aligned slots for V8's smaller aligned reservations (its TrustedRange) */
-};
-static vm_address_t g_high_hold[3];
-static bool g_high_hold_given;
-
-static void henge_ios_hold_high(void)
-{
-    for (int i = 0; i < 3; i++) {
-        if (g_high_hold[i]) continue;
-        vm_address_t a = (vm_address_t)g_high_parts[i].at;
-        kern_return_t kr = vm_allocate(mach_task_self(), &a, (vm_size_t)g_high_parts[i].bytes, VM_FLAGS_FIXED);
-        if (kr == KERN_SUCCESS) {
-            vm_protect(mach_task_self(), a, (vm_size_t)g_high_parts[i].bytes, FALSE, VM_PROT_NONE);
-            g_high_hold[i] = a;
-        }
-        HENGE_LOG("high hold for a Mac app's allocators at %#llx (%llu GB): %s", (unsigned long long)g_high_parts[i].at,
-                  (unsigned long long)(g_high_parts[i].bytes >> 30), mach_error_string(kr));
-    }
-}
-
-static void henge_ios_release_high_hold(void)
-{
-    if (g_high_hold_given) return;
-    uint64_t released = 0;
-    for (int i = 0; i < 3; i++)
-        if (g_high_hold[i]) {
-            kern_return_t kr = vm_deallocate(mach_task_self(), g_high_hold[i], (vm_size_t)g_high_parts[i].bytes);
-            if (kr == KERN_SUCCESS) {
-                released += g_high_parts[i].bytes;
-                g_high_hold[i] = 0;
-            } else {
-                HENGE_LOG("could not release unused Mac app address room: %s", mach_error_string(kr));
-            }
-        }
-    if (released) HENGE_LOG("released %llu MiB of unused Mac app address reservations for the VM", (unsigned long long)(released >> 20));
-}
-
-HENGE_EXPORT void henge_ios_jit_prepare_vm_memory(void)
-{
-    henge_ios_release_high_hold();
-}
-
-/* The held blocks, once, for the translation layer to place large reservations in (they stay held: those are mapped
-   over them). Returns how many (0 if none). */
-HENGE_EXPORT int henge_ios_take_high_room(void **base, size_t *bytes)
-{
-    if (g_high_hold_given) return 0;
-    int n = 0;
-    for (int i = 0; i < 3; i++)
-        if (g_high_hold[i]) {
-            base[n] = (void *)g_high_hold[i];
-            bytes[n] = (size_t)g_high_parts[i].bytes;
-            n++;
-        }
-    g_high_hold_given = n > 0;
-    return n;
-}
-
 static HengeDualMapping henge_prewarmed;
 static bool henge_prewarm_done;
 
@@ -602,94 +356,16 @@ HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes)
         return henge_prewarmed.rw_addr != NULL;
     }
     henge_prewarm_done = true;
-    henge_ios_hold_high();
     henge_prewarmed = henge_ios_jit_allocate_real(bytes);
     fprintf(stderr, "[henge-jit] prewarm %s: %zu bytes\n",
             henge_prewarmed.rw_addr ? "OK" : "FAILED", bytes);
     return henge_prewarmed.rw_addr != NULL;
 }
 
-/*
- * Before iOS 26, without a trap: the region made by this process itself (MAP_JIT, or plain memory where the process is marked as
- * debugged or the jailbreak allows invalid pages). For TrollStore's and Dopamine's attach, which answers no brk (#148).
- */
-HENGE_EXPORT bool henge_ios_jit_prewarm_self(size_t bytes)
-{
-    if (henge_prewarmed.rw_addr) return true;
-    HengeDualMapping m = henge_self_dual_mapping(bytes);
-    if (!m.rw_addr) return false;
-    henge_prewarmed = m;
-    henge_prewarm_done = true;
-    fprintf(stderr, "[henge-jit] prewarm (self, %s) OK: %zu bytes\n", g_self_route ? g_self_route : "?", m.size);
-    return true;
-}
-
-/* The held region, for the native runtime (translation-layer/henge-tl-load.c looks this up by name). */
+/* The held region, for the machine (henge-vm.c). */
 HENGE_EXPORT HengeDualMapping *henge_ios_jit_get_mapping(void)
 {
     return henge_prewarmed.rw_addr ? &henge_prewarmed : NULL;
-}
-
-/*
- * One region, two users. The native runtime writes from the bottom of it and QEMU's TCG takes the top, so an Android app
- * started while Android itself runs (or Android started after one) does not write its code over the other's: that ended in
- * SIGILL inside cpu_tb_exec. Whichever comes second and does not fit gets a failure instead.
- */
-static pthread_mutex_t henge_share_lock = PTHREAD_MUTEX_INITIALIZER;
-static size_t henge_runtime_high;   /* bytes from the bottom the native runtime has taken */
-static size_t henge_qemu_top;       /* bytes at the top QEMU holds */
-
-HENGE_EXPORT bool henge_ios_jit_reserve_bottom(size_t end)
-{
-    pthread_mutex_lock(&henge_share_lock);
-    bool ok = end <= henge_prewarmed.size - henge_qemu_top;
-    if (ok && end > henge_runtime_high) henge_runtime_high = end;
-    pthread_mutex_unlock(&henge_share_lock);
-    if (!ok) {
-        fprintf(stderr, "[henge-jit] the native runtime wants %zu MiB of the JIT region, but QEMU holds its top %zu MiB\n",
-                end >> 20, henge_qemu_top >> 20);
-    }
-    return ok;
-}
-
-HengeDualMapping henge_ios_jit_allocate(size_t bytes)
-{
-    henge_ios_release_high_hold(); /* QEMU is starting: the room is the Mac's */
-    /*
-     * Hand back the prewarmed region when it is big enough. QEMU asks for
-     * exactly tb-size, which is what prewarm was given, so this is the normal
-     * path -- the fallback below only runs if prewarm never happened.
-     */
-    if (henge_prewarmed.rw_addr && henge_prewarmed.size >= bytes) {
-        size_t off = (henge_prewarmed.size - bytes) & ~(size_t)0x3FFF;
-        pthread_mutex_lock(&henge_share_lock);
-        bool fits = henge_runtime_high <= off;
-        if (fits) henge_qemu_top = henge_prewarmed.size - off;
-        pthread_mutex_unlock(&henge_share_lock);
-        if (!fits) {
-            fprintf(stderr, "[henge-jit] the native runtime already uses %zu MiB of the %zu MiB region; no room for %zu MiB of TCG\n",
-                    henge_runtime_high >> 20, henge_prewarmed.size >> 20, bytes >> 20);
-            HengeDualMapping none = { NULL, NULL, 0 };
-            return none;
-        }
-        fprintf(stderr, "[henge-jit] using the top %zu MiB of the prewarmed region (%zu MiB)\n",
-                (henge_prewarmed.size - off) >> 20, henge_prewarmed.size >> 20);
-        HengeDualMapping top = { henge_prewarmed.rw_addr + off, henge_prewarmed.rx_addr + off, henge_prewarmed.size - off };
-        return top;
-    }
-    /*
-     * No second trap after a prewarm already went unanswered.
-     * Inside qemu_init there is even less chance StikDebug is listening, and a
-     * debugger that is attached but not answering keeps the whole process
-     * stopped on the brk, so the app freezes. Failing here lets region.c
-     * fall back to MAP_JIT, or lets qemu_init report the error.
-     */
-    if (henge_prewarm_done) {
-        fprintf(stderr, "[henge-jit] prewarm failed earlier; not trapping again\n");
-        HengeDualMapping none = { NULL, NULL, 0 };
-        return none;
-    }
-    return henge_ios_jit_allocate_real(bytes);
 }
 
 static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
@@ -706,10 +382,9 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
     g_expecting_jit_trap = false;
     if (probe == 0) {
         HENGE_LOG("#%llu: StikDebug is NOT servicing traps -- probe returned 0, which "
-                 "is our own SIGTRAP handler stepping over an unanswered brk. "
-                 "Trying to make %zu bytes without it.",
-                 (unsigned long long)n, bytes);
-        return henge_self_dual_mapping(bytes);
+                 "is our own SIGTRAP handler stepping over an unanswered brk.",
+                 (unsigned long long)n);
+        return region;
     }
 
     uint32_t probe_lo = (uint32_t)probe;
@@ -776,9 +451,8 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
 
     /* Writable alias of the same physical pages. Purely local -- no debugger
      * involvement, and therefore still available after detach. */
-    /* Near the executable view: the translation layer's loader retargets code at this alias with adrp, which reaches +-4 GiB,
-     * and a kernel left to choose (VM_FLAGS_ANYWHERE) can put it hundreds of GiB away (seen on iOS 27). Free addresses after
-     * the region, then before it, in 16 MiB steps out to 2 GiB; anywhere only if none is free. */
+    /* Near the executable view: a kernel left to choose (VM_FLAGS_ANYWHERE) can put it hundreds of GiB away (seen on iOS 27).
+     * Free addresses after the region, then before it, in 16 MiB steps out to 2 GiB; anywhere only if none is free. */
     vm_address_t rw = 0;
     vm_prot_t cur_prot = VM_PROT_NONE, max_prot = VM_PROT_NONE;
     kern_return_t kr = KERN_NO_SPACE;
@@ -791,11 +465,6 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
             kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, /*mask=*/0, VM_FLAGS_FIXED,
                           mach_task_self(), (vm_address_t)rx, /*copy=*/FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
         }
-    }
-    if (kr != KERN_SUCCESS && g_high_hold[0]) {
-        rw = (vm_address_t)HENGE_JIT_VIEW_AT; /* in the room's unheld middle, where Oilpan's lower half goes unused */
-        kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, 0, VM_FLAGS_FIXED, mach_task_self(), (vm_address_t)rx, FALSE,
-                      &cur_prot, &max_prot, VM_INHERIT_NONE);
     }
     if (kr != KERN_SUCCESS) {
         HENGE_LOG("#%llu: no free space within 2 GiB of rx=%p for the writable view: placing it anywhere", (unsigned long long)n, rx);
@@ -874,161 +543,13 @@ bool henge_ios_jit_is_available(void)
     return atomic_load(&g_jit_available);
 }
 
-/* ------------------------------------------------------------- MAP_JIT probe */
-/*
- * Ask the kernel what it actually granted, before branching into it.
- *
- * The signal guard below catches a fault, but not every refusal arrives as a
- * signal: a device that enforces TXM can answer an attempt to execute
- * unblessed memory by killing the process outright, and no handler survives
- * that. So the dangerous instruction is only reached once the kernel has said
- * the page carries execute permission -- on a device where it does not, this
- * returns false without ever branching there.
- */
-static bool henge_page_is_executable(void *p)
-{
-    vm_address_t addr = (vm_address_t)p;
-    vm_size_t size = 0;
-    natural_t depth = 0;
-    vm_region_submap_info_data_64_t info;
-    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-
-    kern_return_t kr = vm_region_recurse_64(mach_task_self(), &addr, &size, &depth,
-                                            (vm_region_recurse_info_t)&info, &count);
-    if (kr != KERN_SUCCESS) {
-        HENGE_LOG("MAP_JIT probe: vm_region_recurse_64 failed: %s", mach_error_string(kr));
-        return false;
-    }
-    HENGE_LOG("MAP_JIT probe: kernel granted protection 0x%x (execute %s)",
-             (unsigned)info.protection,
-             (info.protection & VM_PROT_EXECUTE) ? "yes" : "NO");
-    return (info.protection & VM_PROT_EXECUTE) != 0;
-}
-
-static sigjmp_buf g_probe_jump;
-static volatile sig_atomic_t g_probe_running;
-
-static void henge_probe_handler(int sig)
-{
-    if (g_probe_running) {
-        siglongjmp(g_probe_jump, 1);
-    }
-    /* Not ours -- a fault on another thread inside the probe's brief window.
-     * Let it crash the way it would have without us. */
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
-
-/*
- * Can this process execute memory it wrote itself?
- *
- * There are two ways to get executable memory on iOS, and Henge only ever tried
- * one of them properly. The dual mapping above needs a debugger that services
- * brk traps; the other route is a plain MAP_JIT mapping, which the kernel
- * honours for any process with CS_DEBUGGED set and which is what QEMU falls
- * back to on its own. Which of the two is available depends on the device, the
- * iOS version and which tool enabled JIT, in ways that are not worth
- * predicting -- so this stops predicting and asks.
- *
- * The execution itself is guarded twice: the kernel is asked whether the page
- * carries execute permission before anything branches into it, and a signal
- * guard catches the fault if it turns out not to. A probe meant to answer a
- * question must not become the thing that killed the app.
- */
-bool henge_ios_jit_mapjit_works(void)
-{
-    static atomic_int cached;   /* 0 unknown, 1 yes, -1 no */
-    int known = atomic_load(&cached);
-    if (known != 0) {
-        return known > 0;
-    }
-
-    /* movz w0, #0x1234  ;  ret */
-    static const uint32_t kCode[2] = { 0x52824680u, 0xD65F03C0u };
-    const size_t len = 16 * 1024;   /* one iOS page */
-    bool ok = false;
-
-    void *p = mmap(NULL, len, PROT_READ | PROT_WRITE | PROT_EXEC,
-                   MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
-    if (p == MAP_FAILED) {
-        HENGE_LOG("MAP_JIT probe: mmap refused (%s) -- no executable memory this "
-                 "way; a trap servicer is the only route on this device",
-                 strerror(errno));
-        atomic_store(&cached, -1);
-        return false;
-    }
-
-    if (!henge_page_is_executable(p)) {
-        HENGE_LOG("MAP_JIT probe: the mapping came back without execute permission "
-                 "-- a trap servicer is the only route on this device");
-        munmap(p, len);
-        atomic_store(&cached, -1);
-        return false;
-    }
-
-    struct sigaction sa, prev_bus, prev_segv, prev_ill;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = henge_probe_handler;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGBUS, &sa, &prev_bus);
-    sigaction(SIGSEGV, &sa, &prev_segv);
-    sigaction(SIGILL, &sa, &prev_ill);
-
-    g_probe_running = 1;
-    if (sigsetjmp(g_probe_jump, 1) == 0) {
-        // On a device with APRR the page is write-protected until asked
-        // otherwise; on one without, it is plain RWX and these are no-ops.
-        // The guard covers the write as well as the call, so a page that
-        // refuses either fails the probe rather than the process.
-        if (jit_write_protect_supported()) { jit_write_protect(0); }
-        memcpy(p, kCode, sizeof(kCode));
-        if (jit_write_protect_supported()) { jit_write_protect(1); }
-        sys_icache_invalidate(p, sizeof(kCode));
-
-        int (*fn)(void) = (int (*)(void))p;
-        ok = (fn() == 0x1234);
-    } else {
-        HENGE_LOG("MAP_JIT probe: faulted while executing the page -- the mapping "
-                 "was granted but is not executable");
-    }
-    g_probe_running = 0;
-
-    sigaction(SIGBUS, &prev_bus, NULL);
-    sigaction(SIGSEGV, &prev_segv, NULL);
-    sigaction(SIGILL, &prev_ill, NULL);
-    munmap(p, len);
-
-    HENGE_LOG("MAP_JIT probe: %s", ok
-             ? "PASS -- this process can execute memory it wrote, so QEMU can "
-               "run on MAP_JIT even without a trap servicer"
-             : "FAIL -- MAP_JIT memory is not executable here");
-    atomic_store(&cached, ok ? 1 : -1);
-    return ok;
-}
-
 #else /* !iOS: keep the symbols so host builds and tests link */
 
 void henge_ios_jit_install_trap_handler(void) {}
-static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
-{
-    (void)bytes;
-    HengeDualMapping m = { NULL, NULL, 0 };
-    return m;
-}
-HengeDualMapping henge_ios_jit_allocate(size_t bytes)
-{
-    return henge_ios_jit_allocate_real(bytes);
-}
-int henge_ios_take_high_room(void **base, size_t *bytes) { (void)base, (void)bytes; return 0; }
-void henge_ios_jit_prepare_vm_memory(void) {}
 bool henge_ios_jit_prewarm(size_t bytes) { (void)bytes; return false; }
-bool henge_ios_jit_prewarm_self(size_t bytes) { (void)bytes; return false; }
-bool henge_ios_jit_reserve_bottom(size_t end) { (void)end; return true; }
 void henge_ios_jit_release(HengeDualMapping *m) { (void)m; }
 void henge_ios_jit_detach(void) {}
 bool henge_ios_jit_is_available(void) { return false; }
-bool henge_ios_jit_mapjit_works(void) { return false; }
-const char *henge_ios_jit_self_route(void) { return 0; }
 void henge_ios_jit_log_footprint(const char *tag) { (void)tag; }
 size_t henge_ios_available_memory(void) { return 0; }
 

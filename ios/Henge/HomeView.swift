@@ -11,8 +11,6 @@ struct HomeView: View {
     @State private var picking = false
     @State private var jitReady = JITBootstrap.ready
     @State private var chosen: UUID?
-    @State private var showMacApps = false
-    @AppStorage(MacAppsFeature.key) private var macApps = false
 
     /// The Mac on show: the one picked, or the one used last.
     private var mac: VirtualMac? {
@@ -27,7 +25,7 @@ struct HomeView: View {
                     notices
                     if let mac {
                         MacHero(mac: mac, jitReady: jitReady, start: { running = mac }, turnOnJIT: { jit.enable() },
-                                jitNote: jitReady ? nil : (JITBootstrap.lastFailure ?? jit.automaticDescription))
+                                jitNote: jitReady ? nil : (JITBootstrap.lastFailure ?? jit.methodDescription))
                         HStack(spacing: 10) {
                             FactTile(title: "Disk", value: ByteText.string(UInt64(max(mac.bytesUsed, 0))))
                             FactTile(title: "Last used", value: mac.lastUsedText)
@@ -49,7 +47,6 @@ struct HomeView: View {
                     Menu {
                         Button("Install macOS…") { tab = .install }
                         Button("Bring in a Mac from a computer…") { picking = true }
-                        if macApps { Button("Mac Apps…") { showMacApps = true } }
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -59,10 +56,9 @@ struct HomeView: View {
             .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
                 if case let .success(url) = result { machines.importFolder(url) }
             }
-            .sheet(isPresented: $showMacApps) { MacAppsView() }
             .task(id: running == nil) { // waits while a Mac is open over the tabs: this screen is not seen then
                 guard running == nil else { return }
-                while !Task.isCancelled { // the region may be claimed after a hand-off to StikDebug
+                while !Task.isCancelled { // the region may be claimed once the helper attaches
                     if jitReady != JITBootstrap.ready { jitReady = JITBootstrap.ready }
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }

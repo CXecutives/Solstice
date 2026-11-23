@@ -6,16 +6,13 @@ struct SettingsView: View {
     @AppStorage(HardwareMouse.speedKey) private var mouseSpeed = 1.0
     @AppStorage(HardwareMouse.reverseKey) private var reverseScrolling = false
     @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3
-    @AppStorage(VolumeClicks.inputModeKey) private var inputMode = VolumeClicks.InputMode.touchscreen
-    @AppStorage(VolumeClicks.modeKey) private var volumeMode = VolumeClicks.Mode.delayHold
-    @AppStorage(VolumeClicks.swapKey) private var swapButtons = false
     @AppStorage(PhysicalMouseButtons.swapKey) private var swapMouseButtons = false
     @AppStorage(EngineTuning.refreshKey) private var refreshRate = 60
     @AppStorage(EngineTuning.fastFlushKey) private var fastFlush = true
     @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = false
     @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
     @State private var safeMode = SafeMode.active
-    @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = JITBootstrap.defaultCodeCacheMB
+    @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = Device.profile.codeCacheMB
     @ObservedObject private var stream = LogStream.shared
     @AppStorage(LogStream.enabledKey) private var streamOn = false
     @AppStorage(LogStream.hostKey) private var streamHost = ""
@@ -35,33 +32,12 @@ struct SettingsView: View {
     @AppStorage(DeskAppearance.key) private var appearance = DeskAppearance.system
     @AppStorage(InstantResume.key) private var instantResume = false
     @AppStorage(KeepAlive.key) private var keepAlive = true
-    @AppStorage(MacAppsFeature.key) private var macApps = false
-
-    /// The second footer paragraph: how you click, given the selected input mode.
-    private var inputDescription: String {
-        if inputMode == .touchscreen {
-            return "Tap to click once. Tap then hold to begin dragging. Quickly tap with two fingers to right-click."
-        }
-        switch volumeMode {
-        case .delayHold:
-            return "Delay hold waits to see if you're holding or just clicking the volume button, which results in all clicks being ~0.5s long."
-        case .tapThenDrag:
-            return "Tap then drag waits to see if you're holding or just clicking the volume button, but it unconditionally sends a single click regardless of whether you tap or hold, which results in shorter clicks at the cost of sending a click before holding."
-        case .intercept:
-            return "Activates the camera in order to intercept volume keys properly. This causes the volume keys to behave in the same way a mouse's buttons do, but it causes higher temperatures, as the camera is always on."
-        }
-    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("JIT") {
                     LabeledContent("Status", value: JITBootstrap.ready ? "On" : "Off")
-                    Picker("Method", selection: $jit.method) {
-                        ForEach(JITMethod.allCases) { Text($0.title).tag($0) }
-                    }
-                    Text(jit.method == .automatic ? jit.automaticDescription : "Henge uses \(jit.method.title).")
-                        .font(.footnote).foregroundStyle(.secondary)
                     Button("Set up JIT") { jit.showSetup = true }
                     Toggle("Turn on JIT when Henge opens", isOn: $jitAtLaunch)
                     if jitAtLaunch {
@@ -102,21 +78,7 @@ struct SettingsView: View {
                 }
                 if !Device.isPad {
                     Section("Trackpad") {
-                        Picker("Input mode", selection: $inputMode) {
-                            Text("Touchscreen").tag(VolumeClicks.InputMode.touchscreen)
-                            Text("Volume buttons").tag(VolumeClicks.InputMode.volumeButtons)
-                        }
-                        .pickerStyle(.menu)
-                        if inputMode == .volumeButtons {
-                            Picker("Button mode", selection: $volumeMode) {
-                                Text("Delay hold").tag(VolumeClicks.Mode.delayHold)
-                                Text("Tap then drag").tag(VolumeClicks.Mode.tapThenDrag)
-                                Text("Camera intercept").tag(VolumeClicks.Mode.intercept)
-                            }
-                            .pickerStyle(.menu)
-                            Toggle("Swap buttons", isOn: $swapButtons)
-                        }
-                        Text("Henge is able to emulate a Magic Trackpad, allowing you to perform native macOS gestures using your device's touchscreen.\n\n\(inputDescription)")
+                        Text("Henge is able to emulate a Magic Trackpad, allowing you to perform native macOS gestures using your device's touchscreen.\n\nTap to click once. Tap then hold to begin dragging. Quickly tap with two fingers to right-click.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .listRowBackground(Desk.card)
@@ -138,7 +100,7 @@ struct SettingsView: View {
                     Toggle("Quicker wake from idle", isOn: $wfiSpin)
                     Toggle("Superblocks (experimental)", isOn: $superblocks)
                     Picker("Code cache", selection: $codeCacheMB) {
-                        ForEach(JITBootstrap.codeCacheChoices, id: \.self) { mb in
+                        ForEach(DeviceProfile.codeCacheChoices, id: \.self) { mb in
                             Text(mb < 1024 ? "\(mb) MB" : String(format: "%g GB", Double(mb) / 1024)).tag(mb)
                         }
                     }
@@ -157,12 +119,6 @@ struct SettingsView: View {
                 Section("Instant Resume") {
                     Toggle("Resume where you left off", isOn: $instantResume)
                     Text("When you leave Henge, the running Mac is saved to storage, and opening it again picks up where it was in a few seconds, even after iOS closes Henge. The save is about the size of the Mac's memory in use, compressed. The Mac pauses while Henge is in the background, so its sound stops. Experimental.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .listRowBackground(Desk.card)
-                Section("Mac Apps") {
-                    Toggle("Mac apps without macOS", isOn: $macApps)
-                    Text("Bring in a .dmg or an .app (the + button on Home) and run it inside Henge through its own translation layer, without starting a Mac. Programs without windows run today; apps with windows don't yet. Experimental.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)

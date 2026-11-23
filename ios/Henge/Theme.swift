@@ -73,17 +73,9 @@ struct WindowStyle: UIViewRepresentable {
 }
 
 extension View {
-    /// Liquid Glass where iOS has it, for controls floating over a Mac's screen.
-    @ViewBuilder func deskGlass<S: Shape>(in shape: S) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            glassEffect(.regular, in: shape)
-        } else {
-            background(.ultraThinMaterial, in: shape)
-        }
-        #else
-        background(.ultraThinMaterial, in: shape)
-        #endif
+    /// Liquid Glass, for controls floating over a Mac's screen.
+    func deskGlass<S: Shape>(in shape: S) -> some View {
+        glassEffect(.regular, in: shape)
     }
 
     /// Keeps a page's content a readable width on a big screen.
@@ -141,49 +133,6 @@ struct DeskBar: View {
             }
         }
         .frame(height: height)
-    }
-}
-
-/// The picture of a Mac as it was last seen, kept beside its disk.
-enum MacPreview {
-    static func file(for mac: VirtualMac) -> URL { mac.directory.appendingPathComponent("preview.jpg") }
-
-    static func capture(width: Int, height: Int) -> CGImage? {
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        guard henge_vm_snapshot(&pixels, Int32(width), Int32(height)) == 0 else { return nil }
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
-                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider, decode: nil,
-                       shouldInterpolate: true, intent: .defaultIntent)
-    }
-
-    /// Off the main thread.
-    static func save(for mac: VirtualMac) {
-        let url = file(for: mac), height = Int(640 / mac.aspect)
-        Task.detached(priority: .utility) { write(to: url, height: height) }
-    }
-
-    /// Before the machine stops, while there is still a screen to read.
-    static func saveNow(for mac: VirtualMac) { write(to: file(for: mac), height: Int(640 / mac.aspect)) }
-
-    private static func write(to url: URL, height: Int) {
-        guard let image = capture(width: 640, height: height), let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.8) else { return }
-        try? data.write(to: url, options: .atomic)
-    }
-}
-
-enum ByteText {
-    static func string(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        formatter.allowedUnits = [.useGB, .useMB]
-        formatter.includesUnit = true
-        return formatter.string(fromByteCount: bytes)
-    }
-
-    static func string(_ bytes: UInt64) -> String {
-        string(Int64(clamping: bytes))
     }
 }
 

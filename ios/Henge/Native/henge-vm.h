@@ -23,7 +23,7 @@ double henge_install_progress(void);
 int henge_make_aux(const char *path);
 
 /* Instant resume (../host/snapshot.h). henge_vm_suspend stops a running Mac where it is and writes it to path; it
-   stays paused (state 4) until henge_vm_continue runs it on, or henge_vm_stop ends it. 0 if saved; -1 with a
+   stays paused (HENGE_VM_PAUSED) until henge_vm_continue runs it on, or henge_vm_stop ends it. 0 if saved; -1 with a
    reason if not (the Mac then still runs, unless it stopped by itself meanwhile). henge_vm_resume is henge_vm_boot
    from a saved Mac: the same settings, and the disk exactly as it was saved, or it fails and nothing runs. ident is
    what the file is valid for (the app's build, the Mac, its disk). henge_vm_saved_ok: 0 if path is a whole saved
@@ -32,7 +32,7 @@ int henge_vm_suspend(const char *path, const char *ident, char *err, size_t errl
 /* The two halves of henge_vm_suspend. Pausing needs the GPU (what only it holds goes back into the Mac's memory), which
    iOS refuses an app in the background: pause when Henge stops being active, save once it is in the background. */
 int henge_vm_pause(char *err, size_t errlen);
-/* Paused (state 4): drops the translated code and gives the engine's tables back, so the waiting Mac costs only its
+/* Paused (HENGE_VM_PAUSED): drops the translated code and gives the engine's tables back, so the waiting Mac costs only its
    own memory until it runs on (it translates again). 0, or -1 if it is not paused. */
 int henge_vm_trim(void);
 int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen);
@@ -41,16 +41,22 @@ int henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t
                     int cpus, const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int64_t *saved_at);
 
-/* 0 not started, 1 running, 2 stopped, 3 starting/stopping, 4 paused (saved, or being saved).
-   Normal guests are fully released before state 2; installer sessions retain
+/* The machine's state. Normal guests are fully released before HENGE_VM_STOPPED; installer sessions retain
    their restore stack and can_start stays false. */
-int henge_vm_state(void);
+typedef enum HengeVmState {
+    HENGE_VM_IDLE,                  /* not started */
+    HENGE_VM_RUNNING,
+    HENGE_VM_STOPPED,
+    HENGE_VM_STARTING_OR_STOPPING,  /* between states: being created, or shutting down and being released */
+    HENGE_VM_PAUSED                 /* saved, or being saved */
+} HengeVmState;
+HengeVmState henge_vm_state(void);
 /* A new generation starts with each successful boot, even in the same view. */
 uint64_t henge_vm_generation(void);
 int henge_vm_can_start(void);
-/* Human-readable terminal reason, once state is 2. */
+/* Human-readable terminal reason, once HENGE_VM_STOPPED. */
 const char *henge_vm_exit_reason(void);
-/* Terminal outcome after state == 2. Generic HALT alone does not prove a
+/* Terminal outcome once HENGE_VM_STOPPED. Generic HALT alone does not prove a
    guest shutdown (it also covers reset, host stop and guest panic). */
 enum HengeVmOutcome {
     HENGE_VM_OUTCOME_ERROR, HENGE_VM_OUTCOME_SHUTDOWN, HENGE_VM_OUTCOME_RESTART,
@@ -77,6 +83,10 @@ uint64_t henge_vm_net_frames(int sent);    /* Ethernet frames out (sent = 1) and
 uint64_t henge_vm_dns(int which);          /* guest DNS queries answered through iOS's resolver (0), handed to libslirp (1), unanswered in time (2) */
 int henge_vm_cpus_on(void);                /* CPUs the guest has started */
 int henge_vm_guest_el0(void);              /* any CPU running user code right now */
+
+/* The audio session: 1 an interruption began (a call, Siri, an alarm), 0 it ended (the Mac's sound plays again),
+   2 the media services were reset (the output is made anew), 3 the route changed. Any thread. */
+void henge_vm_audio_interrupted(int state);
 
 /* Input: Linux key codes, relative pointer, buttons 0 left 1 right 2 middle. */
 /* The shared folder and clipboard (host/share.c). henge_vm_share goes before henge_vm_boot; agent may be NULL.

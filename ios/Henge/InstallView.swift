@@ -8,7 +8,7 @@ struct InstallView: View {
     @ObservedObject private var jit = JITCoordinator.shared
     @State private var jitReady = JITBootstrap.ready
     @StateObject private var display = DisplayRouter()
-    @State private var release = MacOSRelease.all.first(where: Installer.haveImage) ?? MacOSRelease.recommended
+    private let release = MacOSRelease.current
     @State private var name = "Mac"
     @State private var ramGB = Device.suggestedRAMGB
     @State private var deleteAfter = true // restore images are 15-25 GB; the Mac is what stays
@@ -16,7 +16,7 @@ struct InstallView: View {
     @State private var details = false
     @State private var stageStarted = Date()
     @State private var stageSeen = -1
-    @State private var confirmDeleteDownload: MacOSRelease?
+    @State private var confirmDeleteDownload = false
     @AppStorage("henge.cpus") private var cpus = Device.profile.cpus
 
     var body: some View {
@@ -41,7 +41,7 @@ struct InstallView: View {
             .navigationTitle(installer.busy ? "Installing" : "Install macOS")
             .task(id: sessionUp) {
                 guard !sessionUp else { return }
-                while !Task.isCancelled { // the region may be claimed after a hand-off to StikDebug
+                while !Task.isCancelled { // the region may be claimed once the helper attaches
                     if jitReady != JITBootstrap.ready { jitReady = JITBootstrap.ready }
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
@@ -53,38 +53,31 @@ struct InstallView: View {
 
     @ViewBuilder private var chooser: some View {
         DeskHeading("Version")
-        VStack(spacing: 0) {
-            ForEach(MacOSRelease.all) { r in
-                HStack(spacing: 0) {
-                    Button { release = r } label: { versionRow(r) }
-                        .buttonStyle(.plain)
-                    if (Installer.haveImage(r) || Installer.partSize(r) != nil) && !installer.busy { // restore images are 15-25 GB: deleting one should be easy to find
-                        Button { confirmDeleteDownload = r } label: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(Desk.dim)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Delete the \(r.name) download")
-                        .padding(.trailing, 6)
-                    }
+        HStack(spacing: 0) {
+            versionRow
+            if (Installer.haveImage(release) || Installer.partSize(release) != nil) && !installer.busy { // restore images are 15-25 GB: deleting one should be easy to find
+                Button { confirmDeleteDownload = true } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Desk.dim)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
-                    .contextMenu {
-                        if Installer.haveImage(r) || Installer.partSize(r) != nil {
-                            Button("Delete Download", role: .destructive) { confirmDeleteDownload = r }
-                        }
-                    }
-                if r.id != MacOSRelease.all.last?.id { Rectangle().fill(Desk.hairline).frame(height: 0.5) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete the \(release.name) download")
+                .padding(.trailing, 6)
+            }
+        }
+        .contextMenu {
+            if Installer.haveImage(release) || Installer.partSize(release) != nil {
+                Button("Delete Download", role: .destructive) { confirmDeleteDownload = true }
             }
         }
         .deskCard()
         .id(refresh)
-        .confirmationDialog("Delete this download?", isPresented: Binding(get: { confirmDeleteDownload != nil }, set: { if !$0 { confirmDeleteDownload = nil } }),
-                            titleVisibility: .visible) {
+        .confirmationDialog("Delete this download?", isPresented: $confirmDeleteDownload, titleVisibility: .visible) {
             Button("Delete Download", role: .destructive) {
-                if let r = confirmDeleteDownload { Installer.deleteImage(r) }
+                Installer.deleteImage(release)
                 refresh += 1
             }
         }
@@ -142,22 +135,21 @@ struct InstallView: View {
         }
     }
 
-    private func versionRow(_ r: MacOSRelease) -> some View {
+    private var versionRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(r.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Desk.text)
-                if let size = Installer.imageSize(r) {
+                Text(release.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Desk.text)
+                if let size = Installer.imageSize(release) {
                     Text("Downloaded, \(ByteText.string(UInt64(size)))").font(.system(size: 13)).foregroundStyle(Desk.good)
-                } else if let part = Installer.partSize(r) {
-                    Text("\(ByteText.string(UInt64(part))) of \(ByteText.string(UInt64(r.bytes))) downloaded: goes on from there")
+                } else if let part = Installer.partSize(release) {
+                    Text("\(ByteText.string(UInt64(part))) of \(ByteText.string(UInt64(release.bytes))) downloaded: goes on from there")
                         .font(.system(size: 13)).foregroundStyle(Desk.dim)
                 } else {
-                    Text("\(ByteText.string(UInt64(r.bytes))) download").font(.system(size: 13)).foregroundStyle(Desk.dim)
+                    Text("\(ByteText.string(UInt64(release.bytes))) download").font(.system(size: 13)).foregroundStyle(Desk.dim)
                 }
-                Text(r.note).font(.system(size: 13)).foregroundStyle(Desk.dim)
+                Text(release.note).font(.system(size: 13)).foregroundStyle(Desk.dim)
             }
             Spacer()
-            if release == r { Image(systemName: "checkmark").font(.system(size: 15, weight: .bold)).foregroundStyle(Desk.accentLight) }
         }
         .padding(.horizontal, 17)
         .padding(.vertical, 12)

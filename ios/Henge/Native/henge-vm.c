@@ -17,6 +17,7 @@
 #include "henge-ios-jit.h"
 #include "net_slirp.h"
 #include "dns_proxy.h"
+#include "audio_mac.h"
 #include "vm.h"
 #include "install.h"
 #include "snapshot.h"
@@ -37,8 +38,6 @@ static int installer_session;
 static uint64_t stopped_blocks, stopped_tx, stopped_rx;
 static const char *exit_description(void);
 static int lock_running(void);
-/* A Mac app ran through the translation layer in this launch (henge-tl.c): it may have remapped part of the JIT region. */
-_Atomic int henge_tl_ran;
 
 /* What About This Mac reports (DeviceIdentity.swift): the device Henge runs on, as the guest sees it. */
 static char identity_soc[32], identity_name[32], identity_model[32];
@@ -85,10 +84,6 @@ static void on_exit(int reason) {
 
 /* Holds api_lock through creation so UI snapshots cannot see a partial board. */
 static int begin_start(char *err, size_t errlen) {
-    if (atomic_load(&henge_tl_ran)) {
-        snprintf(err, errlen, "A Mac app ran in this launch. Quit Henge (swipe it away) and open it again to start a Mac.");
-        return -1;
-    }
     pthread_rwlock_wrlock(&api_lock);
     if ((state != 0 && state != 2) || installer_session) {
         snprintf(err, errlen, "%s", installer_session
@@ -259,7 +254,6 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
     { extern void hv_prof_ios_start(void); hv_prof_ios_start(); }
     if (begin_start(err, errlen)) return -1;
     booted_ram_mb = ram_mb;
-    henge_ios_jit_prepare_vm_memory();
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
         snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
@@ -305,7 +299,6 @@ static void on_install_progress(int step, double p, void *user) {
 int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_t ecid, const char *ipsw,
                      const char *workdir, uint64_t ram_mb, int cpus, char *err, size_t errlen) {
     if (begin_start(err, errlen)) return -1;
-    henge_ios_jit_prepare_vm_memory();
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
         snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
@@ -351,7 +344,7 @@ int henge_make_aux(const char *path) {
     return ok ? 0 : -1;
 }
 
-int henge_vm_state(void) { return state; }
+HengeVmState henge_vm_state(void) { return (HengeVmState)state; }
 uint64_t henge_vm_generation(void) { return atomic_load(&generation); }
 int henge_vm_can_start(void) {
     pthread_rwlock_rdlock(&api_lock);
@@ -448,6 +441,12 @@ uint64_t henge_vm_net_frames(int sent) {
     uint64_t result = state == 1 ? (sent ? hv_net_tx_frames : hv_net_rx_frames) : (sent ? stopped_tx : stopped_rx);
     pthread_rwlock_unlock(&api_lock);
     return result;
+}
+/* No lock: the player's own queue orders these against a Mac starting or stopping (audio_mac.c). */
+void henge_vm_audio_interrupted(int state) {
+    if (state == 1) hv_audio_interrupted();
+    else if (state == 3) hv_audio_route_changed();
+    else hv_audio_resume(state == 2);
 }
 int henge_vm_cpus_on(void) {
     if (!lock_running()) return 0;

@@ -246,12 +246,18 @@ static void poll_locked(HvVmapple *b) {
 
 /* Each CPU's timers (the GIC's lock only; every GIC state change already updated the CPU's lines). CPU 0 also polls the
    devices, under the device lock (they are shared by the CPUs: one at a time), but only when something woke it for
-   them (hv_cpu_wake: a device thread, an interrupt raised for it, the kicker's poll while it runs) or a device
-   deadline is due: the display's refresh, on its own grid (pvg_lite.c), or poll_period since the last poll. Not for
-   each timer register write, WFE timeout or TLBI kick, as before. Returns the earliest of its deadlines. */
+   them (hv_machine_wake: a device thread with work; the kicker's poll while a device has work it does not signal) or
+   a device deadline is due: the display's refresh, on its own grid (pvg_lite.c), or poll_period since the last poll.
+   Not for interrupts raised for it, timer register writes, WFE timeouts or TLBI kicks. Returns the earliest of its
+   deadlines; the guest timer's alone goes to guest_due (hv_resume). */
+static uint64_t guest_due(HvCpu *cpu, uint64_t deadline) {
+    if (cpu->pc_state) __atomic_store_n(&cpu->pc_state->guest_due, deadline, __ATOMIC_RELAXED);
+    return deadline;
+}
+
 static uint64_t tick(HvMachine *m, HvCpu *cpu) {
     HvVmapple *b = m->tick_opaque;
-    if (cpu->index != 0) return hv_timer_update(b->gic, cpu);
+    if (cpu->index != 0) return guest_due(cpu, hv_timer_update(b->gic, cpu));
     uint64_t now = mach_absolute_time();
     uint64_t vb = hv_pvg_lite_next_vblank(b->pvg);
     if (__atomic_exchange_n(&m->percpu[0].poll_req, 0, __ATOMIC_ACQ_REL) || now >= b->poll_due || (vb && now >= vb)) {
@@ -262,7 +268,7 @@ static uint64_t tick(HvMachine *m, HvCpu *cpu) {
         vb = hv_pvg_lite_next_vblank(b->pvg);
         HV_ST(cpu).dev_polls++;
     }
-    uint64_t deadline = hv_timer_update(b->gic, cpu), dev = vb && vb < b->poll_due ? vb : b->poll_due;
+    uint64_t deadline = guest_due(cpu, hv_timer_update(b->gic, cpu)), dev = vb && vb < b->poll_due ? vb : b->poll_due;
     return deadline && deadline < dev ? deadline : dev;
 }
 

@@ -12,6 +12,8 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n);
 void hv_net_detach(void);
 /* CPU thread, from the board's tick: hand frames for the guest to the device. */
 void hv_net_poll(void);
+/* The stats printer: frames each way over the last `seconds`, drops and how full the queues got. */
+void hv_net_stats(double seconds);
 
 extern uint64_t hv_net_tx_frames, hv_net_rx_frames;
 

@@ -432,11 +432,11 @@ static int wait_for_interrupt(HvCpu *cpu) {
         __asm__ volatile("clrex" ::: "memory");
     }
     pthread_mutex_lock(&p->wake_mu);
-    if (!p->wake_pending && wait_ticks) {
+    if (!__atomic_load_n(&p->wake_pending, __ATOMIC_SEQ_CST) && wait_ticks) { /* after park(): see hv_cpu_wake */
         struct timespec ts = {(time_t)(wait_ticks / 24000000), (long)(wait_ticks % 24000000) * 1000 / 24};
         pthread_cond_timedwait_relative_np(&p->wake_cv, &p->wake_mu, &ts);
     }
-    p->wake_pending = 0;
+    __atomic_store_n(&p->wake_pending, 0, __ATOMIC_SEQ_CST);
     pthread_mutex_unlock(&p->wake_mu);
     unpark(cpu);
     hv_big_lock(m);
@@ -519,6 +519,8 @@ static void print_profile(HvMachine *m) {
         top[best].n = 0;
     }
 }
+
+void (*hv_stats_io)(double seconds);
 
 uint64_t hv_stats_lines;
 
@@ -696,6 +698,18 @@ static void print_stats(HvCpu *cpu) {
                 RATE(ijc_light) / 1e3, RATE(xchained));
         fprintf(stderr, "  process switches: %.0f/s saved, %.0f/s restored, %.0f/s dropped by a TLBI (%.0f entries each)\n", RATE(stash_saves), RATE(stash_hits), RATE(stash_stale),
                 s->stash_hits - last.stash_hits ? (double)(s->stash_entries - last.stash_entries) / (s->stash_hits - last.stash_hits) : 0.0);
+        {   /* mmu.c: what process switches cost */
+            uint64_t ur = 0;
+            for (int k = 0; k < 7; k++) ur += s->user_reset_why[k] - last.user_reset_why[k];
+            uint64_t ut = s->ijc_reset_kind[0] - last.ijc_reset_kind[0];
+            fprintf(stderr, "  mmu refills K/s: el0 empty %.0f el0 slot taken %.0f el1 empty %.0f el1 slot taken %.0f; stashes/s: missed %.0f evicted %.0f, %.0f entries out and %.0f kept a switch\n",
+                    RATE(refill_kind[0]) / 1e3, RATE(refill_kind[1]) / 1e3, RATE(refill_kind[2]) / 1e3, RATE(refill_kind[3]) / 1e3, RATE(stash_miss), RATE(stash_evict),
+                    s->stash_saves - last.stash_saves ? (double)(s->stash_out - last.stash_out) / (s->stash_saves - last.stash_saves) : 0.0,
+                    s->stash_saves - last.stash_saves ? (double)(s->switch_kept - last.switch_kept) / (s->stash_saves - last.stash_saves) : 0.0);
+            fprintf(stderr, "  mmu user-half branch-cache resets/s: all-ASID TLBI VA %.1f, all-ASID range %.1f, whole-TLB flush %.1f, id-page set full %.1f, keyed filter full %.1f, code under several pages %.1f, ASID log full %.1f, other %.1f\n",
+                    RATE(user_reset_why[0]), RATE(user_reset_why[1]), RATE(user_reset_why[2]), RATE(user_reset_why[3]), RATE(user_reset_why[4]), RATE(user_reset_why[5]),
+                    RATE(user_reset_why[6]), ut > ur ? (double)(ut - ur) / dt : 0.0);
+        }
         fprintf(stderr, "  tlb misses K/s: el0 empty %.0f el0 conflict %.0f el1 empty %.0f el1 conflict %.0f\n",
                 RATE(tlb_miss_kind[0]) / 1e3, RATE(tlb_miss_kind[1]) / 1e3, RATE(tlb_miss_kind[2]) / 1e3, RATE(tlb_miss_kind[3]) / 1e3);
         fprintf(stderr, "  slow mem causes K/s: mmio %.0f code-page write %.0f page end %.0f tlb miss %.0f other %.0f entry-but-tag %.0f\n",
@@ -721,6 +735,7 @@ static void print_stats(HvCpu *cpu) {
                 100 * RATE(why[3]) / tot, 100 * RATE(why[4]) / tot, 100 * RATE(why[5]) / tot);
     }
 #undef RATE
+    if (hv_stats_io) hv_stats_io(dt);
     if (m->prof) print_profile(m);
     /* The busiest system registers or SYS operations (reads + writes) this interval: deep stats only (the table's
        512 KB are written only then). */
@@ -835,7 +850,7 @@ static void wait_while_off(HvCpu *cpu) {
     pthread_mutex_lock(&p->wake_mu);
     __atomic_store_n(&cpu->parked_off, 1, __ATOMIC_SEQ_CST);
     while (__atomic_load_n(&cpu->off, __ATOMIC_ACQUIRE) && !cpu->halted) {
-        p->wake_pending = 0;
+        __atomic_store_n(&p->wake_pending, 0, __ATOMIC_SEQ_CST);
         pthread_cond_wait(&p->wake_cv, &p->wake_mu);
     }
     __atomic_store_n(&cpu->parked_off, 0, __ATOMIC_SEQ_CST);

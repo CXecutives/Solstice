@@ -102,6 +102,7 @@ static int handle(HvVirtioBlk *b, HvVirtqElem *e, uint32_t *written) {
             status = (v->driver_features & feature) ? S_IOERR : S_UNSUPP;
             break;
         }
+        if (hdr.type == T_DISCARD) __atomic_fetch_add(&b->discards, 1, __ATOMIC_RELAXED);
         for (uint32_t at = 0; at < rlen && status == S_OK; at += 16) {
             struct { uint64_t sector; uint32_t num_sectors, flags; } r;
             if (hv_virtq_read(v, e, (uint32_t)sizeof hdr + at, &r, sizeof r) != sizeof r ||
@@ -181,9 +182,13 @@ static void *worker(void *opaque) {
             busy += t1 - t0, reqs++, bytes += r->written > 1 ? r->written : readable(&r->e);
             if (type == T_FLUSH) flushes++, flush_us += t1 - t0;
             if (t1 - t_last > every) {
-                fprintf(stderr, "virtio-blk %s worker: %.0f req/s %.1f MB/s, %.0f flushes/s (%.1f ms each), busy %.0f%%\n",
+                /* Discards: totals for the disk (do TRIMs arrive, and how much of the image went back as holes). */
+                fprintf(stderr, "virtio-blk %s worker: %.0f req/s %.1f MB/s, %.0f flushes/s (%.1f ms each), busy %.0f%%; "
+                                "discards %llu, %.1f MB punched\n",
                         b->disk->offset ? "aux" : "root", reqs * 1e6 / every, bytes * 1e6 / every / (1 << 20), flushes * 1e6 / every,
-                        flushes ? flush_us / 1000.0 / flushes : 0.0, busy * 100.0 / every);
+                        flushes ? flush_us / 1000.0 / flushes : 0.0, busy * 100.0 / every,
+                        (unsigned long long)__atomic_load_n(&b->discards, __ATOMIC_RELAXED),
+                        (double)__atomic_load_n(&b->disk->punched, __ATOMIC_RELAXED) / (1 << 20));
                 t_last = t1, busy = reqs = bytes = flushes = flush_us = 0;
             }
         }
@@ -204,7 +209,6 @@ static void *worker(void *opaque) {
 /* CPU thread: hand everything the driver made available to the worker, while the ring has room. */
 static void notify(HvVirtio *v, int q) {
     HvVirtioBlk *b = v->dev;
-    int any = 0;
     while (b->submitted - b->published < HV_VBLK_RING) {
         HvVblkReq *r = &b->ring[b->submitted % HV_VBLK_RING];
         int got = hv_virtq_pop(v, q, &r->e);
@@ -223,10 +227,9 @@ static void notify(HvVirtio *v, int q) {
         r->q = q;
         pthread_mutex_lock(&b->mu);
         __atomic_store_n(&b->submitted, b->submitted + 1, __ATOMIC_RELEASE);
+        pthread_cond_signal(&b->cv); /* one worker per request: a worker done with one takes the next unwoken */
         pthread_mutex_unlock(&b->mu);
-        any = 1;
     }
-    if (any) pthread_cond_broadcast(&b->cv);
 }
 
 void hv_virtio_blk_drain(HvVirtioBlk *b) {

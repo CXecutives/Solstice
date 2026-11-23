@@ -22,8 +22,9 @@ typedef struct HvRam {
        were more. When the page becomes code only those are dropped, not a whole
        TLB scanned. */
     uint64_t *whint;     /* CPU-major: whint[cpu * npages + page], so CPUs filling the same pages write their own lines */
-    /* Per page: the VA page (| 2) its blocks have been cached as branch targets under since its code last changed;
-       0 none, ~0 more than one. So a code change drops just those cached targets (hv_invalidate_code). */
+    /* Per page, HV_IJC_VAS slots: the VA pages (| 2) its blocks have been cached as branch targets under since its
+       code last changed; 0 a free slot, ~0 in the first: more than fit. So a code change drops just those cached
+       targets (hv_invalidate_code). */
     uint64_t *ijc_va;
     /* Per page: the exits from other pages chained into it (a slot + 1, 0 none), listed through HvMachine.slot_xnext,
        so its code changing unchains just those (it scanned every such exit, under the translation lock: 2.3% of the
@@ -63,6 +64,7 @@ _Static_assert(sizeof(HvBlock) == 40, "HvBlock: 40 bytes");
 #define HV_BLOCK_PAN   8u        /* EL1 with PSTATE.PAN set (selects TLB table 2) */
 
 #define HV_MAX_RAM 8
+#define HV_IJC_VAS 4 /* VA pages a code page's cached targets are noted under (HvRam.ijc_va) */
 #define HV_MAX_MMIO 48
 #define HV_JC_BITS 16
 #define HV_PROF_RING (1 << 16)
@@ -135,6 +137,15 @@ typedef struct HvStats {
     uint64_t dev_polls;       /* CPU 0's device polls (vmapple.c) */
     uint64_t pv_waits, pv_kicks; /* paravirtual ticket locks: waits for a kick (VCPU_WFK), kicks (VCPU_KICK; exception.c) */
     uint64_t cc_tenured;      /* blocks translated into the code cache's tenured segments (codecache.c) */
+    /* mmu.c: what process switches cost (counted always, one increment each). */
+    uint64_t refill_kind[4];  /* hv_tlb_refill: EL0 slot empty, EL0 slot held another entry, EL1 empty, EL1 another */
+    uint64_t stash_miss;      /* process switches that found no stash for the incoming address space */
+    uint64_t stash_evict;     /* stashes taken over from another address space (least recently used) */
+    uint64_t stash_out;       /* entries copied into stashes at process switches */
+    uint64_t switch_kept;     /* user entries that stayed live across process switches (the new tables map them the same) */
+    uint64_t user_reset_why[7]; /* user-half branch-cache resets by cause: all-ASID TLBI by VA, all-ASID big range,
+                                   whole-TLB flush, (id, page) set half full, keyed filter full, code under several VA
+                                   pages, ASID log overflow (the rest of ijc_reset_kind[0]: code-cache epochs) */
     /* Not summed: tables of the first few values seen, and debugging rings (per CPU). */
     struct { uint64_t mb, n; } small_at[8]; /* where (VA >> 20, bit 0 = EL1) the first 8 regions mapped under 16 KB were */
     struct { uint64_t pc, n; } flush_pc[8]; /* where TLBI all here comes from (first 8 PCs seen) */
@@ -144,6 +155,18 @@ typedef struct HvStats {
     uint64_t nrecent;
 } HvStats;
 #define HV_STATS_COUNTERS (offsetof(HvStats, small_at) / sizeof(uint64_t))
+
+/* The interrupt-storm detector's state (hv_storm_irq). Tiny tables: the top few are what a log needs. */
+#define HV_STORM_SLOTS 8
+typedef struct HvStormSlot { uint32_t id, n; } HvStormSlot;
+typedef struct HvStorm {
+    uint64_t t0, wfi0;           /* the window's start: host time, and the CPU's WFI count then */
+    uint32_t acks;               /* interrupts acknowledged in the window */
+    uint8_t armed, logged;       /* the last window was hot (record now); this episode was logged */
+    uint32_t episodes;           /* storms logged */
+    uint64_t began;              /* host time the episode's first hot window ended */
+    HvStormSlot irq[HV_STORM_SLOTS], msr[HV_STORM_SLOTS]; /* while armed: interrupt ids, MSRs written */
+} HvStorm;
 
 #define HV_MAX_CPUS 8
 #define HV_WHINT_MANY (1ull << 63) /* whint: more than three; else up to three TLB codes + 1, 16 bits each */
@@ -155,9 +178,12 @@ typedef struct HvStats {
 /* A process's user TLB entries, put aside when it is switched out (TTBR0 now
    names another address space) and put back when it comes back, as a TLB
    tagged by ASID keeps them. Any TLBI that could touch the address space
-   (here or from another CPU) bumps gen; a stash whose gen moved is dropped. */
-#define HV_STASHES 8
+   (here or from another CPU) bumps gen; a stash whose gen moved is dropped.
+   A stash stays valid while its entries are live again: the next switch away
+   adds only what was filled since (mmu.c, hv_tlb_switch_user). */
+#define HV_STASHES 32
 #define HV_STASH_CAP 1024
+#define HV_STASH_FILTER_BITS 12 /* a stash's page filter: 4096 bits, one per hash of a page number it holds */
 typedef struct HvTlbStash {
     uint64_t ttbr0;      /* the address space (0: empty); read by other CPUs */
     uint32_t gen;        /* bumped by TLBIs (atomic) */
@@ -166,6 +192,9 @@ typedef struct HvTlbStash {
     uint64_t used;       /* for replacing the least recently saved */
     uint16_t *slot;      /* slot << 2 | table, as user_fills */
     HvTlbEntry *ent;
+    /* Pages that may have entries here (set as they are saved, cleared with the stash): a TLBI by VA or small range
+       looks at the stashes whose bit is set only, here and from other CPUs. */
+    uint64_t filter[(1u << HV_STASH_FILTER_BITS) / 64];
 } HvTlbStash;
 
 typedef struct HvPerCpu {
@@ -205,9 +234,12 @@ typedef struct HvPerCpu {
     /* WFI sleeps on this; device threads, the GIC and other CPUs signal it. */
     pthread_mutex_t wake_mu;
     pthread_cond_t wake_cv;
-    int wake_pending;
-    uint32_t poll_req;           /* CPU 0: woken (hv_cpu_wake) or the kicker's poll: poll the devices at the next tick */
+    int wake_pending;            /* set by every wake (atomic); a wait that finds it set ends at once */
+    uint32_t poll_req;           /* CPU 0: device work signalled (hv_machine_wake) or the kicker's poll: poll at the next tick */
     uint64_t wfi_until;          /* parked in WFI: when the sleep ends at the latest (0: not asleep on a timeout) */
+    uint64_t guest_due;          /* host time its guest timer next fires (0: none), apart from CPU 0's device deadlines in
+                                    timer_due: the light paths refuse a fast resume only for this (light.c) */
+    HvStorm storm;               /* the interrupt-storm detector (hv_storm_irq): its own thread only */
     /* Work other CPUs ask of this one (only the owner may touch its TLB and
        branch cache while it runs). Posting bumps req_seq; the owner does the
        work at its next dispatcher entry and publishes ack_seq. */
@@ -230,6 +262,11 @@ typedef struct HvPerCpu {
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
+    uint32_t live_stash;         /* index + 1 of the stash whose entries are live in the TLB again (0: none) */
+    uint32_t live_kept;          /* user_fills before this stayed from the process before (mmu.c: not in it) */
+    uint32_t live_from;          /* user_fills from here on are not in it (filled after it was put back) */
+    uint32_t pos_epoch;          /* stash_pos entries of another epoch mean nothing */
+    uint32_t *stash_pos;         /* by TLB code: pos_epoch << 10 | where its entry is in the stash being saved or put back */
     uint32_t cc_seen;            /* the code cache's epoch this CPU caught up with (hv_cc_service; read by others) */
     uint32_t cc_work;            /* HV_CC_NEED, HV_CC_JOB: code-cache work at the top of its loop (its own thread only) */
     /* What only this CPU's thread writes on its hot paths (or another thread while it is parked): on cache lines of
@@ -343,6 +380,7 @@ typedef struct HvMachine {
     pthread_cond_t kick_cv;
     uint64_t kick_at;
     int kick_poked, kicker_on;
+    uint32_t dev_unsignalled; /* HV_UNSIG_* bits: device work only a poll finds (hv_machine_unsignalled) */
     /* The host counter when the machine started: every CPU's CNTVOFF, so the guest's virtual counter (its
        mach_absolute_time) starts near 0 as on a Mac or under Virtualization.framework. With the host's own
        count (days of uptime) macOS 12 took the user as idle for that long and put itself to sleep while
@@ -487,7 +525,7 @@ void hv_machine_kick_all(HvMachine *m);
 /* Publish a terminal reason, then wake all CPUs, including CPU_OFF waits.
    A later host stop must not overwrite the guest's shutdown/panic reason. */
 void hv_machine_halt(HvMachine *m, enum HvHaltReason reason);
-/* Wake one CPU out of WFI (and make it leave its block). */
+/* Wake one CPU out of WFI (and make it leave its block). No device poll: device work goes through hv_machine_wake. */
 void hv_cpu_wake(HvCpu *cpu);
 /* Make it leave its block at the next checked exit, without waking it from WFI. */
 void hv_cpu_kick(HvCpu *cpu);
@@ -495,6 +533,33 @@ void hv_cpu_kick(HvCpu *cpu);
 /* From any thread: device work is waiting for the CPU thread's tick. Makes a
    running block leave and ends a WFI sleep. */
 void hv_machine_wake(HvMachine *m);
+
+/* Device work no thread signals, which only a poll finds (HV_UNSIG_* bits, set and cleared by the device): while any
+   is set, the kicker has CPU 0 poll every HV_POLL_BUSY while it runs. With none, CPU 0 polls when a device signals
+   (hv_machine_wake), at its device deadlines (the display's refresh) and every HV_DEV_SAFETY. */
+enum { HV_UNSIG_PVG_CHAN = 1u << 0 /* a display channel waits for another channel's stamp (pvg_lite.c) */ };
+void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on);
+
+/* Interrupt storms (an idle CPU taken out of WFI by an interrupt tens of thousands of times a second): each CPU counts
+   its acknowledged interrupts in windows of HV_STORM_WINDOW; a window faster than HV_STORM_RATE a second in which
+   WFI came as often as 3 in 4 interrupts is hot. After one hot window the next records which interrupts and which
+   system register writes, and logs them once; the episode ends with the first window that is not hot. */
+#define HV_STORM_WINDOW 8192u
+#define HV_STORM_RATE 10000u
+void hv_storm_irq(HvCpu *cpu, uint32_t intid);
+/* Counts id in a storm table; once it is full, the rest count in the last slot as id ~0. */
+static inline void hv_storm_count(HvStormSlot *t, uint32_t id) {
+    unsigned i = 0;
+    while (i < HV_STORM_SLOTS - 1 && t[i].n && t[i].id != id) i++;
+    if (!t[i].n) t[i].id = id;
+    else if (t[i].id != id) t[i].id = ~0u;
+    t[i].n++;
+}
+/* An MSR through the helper (reg: its encoding; 0x10000 | field for MSR immediate), recorded while a storm is. */
+static inline void hv_storm_msr(HvCpu *cpu, uint32_t reg) {
+    HvPerCpu *p = cpu->pc_state;
+    if (p && __builtin_expect(p->storm.armed, 0)) hv_storm_count(p->storm.msr, reg);
+}
 
 /* Deadlines, in host ticks (24 MHz). Translated code checks no timer, so a running CPU leaves its block only when asked:
    the kicker asks the CPU that is due, when it is due (its timer_due: the next timer event, and for CPU 0 the devices'

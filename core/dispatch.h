@@ -22,5 +22,7 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what);
 
 /* Stats lines printed (HvMachine.stats_interval), for the tests. */
 extern uint64_t hv_stats_lines;
+/* Set by the host: more lines for the stats, from the devices' data paths (network, sound), over `seconds`. */
+extern void (*hv_stats_io)(double seconds);
 
 #endif

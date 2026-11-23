@@ -221,9 +221,15 @@ static void take_tx(HvVirtioSnd *d) {
 void hv_virtio_snd_poll(HvVirtioSnd *d) {
     if (!d) return;
     HvVirtio *v = &d->vio;
-    /* No backend: the stream plays at its rate by the wall clock. */
-    if (d->running && !d->backend.start && d->frame_bytes) {
+    /* No backend, or its player is not playing: the stream plays at its rate by the wall clock, from when that began
+       (a clock started long before would let it all go at once). */
+    int clock = d->running && d->frame_bytes && (!d->backend.start || atomic_load_explicit(&d->host_off, memory_order_relaxed));
+    if (clock) {
         uint64_t now = now_ns();
+        if (!d->clock_on) {
+            d->clock_start_ns = now;
+            d->clock_start_consumed = atomic_load(&d->consumed);
+        }
         uint64_t target = d->clock_start_consumed +
                           (now - d->clock_start_ns) * d->rate_hz / 1000000000ull * d->frame_bytes;
         uint64_t w = atomic_load(&d->written);
@@ -234,6 +240,7 @@ void hv_virtio_snd_poll(HvVirtioSnd *d) {
         }
         if (target > atomic_load(&d->consumed)) atomic_store(&d->consumed, target);
     }
+    d->clock_on = clock;
     take_tx(d);
     uint64_t c = atomic_load_explicit(&d->consumed, memory_order_acquire);
     int any = 0;
@@ -331,4 +338,17 @@ void hv_virtio_snd_resume(HvVirtioSnd *d) {
     d->clock_start_consumed = atomic_load(&d->consumed);
     if (d->running && d->backend.start && d->backend.start(d->backend.opaque, d->channels, d->format, d->rate_hz) != 0)
         d->backend.start = NULL;
+}
+
+/* The stats printer's thread. Underruns: the host's player asked for more than the guest had sent (a gap in the
+   sound); the player off: iOS took the audio session and the stream drains by the clock. */
+void hv_virtio_snd_stats(HvVirtioSnd *d, double seconds) {
+    static uint64_t last_underruns, last_xfers;
+    if (!d || seconds <= 0) return;
+    uint64_t u = __atomic_load_n(&d->underruns, __ATOMIC_RELAXED), x = __atomic_load_n(&d->xfers, __ATOMIC_RELAXED);
+    if (u < last_underruns || x < last_xfers) last_underruns = last_xfers = 0; /* a new device */
+    fprintf(stderr, "  sound: %.0f buffers/s, underruns %.0f/s (%llu in all)%s\n", (double)(x - last_xfers) / seconds,
+            (double)(u - last_underruns) / seconds, (unsigned long long)u,
+            !d->running ? ", not playing" : atomic_load(&d->host_off) ? ", the host's player is off (drained by the clock)" : "");
+    last_underruns = u, last_xfers = x;
 }

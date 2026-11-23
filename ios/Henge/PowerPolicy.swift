@@ -72,22 +72,22 @@ final class PowerPolicy: ObservableObject {
     /// cannot); cooler again, the Mac it paused runs on, unless storage holds it too (StorageGuard).
     func tick() {
         let state = henge_vm_state()
-        if holding && state != 1 && state != 4 { holding = false } // stopped meanwhile
+        if holding && state != HENGE_VM_RUNNING && state != HENGE_VM_PAUSED { holding = false } // stopped meanwhile
         if holding && level < 3 {
             // Cooler while away: it stays paused (and its save stays good) until Solstice is in front again.
             guard UIApplication.shared.applicationState == .active else { return }
             holding = false
             guard !StorageGuard.holding else { return }
             InstantResume.queue.async {
-                guard henge_vm_state() == 4, PowerPolicy.inFront else { return }
+                guard henge_vm_state() == HENGE_VM_PAUSED, PowerPolicy.inFront else { return }
                 HengeLog.log("power", henge_vm_continue() == 0 ? "cooler: the Mac runs on" : "cooler, but the Mac could not run on")
             }
             return
         }
-        guard level == 3, state == 1, UIApplication.shared.applicationState == .active, !Installer.shared.busy else { return }
+        guard level == 3, state == HENGE_VM_RUNNING, UIApplication.shared.applicationState == .active, !Installer.shared.busy else { return }
         holding = true // also when something ran it on meanwhile: it pauses again
         InstantResume.queue.async {
-            guard henge_vm_state() == 1 else { return }
+            guard henge_vm_state() == HENGE_VM_RUNNING else { return }
             var buffer = [CChar](repeating: 0, count: 256)
             let rc = henge_vm_pause(&buffer, buffer.count)
             HengeLog.log("power", rc == 0 ? "too hot: the Mac is paused" : "too hot, but the Mac was not paused: \(String(cString: buffer))")

@@ -187,7 +187,7 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn) {
         t->x[0] = context;
         t->parked_off = 1;
         __atomic_store_n(&t->off, 0, __ATOMIC_RELEASE);
-        pcs->wake_pending = 1;
+        __atomic_store_n(&pcs->wake_pending, 1, __ATOMIC_SEQ_CST);
         pthread_cond_signal(&pcs->wake_cv);
         pthread_mutex_unlock(&pcs->wake_mu);
         return 0;

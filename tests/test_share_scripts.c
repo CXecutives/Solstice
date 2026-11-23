@@ -25,7 +25,87 @@ static int sh_parses(const char *name, const char *script) {
     return system(cmd) == 0;
 }
 
+/* One connection's whole exchange: the request bytes in (in pieces of `piece` bytes, 0: at once), what the server
+   answered out. */
+static const char *exchange(const char *req, size_t piece) {
+    static char out[65536];
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return "";
+    size_t len = strlen(req);
+    for (size_t at = 0; at < len;) {
+        size_t n = piece && len - at > piece ? piece : len - at;
+        send_all(sv[0], req + at, n);
+        at += n;
+    }
+    shutdown(sv[0], SHUT_WR);
+    Conn *c = calloc(1, sizeof *c);
+    c->fd = sv[1];
+    connection(c); /* runs it to the end and closes its side */
+    size_t n = 0;
+    for (ssize_t r; n + 1 < sizeof out && (r = recv(sv[0], out + n, sizeof out - 1 - n, 0)) > 0;) n += (size_t)r;
+    out[n] = 0;
+    close(sv[0]);
+    return out;
+}
+
+static int status_is(const char *resp, int status) {
+    int got = 0;
+    return sscanf(resp, "HTTP/1.1 %d", &got) == 1 && got == status;
+}
+
+static void test_server(void) {
+    /* Only requests made to 10.0.2.4 itself (DNS rebinding sends the attacker's own name). */
+    check("Host 10.0.2.4: served", status_is(exchange("GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 200));
+    check("Host 10.0.2.4:80 (spaces after): served", status_is(exchange("GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4:80  \r\n\r\n", 0), 200));
+    check("another Host: refused", status_is(exchange("GET /.henge/token HTTP/1.1\r\nHost: rebind.example\r\n\r\n", 0), 421));
+    check("a Host that only starts right: refused", status_is(exchange("GET / HTTP/1.1\r\nHost: 10.0.2.40\r\n\r\n", 0), 421));
+    check("no Host: refused", status_is(exchange("GET /.henge/token HTTP/1.1\r\n\r\n", 0), 421));
+    check("two Hosts: refused", status_is(exchange("GET / HTTP/1.1\r\nHost: 10.0.2.4\r\nHost: rebind.example\r\n\r\n", 0), 421));
+    check("an absolute target's host counts", status_is(exchange("GET http://rebind.example/.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 421));
+
+    /* The clipboard only with the key, which /.henge/token gives. */
+    hv_share_set_clipboard("from the device");
+    const char *t = exchange("GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0);
+    const char *body = strstr(t, "\r\n\r\n");
+    char key[80] = "";
+    if (body) snprintf(key, sizeof key, "%s", body + 4);
+    check("the key is 32 hex digits", strlen(key) == 32 && strspn(key, "0123456789abcdef") == 32);
+    check("the key is the server's", strcmp(key, share_token()) == 0);
+    check("clipboard without the key: refused",
+          status_is(exchange("GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", 0), 403));
+    check("clipboard with a wrong key: refused",
+          status_is(exchange("PUT /.henge/clipboard HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: 0123\r\nContent-Length: 1\r\n\r\nx", 0), 403));
+    char req[512];
+    snprintf(req, sizeof req, "GET /.henge/clipboard?since=0 HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\n\r\n", key);
+    const char *r = exchange(req, 0);
+    check("clipboard with the key: the device's", status_is(r, 200) && strstr(r, "\r\n\r\nfrom the device"));
+    /* The same, byte by byte, and two requests in one write: the read-ahead buffer keeps them apart. */
+    check("a request in one-byte pieces", status_is(exchange(req, 1), 200));
+    snprintf(req, sizeof req, "PUT /.henge/clipboard HTTP/1.1\r\nHost: 10.0.2.4\r\nX-Henge-Token: %s\r\nContent-Length: 9\r\n\r\nfrom gues"
+                              "GET /.henge/token HTTP/1.1\r\nHost: 10.0.2.4\r\n\r\n", key);
+    r = exchange(req, 0);
+    const char *second = strstr(r + 1, "HTTP/1.1 ");
+    check("two requests in one write: both answered", status_is(r, 204) && second && status_is(second, 200) && strstr(second, key));
+    char *guest = hv_share_take_clipboard();
+    check("the guest's clipboard arrived", guest && !strcmp(guest, "from gues"));
+    free(guest);
+
+    /* Ranges: the whole file, a part, the last bytes; past the end, backwards or empty ones cannot be given (416). */
+    long long from, to;
+    check("no range: the whole file", range_of(-1, -1, 1000, &from, &to) == 0 && from == 0 && to == 999);
+    check("bytes=100-199", range_of(100, 199, 1000, &from, &to) == 1 && from == 100 && to == 199);
+    check("bytes=100-: to the end", range_of(100, -1, 1000, &from, &to) == 1 && from == 100 && to == 999);
+    check("bytes=900-5000: cut at the end", range_of(900, 5000, 1000, &from, &to) == 1 && to == 999);
+    check("bytes=-100: the last 100", range_of(-1, 100, 1000, &from, &to) == 1 && from == 900 && to == 999);
+    check("bytes=-5000: all of it", range_of(-1, 5000, 1000, &from, &to) == 1 && from == 0);
+    check("bytes=100-50: 416", range_of(100, 50, 1000, &from, &to) == -1);
+    check("bytes=1000-: 416", range_of(1000, -1, 1000, &from, &to) == -1);
+    check("bytes=-0: 416", range_of(-1, 0, 1000, &from, &to) == -1);
+    check("a range of an empty file: 416", range_of(0, -1, 0, &from, &to) == -1);
+}
+
 int main(void) {
+    test_server();
     check("tune: sh parses it", sh_parses("tune", tune_script));
     check("lighten: sh parses it", sh_parses("lighten", lighten_script));
     check("unlighten: sh parses it", sh_parses("unlighten", unlighten_script));
