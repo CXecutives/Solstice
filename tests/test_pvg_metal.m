@@ -89,6 +89,32 @@ static void test_short_records(HvReplay *r) {
     puts("short records: none read past its end");
 }
 
+/* A pipeline compiled off the worker: its first use waits for it and gets it; several compile side by side. */
+static void test_pipelines_compiled_later(HvReplay *r) {
+    id<MTLFunction> f = [r computeStandIn];
+    if (!f) { check("a kernel to compile", 0); return; }
+    enum { N = 6 };
+    HvObject *objs[N];
+    for (int i = 0; i < N; i++) {
+        MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new];
+        d.computeFunction = f;
+        d.label = [NSString stringWithFormat:@"test %d", i]; /* each its own descriptor */
+        objs[i] = [HvObject new];
+        objs[i]->pending = [r compile:0xb descriptor:d name:@"test" failure:@"test pipeline"];
+    }
+    for (int i = 0; i < N; i++) {
+        [r resolve:objs[i]];
+        check("a pending pipeline resolves to a compute pipeline",
+              objs[i]->pending == nil && [objs[i]->object conformsToProtocol:@protocol(MTLComputePipelineState)]);
+    }
+    [r flushPipelines];
+    os_unfair_lock_lock(&r->pipe_lock);
+    uint64_t made = r->pipes_compiled + r->pipes_hit;
+    os_unfair_lock_unlock(&r->pipe_lock);
+    check("each counted as compiled or found", made >= N);
+    puts("pipelines: compiled off the worker, waited for at first use");
+}
+
 int main(void) {
     alarm(120);
     @autoreleasepool {
@@ -97,6 +123,7 @@ int main(void) {
         if (!m) { puts("no Metal device"); return 1; }
         HvReplay *r = (__bridge HvReplay *)m;
         dispatch_sync(r->worker, ^{ test_short_records(r); });
+        dispatch_sync(r->worker, ^{ test_pipelines_compiled_later(r); });
         hv_pvg_metal_destroy(m);
     }
     if (failures) printf("%d failures\n", failures);

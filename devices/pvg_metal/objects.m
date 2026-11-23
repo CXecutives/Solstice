@@ -42,7 +42,12 @@
     case OBJ_TEXTURE: case 3: /* 3: macOS 13's driver, the same {length, page, layout, mips, record} entry */
         [self makeTexture:o at:at size:size task:task]; break;
     case OBJ_FUNCTION: o->object = [self makeFunction:at task:task]; break;
-    case OBJ_SERIALIZED: o->object = [self makeSerialized:at length:size task:task]; break;
+    case OBJ_SERIALIZED: {
+        id made = [self makeSerialized:at length:size task:task];
+        if ([made isKindOfClass:[HvPendingPipeline class]]) o->pending = made;
+        else o->object = made;
+        break;
+    }
     case OBJ_LINEAR_TEXTURE: case 9: [self makeLinearTexture:o at:at size:size task:task]; break;
     case 13: [self makeHeap:o at:at task:task]; break;
     case 14: [self makeHeapBuffer:o at:at task:task]; break;
@@ -67,6 +72,7 @@
 
 - (id)get:(uint32_t)ref task:(uint32_t)task {
     HvObject *o = [self object:ref task:task];
+    if (o && o->pending) [self resolve:o];
     return o ? o->object : nil;
 }
 

@@ -232,50 +232,76 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     return [device newComputePipelineStateWithDescriptor:descriptor options:options reflection:nil error:err];
 }
 
-/* A render (0xe), tile (0x33) or compute (0xb) pipeline. Looked up in the saved archives first; on a miss it is
-   compiled into the archive being filled and then made from it, so the next boot finds it. A render pipeline with no
-   fragment function (depth only, or rasterization off) is made but not saved: Metal refuses to add one ("expecting
-   'fragment' stage"). */
+/* A render (0xe), tile (0x33) or compute (0xb) pipeline, on the compiler queue (several at once). Looked up in the
+   saved archives first; on a miss it is compiled, and then added to the archive being filled on the archiver queue,
+   so the next boot finds it. */
 - (id)pipelineState:(uint32_t)tag descriptor:(id)descriptor error:(NSError **)err {
     double t0 = now_seconds();
-    if (archive) {
-        [descriptor setBinaryArchives:[archives arrayByAddingObject:archive]];
+    os_unfair_lock_lock(&pipe_lock);
+    NSArray<id<MTLBinaryArchive>> *saved = archives;
+    BOOL saving = archive != nil;
+    os_unfair_lock_unlock(&pipe_lock);
+    if (saved.count) {
+        [descriptor setBinaryArchives:saved];
         id state = [self newState:tag descriptor:descriptor options:MTLPipelineOptionFailOnBinaryArchiveMiss error:nil];
         if (state) {
+            os_unfair_lock_lock(&pipe_lock);
             pipes_hit++;
             hit_ms += (now_seconds() - t0) * 1e3;
+            os_unfair_lock_unlock(&pipe_lock);
             return state;
-        }
-        if (tag == 0xe && ![(MTLRenderPipelineDescriptor *)descriptor fragmentFunction]) {
-            pipes_unsaveable++;
-        } else if (!archive_full) {
-            NSError *e = nil;
-            BOOL added = tag == 0xe    ? [archive addRenderPipelineFunctionsWithDescriptor:descriptor error:&e]
-                         : tag == 0x33 ? [archive addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&e]
-                                       : [archive addComputePipelineFunctionsWithDescriptor:descriptor error:&e];
-            if (added) {
-                archive_dirty = YES;
-                pipes_unsaved++;
-                [self scheduleArchiveSave];
-            } else {
-                pipes_unsaveable++;
-                [self complain:[NSString stringWithFormat:@"saved pipelines: pipeline %u not added: %@", tag, e.localizedDescription]];
-            }
         }
     }
     id state = [self newState:tag descriptor:descriptor options:MTLPipelineOptionNone error:err];
     if (state) {
-        pipes_compiled++;
-        compile_ms += (now_seconds() - t0) * 1e3;
-        if (pipes_compiled == 1 || pipes_compiled % 100 == 0)
-            fprintf(stderr, "hengevm: pvg-metal: pipelines: %llu compiled (%.0f ms each), %llu from the saved archives (%.1f ms each), %llu not saveable\n",
-                    pipes_compiled, compile_ms / pipes_compiled, pipes_hit, pipes_hit ? hit_ms / pipes_hit : 0.0, pipes_unsaveable);
+        os_unfair_lock_lock(&pipe_lock);
+        uint64_t compiled = ++pipes_compiled, hit = pipes_hit;
+        double each = (compile_ms += (now_seconds() - t0) * 1e3) / compiled, hit_each = hit ? hit_ms / hit : 0.0;
+        os_unfair_lock_unlock(&pipe_lock);
+        if (compiled == 1 || compiled % 100 == 0)
+            fprintf(stderr, "hengevm: pvg-metal: pipelines: %llu compiled (%.0f ms each), %llu from the saved archives (%.1f ms each)\n",
+                    compiled, each, hit, hit_each);
+        if (saving) dispatch_async(archiver, ^{ [self savePipeline:tag descriptor:descriptor]; });
     }
     return state;
 }
 
+/* A pipeline compiled this session into the archive being filled (archiver queue), unless one of the archives has it
+   (another process made the same one). A render pipeline with no fragment function (depth only, or rasterization
+   off) is not saved: Metal refuses to add one ("expecting 'fragment' stage"). */
+- (void)savePipeline:(uint32_t)tag descriptor:(id)descriptor {
+    if (!archive || archive_full) return;
+    if (tag == 0xe && ![(MTLRenderPipelineDescriptor *)descriptor fragmentFunction]) {
+        pipes_unsaveable++;
+        return;
+    }
+    os_unfair_lock_lock(&pipe_lock);
+    NSArray<id<MTLBinaryArchive>> *all = [archives arrayByAddingObject:archive];
+    os_unfair_lock_unlock(&pipe_lock);
+    [descriptor setBinaryArchives:all];
+    if ([self newState:tag descriptor:descriptor options:MTLPipelineOptionFailOnBinaryArchiveMiss error:nil]) return;
+    NSError *e = nil;
+    BOOL added = tag == 0xe    ? [archive addRenderPipelineFunctionsWithDescriptor:descriptor error:&e]
+                 : tag == 0x33 ? [archive addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&e]
+                               : [archive addComputePipelineFunctionsWithDescriptor:descriptor error:&e];
+    if (added) {
+        archive_dirty = YES;
+        pipes_unsaved++;
+        [self scheduleArchiveSave];
+    } else {
+        pipes_unsaveable++;
+        [self complain:[NSString stringWithFormat:@"saved pipelines: pipeline %u not added: %@", tag, e.localizedDescription]];
+    }
+}
+
+/* Every pipeline compile under way finished, and what they added saved: the Mac stops or is suspended. */
+- (void)flushPipelines {
+    dispatch_barrier_sync(compiler, ^{});
+    dispatch_sync(archiver, ^{ [self saveArchive]; });
+}
+
 /* Written once compiling has been quiet for a few seconds (a boot or an app launch compiles in bursts), or after 400
-   new ones in a long burst, and when the Mac stops or is suspended. On the worker queue, as the archive is added to
+   new ones in a long burst, and when the Mac stops or is suspended. On the archiver queue, as the archive is added to
    there. */
 - (void)scheduleArchiveSave {
     if (pipes_unsaved >= 400) {
@@ -284,7 +310,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     }
     uint32_t seq = ++archive_save_seq;
     HvReplay *__weak weak = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * (int64_t)NSEC_PER_SEC), worker, ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * (int64_t)NSEC_PER_SEC), archiver, ^{
         HvReplay *r = weak;
         if (r && r->archive_save_seq == seq && !atomic_load(&r->stopping)) [r saveArchive];
     });
@@ -309,16 +335,49 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     unsigned long long bytes = [[fm attributesOfItemAtPath:to.path error:nil] fileSize];
     archive_next++;
     archive_bytes += bytes;
+    os_unfair_lock_lock(&pipe_lock);
     archives = [archives arrayByAddingObject:archive];
     archive = next;
+    uint64_t hit = pipes_hit, compiled = pipes_compiled;
+    double hit_each = hit ? hit_ms / hit : 0.0, each = compiled ? compile_ms / compiled : 0.0;
+    os_unfair_lock_unlock(&pipe_lock);
     archive_dirty = NO;
     if (archive_full_at(archives.count, archive_bytes, archive_cap())) archive_full = YES;
     fprintf(stderr, "hengevm: pvg-metal: saved pipelines: %llu added in file %d (%.1f MB, %.1f MB in %lu files) in %.0f ms%s; this session %llu from the "
                     "archives (%.1f ms each), %llu compiled (%.0f ms each), %llu not saveable\n",
             pipes_unsaved, archive_next - 1, bytes / 1048576.0, archive_bytes / 1048576.0, (unsigned long)archives.count,
-            (now_seconds() - t0) * 1e3, archive_full ? " (now full)" : "", pipes_hit, pipes_hit ? hit_ms / pipes_hit : 0.0,
-            pipes_compiled, pipes_compiled ? compile_ms / pipes_compiled : 0.0, pipes_unsaveable);
+            (now_seconds() - t0) * 1e3, archive_full ? " (now full)" : "", hit, hit_each, compiled, each, pipes_unsaveable);
     pipes_unsaved = 0;
+}
+
+/* A pipeline compiled on the compiler queue: the worker goes on with other work, and waits only where the pipeline is
+   first used (get:). Several made before a first use compile side by side. */
+- (HvPendingPipeline *)compile:(uint32_t)tag descriptor:(id)descriptor name:(NSString *)name failure:(NSString *)what {
+    HvPendingPipeline *p = [HvPendingPipeline new];
+    p->done = dispatch_group_create();
+    dispatch_group_enter(p->done);
+    dispatch_async(compiler, ^{
+        @autoreleasepool {
+            NSError *err = nil;
+            id state = [self pipelineState:tag descriptor:descriptor error:&err];
+            if (!state) p->failure = [NSString stringWithFormat:@"%@: %@", what, err.localizedDescription];
+            else if (name) objc_setAssociatedObject(state, "hvname", name, OBJC_ASSOCIATION_RETAIN);
+            p->state = state;
+            dispatch_group_leave(p->done);
+        }
+    });
+    return p;
+}
+
+/* What a pending pipeline became, once it is there (worker). */
+- (void)resolve:(HvObject *)o {
+    HvPendingPipeline *p = o->pending;
+    double t0 = now_seconds();
+    dispatch_group_wait(p->done, DISPATCH_TIME_FOREVER);
+    pipe_wait += now_seconds() - t0;
+    o->pending = nil;
+    o->object = p->state;
+    if (p->failure) [self complain:p->failure];
 }
 
 - (id)makeSerialized:(uint64_t)at length:(uint32_t)size task:(uint32_t)task {
@@ -333,9 +392,6 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
     if (tag == 0xe || tag == 0x33) { /* render or tile pipeline: {tag, size, ref, length, data} */
         id descriptor = [self pipelineDescriptor:tag data:all task:task];
         if (!descriptor) return nil;
-        NSError *err = nil;
-        id state = [self pipelineState:tag descriptor:descriptor error:&err];
-        if (!state) [self complain:[NSString stringWithFormat:@"pipeline %u: %@", tag, err.localizedDescription]];
         if (tag == 0xe && getenv("HV_SHADER_DUMP") && atoi(getenv("HV_SHADER_DUMP"))) { /* m4 fork: blend state as this iOS read it */
             MTLRenderPipelineDescriptor *rp = descriptor;
             for (int i = 0; i < 4; i++) {
@@ -348,20 +404,19 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
                         (unsigned long)c.writeMask);
             }
         }
-        if (state && tag == 0xe && getenv("HV_PVG_TRACE_FILE")) {
+        NSString *name = nil;
+        if (tag == 0xe && hv_pvg_trace_on()) {
             MTLRenderPipelineDescriptor *rp = descriptor;
-            objc_setAssociatedObject(state, "hvname", [NSString stringWithFormat:@"%@ / %@ -> fmt %lu blend %d", rp.vertexFunction.name, rp.fragmentFunction.name, (unsigned long)rp.colorAttachments[0].pixelFormat, (int)rp.colorAttachments[0].blendingEnabled], OBJC_ASSOCIATION_RETAIN);
+            name = [NSString stringWithFormat:@"%@ / %@ -> fmt %lu blend %d", rp.vertexFunction.name, rp.fragmentFunction.name,
+                                              (unsigned long)rp.colorAttachments[0].pixelFormat, (int)rp.colorAttachments[0].blendingEnabled];
         }
-        return state;
+        return [self compile:tag descriptor:descriptor name:name failure:[NSString stringWithFormat:@"pipeline %u", tag]];
     }
     if (tag == 0xb) { /* compute pipeline: {tag, size, ref, length, data} */
         id descriptor = [self pipelineDescriptor:tag data:all task:task];
         if (!descriptor) return nil;
-        NSError *err = nil;
-        id state = [self pipelineState:tag descriptor:descriptor error:&err];
-        if (!state) [self complain:[NSString stringWithFormat:@"compute pipeline: %@", err.localizedDescription]];
-        else objc_setAssociatedObject(state, "hvname", [NSString stringWithFormat:@"compute %@", [[descriptor computeFunction] name]], OBJC_ASSOCIATION_RETAIN);
-        return state;
+        NSString *name = hv_pvg_trace_on() ? [NSString stringWithFormat:@"compute %@", [[descriptor computeFunction] name]] : nil;
+        return [self compile:tag descriptor:descriptor name:name failure:@"compute pipeline"];
     }
     if (tag == 3) { /* sampler: {tag, size, ref, bits, lod min, lod max, ...} */
         uint64_t bits;

@@ -14,6 +14,9 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->device = dev;
         r->queue = [dev newCommandQueueWithMaxCommandBufferCount:64];
         r->worker = dispatch_queue_create("hengevm.pvg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+        r->compiler = dispatch_queue_create("hengevm.pipelines", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0));
+        r->archiver = dispatch_queue_create("hengevm.archive", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+        r->pipe_lock = OS_UNFAIR_LOCK_INIT;
         r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->cursor_queue = dispatch_queue_create("hengevm.cursor", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         const char *hz = getenv("HV_HZ");
@@ -79,8 +82,8 @@ void hv_pvg_metal_destroy(HvPvgMetal *m) {
         [fence waitUntilCompleted];
         dispatch_group_wait(r->completions, DISPATCH_TIME_FOREVER);
         /* GPU completions may have enqueued a final readback on the worker. */
+        [r flushPipelines];
         dispatch_sync(r->worker, ^{
-            [r saveArchive];
             r->lite = NULL;
             for (uint32_t t = 0; t < HV_TASKS; t++) obj_clear(&r->task_objs[t]);
             r->surfaces = nil;
@@ -315,8 +318,8 @@ void hv_pvg_metal_quiesce(HvPvgMetal *m) {
     @autoreleasepool {
         dispatch_sync(r->worker, ^{});
         dispatch_group_wait(r->completions, DISPATCH_TIME_FOREVER);
+        [r flushPipelines]; /* a suspended app may not come back */
         dispatch_sync(r->worker, ^{
-            [r saveArchive]; /* a suspended app may not come back */
             id<MTLCommandBuffer> cb = nil;
             id<MTLBlitCommandEncoder> blit = nil;
             unsigned copied = 0;

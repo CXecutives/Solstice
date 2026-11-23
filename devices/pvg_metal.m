@@ -91,10 +91,22 @@ static int cursor_scale(void) {
 
 enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OBJ_LINEAR_TEXTURE = 8, OBJ_MAPPED_TEXTURE = 0xb };
 
+/* A pipeline being compiled off the worker: what its first use waits for. */
+@interface HvPendingPipeline : NSObject {
+@public
+    dispatch_group_t done;
+    id state;
+    NSString *failure;
+}
+@end
+@implementation HvPendingPipeline
+@end
+
 /* What is known about a made object, so a reused ref is noticed. */
 @interface HvObject : NSObject {
 @public
     id object;
+    HvPendingPipeline *pending; /* a pipeline still compiling: object is nil until get: has waited for it */
     uint32_t entry[3];
     /* A buffer's guest pages, mapped contiguously. */
     uint8_t *mapped;
@@ -241,6 +253,10 @@ typedef struct HvWalk {
     id<MTLFunction> stand_in; /* computeStandIn */
     /* Compiled pipelines kept across sessions (pipelineState:descriptor:). iOS clears its own shader cache between
        launches, so without this every boot compiles each of macOS's pipelines again, about half a second apiece. */
+    dispatch_queue_t compiler; /* concurrent: pipelines compiled off the worker */
+    dispatch_queue_t archiver; /* serial: the archive being filled, and its saves */
+    os_unfair_lock pipe_lock;  /* archive, archives and the hit and compile counters, which the compiler reads */
+    double pipe_wait;          /* worker: seconds waited for pipelines, since the last stats line */
     id<MTLBinaryArchive> archive; /* being filled */
     NSArray<id<MTLBinaryArchive>> *archives; /* saved: earlier boots' files, and this session's saves */
     NSURL *archive_dir;
@@ -397,9 +413,11 @@ static float hv_half_shown(float v, int mode) { /* what the screen shows for a h
     free(pages_scratch);
 }
 
-- (void)complain:(NSString *)what {
-    if ([complaints containsObject:what]) return;
-    [complaints addObject:what];
+- (void)complain:(NSString *)what { /* any queue */
+    @synchronized(complaints) {
+        if ([complaints containsObject:what]) return;
+        [complaints addObject:what];
+    }
     fprintf(stderr, "hengevm: pvg-metal: %s\n", what.UTF8String);
 }
 

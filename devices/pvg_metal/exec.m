@@ -29,6 +29,44 @@
     [self commit:[queue commandBuffer] channel:ch stamp:stamp complete:YES];
 }
 
+/* The pipelines an exec sets or asks about, made before any is waited for: their compiles (makeSerialized) start
+   together, so a frame with several new ones waits about as long as for the slowest. Only command buffers in one
+   piece in host memory (nearly all) are looked through. */
+- (void)startPipelines:(const uint8_t *)bufs count:(uint32_t)nbuf task:(uint32_t)task {
+    for (uint32_t b = 0; b < nbuf; b++) {
+        uint64_t off, blen;
+        memcpy(&off, bufs + b * 16, 8);
+        memcpy(&blen, bufs + b * 16 + 8, 8);
+        if (blen > (64u << 20) || blen < 16) continue;
+        const uint8_t *p = task_span(self, task, off, blen);
+        if (!p) continue;
+        const uint8_t *end = p + blen;
+        uint32_t seglen, info;
+        memcpy(&seglen, p, 4), memcpy(&info, p + 4, 4);
+        p += 8;
+        if ((info & 0xff) == 5) { /* protection options, then the real header */
+            p += 8;
+            if (p + 8 > end) continue;
+            memcpy(&seglen, p, 4), memcpy(&info, p + 4, 4);
+            p += 8;
+        }
+        uint32_t type = info & 0xff;
+        if ((uint64_t)(end - p) > seglen) end = p + seglen;
+        if (type != 0 && type != 1 && type != 4) continue;
+        while (p + 12 <= end) {
+            uint32_t tag, size, ref;
+            memcpy(&tag, p, 4), memcpy(&size, p + 4, 4);
+            if (size < 8 || size > (uint64_t)(end - p)) break;
+            BOOL names_pipeline = type == 0 ? tag == 116 : type == 1 ? tag == 208 : (tag == 450 || tag == 457 || tag == 466 || tag == 467);
+            if (names_pipeline && size >= 12) {
+                memcpy(&ref, p + 8, 4);
+                [self object:ref task:task];
+            }
+            p += size;
+        }
+    }
+}
+
 /* Returns YES if the GPU's completion gives the stamp back. */
 - (BOOL)exec:(const uint32_t *)a length:(uint32_t)len channel:(uint32_t)ch stamp:(uint32_t)stamp {
     uint32_t task = a[0], nres = a[1], nbuf = a[2];
@@ -41,6 +79,7 @@
     tracing = hv_pvg_trace_on() != 0;
     if (tracing) fprintf(stderr, "trace: exec task %u, %u resources, %u buffers\n", task, nres, nbuf);
     double t_begin = now_seconds();
+    [self startPipelines:bufs count:nbuf task:task];
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = nil;
     BOOL sync_after = NO;
@@ -172,8 +211,8 @@
     if (++execs % 2000 == 0) {
         static double t0;
         if (!t0) t0 = now_seconds();
-        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps, %.0f s; encoding %.2f s, waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, now_seconds() - t0, encode_time, gpu_wait_time);
-        encode_time = gpu_wait_time = 0;
+        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps, %.0f s; encoding %.2f s (%.2f s of it waiting for pipelines), waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, now_seconds() - t0, encode_time, pipe_wait, gpu_wait_time);
+        encode_time = gpu_wait_time = pipe_wait = 0;
     }
     return YES;
 }
