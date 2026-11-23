@@ -14,14 +14,14 @@ struct DeviceProfileTests {
         let air = DeviceProfile(physicalMB: 3_800, performanceCores: 2, memoryLimitMB: 3_000, extendedAddressing: false, isPad: true)
         check(air.row == DeviceProfile.rows[0], "4 GB is the first row")
         check(air.ramGB == 2 && air.cpus == 2, "4 GB: a 2 GB Mac on 2 CPUs")
-        check(air.uiScale == 2.0 / 3 && air.performanceScreen, "4 GB: the lean screen")
+        check(air.screenClass == .leanPad, "4 GB iPad: the lean screens")
         check(air.codeCacheMB == 384 && air.guestCapMB == 2048 && air.headroomMB == 340...700, "4 GB: cache, cap and headroom")
         check(air.jitMB(chosen: nil) == 384, "4 GB: the default region")
 
         // iPhone 16 Pro: 8 GB, 2 performance cores, the increased limit, no extended addressing (a free team).
         let phone = DeviceProfile(physicalMB: 7_680, performanceCores: 2, memoryLimitMB: 6_144, extendedAddressing: false, isPad: false)
         check(phone.ramGB == 3 && phone.cpus == 3, "8 GB phone: a 3 GB Mac on 3 CPUs")
-        check(phone.uiScale == 0.8 && !phone.performanceScreen, "8 GB phone: a larger Size of Things, the fitting screen")
+        check(phone.screenClass == .phone, "8 GB phone: the phone screens")
         check(phone.codeCacheMB == 1024 && phone.guestCapMB == 3072 && phone.headroomMB == 600...1100, "8 GB: cache, cap and headroom")
         check(phone.jitMB(chosen: 1536) == 1024, "without extended addressing 1.5 GB is taken as 1 GB")
         check(phone.jitMB(chosen: 768) == 768, "a choice the signing allows is kept")
@@ -32,7 +32,7 @@ struct DeviceProfileTests {
         // iPad Pro M4: 16 GB, 4 performance cores, everything signed.
         let pro = DeviceProfile(physicalMB: 15_800, performanceCores: 4, memoryLimitMB: 12_000, extendedAddressing: true, isPad: true)
         check(pro.ramGB == 6 && pro.cpus == 5, "16 GB: a 6 GB Mac on one CPU past the P cores")
-        check(pro.uiScale == nil && pro.performanceScreen, "16 GB iPad: default Size of Things, the performance screen")
+        check(pro.screenClass == .bigPad, "16 GB iPad: Retina by default")
         check(pro.codeCacheMB == 1536 && pro.guestCapMB == nil && pro.headroomMB == 1100...2100, "16 GB: cache, cap and headroom")
         check(pro.jitMB(chosen: nil) == 1536, "16 GB: the 1.5 GB region where it is signed for")
         let proUnsigned = DeviceProfile(physicalMB: 15_800, performanceCores: 4, memoryLimitMB: 12_000, extendedAddressing: false, isPad: true)

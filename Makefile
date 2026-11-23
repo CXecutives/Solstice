@@ -273,6 +273,14 @@ test-device-profile: $(B)/test_device_profile
 	$(B)/test_device_profile
 .PHONY: test-device-profile
 
+# Screen presets: each device's Mac screen sizes, the migration of older Macs, pixel snapping, refresh choices.
+$(B)/test_mac_screen: ios/Henge/MacScreen.swift ios/Henge/DeviceProfile.swift tests/test_mac_screen.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-mac-screen: $(B)/test_mac_screen
+	$(B)/test_mac_screen
+.PHONY: test-mac-screen
+
 # A physical mouse's right/middle swap, kept from press to release.
 $(B)/test_physical_mouse_buttons: ios/Henge/PhysicalMouseButtons.swift tests/test_physical_mouse_buttons.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
@@ -290,6 +298,6 @@ test-lifecycle: $(B)/test_lifecycle
 .PHONY: test-lifecycle
 
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
-SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-physical-mouse-buttons test-lifecycle
+SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons test-lifecycle
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

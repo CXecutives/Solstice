@@ -13,10 +13,13 @@ struct VirtualMac: Identifiable, Codable, Hashable {
     var added = Date()
     var osName: String?
     var lastUsed: Date?
-    /// The size macOS is told its screen is. Macs made before this was a choice have none: 16:9.
+    /// The Mac's screen, as a preset (MacScreen): its pixels follow the device it runs on. Applied at the next boot.
+    /// nil only for a Mac made before presets, until Machines.load chooses one from the four fields below.
+    var screenPreset: ScreenPreset?
+    /// Before presets: the size macOS was told, Retina on iPad, and Size of Things (uiScale). Read once by
+    /// MacScreen.migrate, then cleared.
     var screenWidth: Int?
     var screenHeight: Int?
-    /// m4 fork: the iPad's own panel at Retina density. On by default on iPad, for Macs that never chose.
     var retina: Bool?
     /// About This Mac reports the device Henge runs on (its name and chip) instead of the
     /// virtual Mac. nil/false: the vmapple identity. Applied at the next boot.
@@ -24,23 +27,13 @@ struct VirtualMac: Identifiable, Codable, Hashable {
     /// With reportHostIdentity: also report the device's model identifier (hw.model).
     /// Experimental — it may bring the device's icon, and may confuse macOS.
     var reportHostModelID: Bool?
-    /// How big things look on the Mac: 1 (or none) is the full screen size; less gives macOS a smaller screen of the
-    /// same shape, which the device shows larger (and which takes less drawing). Applied at the next boot.
     var uiScale: Double?
-    static let uiScales: [(name: String, scale: Double)] = [("Default", 1), ("Large", 0.8), ("Larger", 2.0 / 3)]
-    var isRetina: Bool { Device.isPad && (retina ?? false) }
-    /// The screen before uiScale: what the Screen choice asks for.
-    var baseScreen: (width: Int, height: Int) { isRetina ? Device.retinaScreen : (screenWidth ?? 1920, screenHeight ?? 1080) }
-    var screen: (width: Int, height: Int) {
-        let base = baseScreen, k = min(max(uiScale ?? 1, 0.5), 1)
-        guard k < 1 else { return base }
-        return (Int((Double(base.width) * k / 8).rounded()) * 8, Int((Double(base.height) * k / 8).rounded()) * 8)
-    }
-    /// The panel size macOS is told for a Retina screen: smaller with uiScale, so the density (and 2x drawing) stays.
-    var retinaMM: (width: Int, height: Int) {
-        let mm = Device.retinaMM, k = min(max(uiScale ?? 1, 0.5), 1)
-        return (Int((Double(mm.width) * k).rounded()), Int((Double(mm.height) * k).rounded()))
-    }
+
+    var preset: ScreenPreset { screenPreset ?? .recommended }
+    /// What the preset gives on this device: macOS's pixels, the panel's millimetres for Retina, the on-screen factor.
+    var macScreen: MacScreen { Device.macScreen(preset) }
+    var screen: (width: Int, height: Int) { (macScreen.pixels.width, macScreen.pixels.height) }
+    var isRetina: Bool { macScreen.mm != nil }
     var aspect: CGFloat { CGFloat(screen.width) / CGFloat(screen.height) }
 
     var directory: URL { Machines.directory(for: id) }
@@ -149,7 +142,7 @@ final class Machines: ObservableObject {
                                      diskBytes: ((try? fm.attributesOfItem(atPath: item.appendingPathComponent("disk.img").path)[.size]) as? Int64) ?? 64 << 30)
                 let os = (try? String(contentsOf: marker, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 mac.osName = os.isEmpty ? nil : os
-                (mac.screenWidth, mac.screenHeight) = Device.fittingScreen
+                mac.screenPreset = .recommended
                 all.append(mac)
                 save()
                 try? fm.removeItem(at: item.appendingPathComponent("restore"))
@@ -338,6 +331,25 @@ final class Machines: ObservableObject {
             return
         }
         all = list.filter { FileManager.default.fileExists(atPath: $0.disk.path) }
+        migrateScreens()
+    }
+
+    /// Macs made before screen presets get the preset nearest what they had (MacScreen.migrate), once.
+    private func migrateScreens() {
+        guard all.contains(where: { $0.screenPreset == nil }) else { return }
+        let facts = Device.screenFacts, legacy = Device.legacyScreen
+        for i in all.indices where all[i].screenPreset == nil {
+            let m = all[i]
+            let preset = MacScreen.migrate(width: m.screenWidth, height: m.screenHeight, retina: Device.isPad ? m.retina : nil,
+                                           uiScale: m.uiScale, legacy: legacy, facts: facts)
+            all[i].screenPreset = preset
+            all[i].screenWidth = nil
+            all[i].screenHeight = nil
+            all[i].retina = nil
+            all[i].uiScale = nil
+            HengeLog.log("machines", "\(m.name): screen \(m.screenWidth ?? 0)x\(m.screenHeight ?? 0) retina \(m.retina ?? false) scale \(m.uiScale ?? 1) -> preset \(preset.rawValue)")
+        }
+        save()
     }
 
     private func save() {

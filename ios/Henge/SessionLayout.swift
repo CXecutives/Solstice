@@ -13,13 +13,27 @@ extension SessionView {
         let pad: CGRect
         let insets: EdgeInsets
         var barY: CGFloat?    // where the controls go in the space beside the screen, if it has room for them
+        let pixels: CGSize    // the Mac's screen, in its own pixels
 
         var shown: CGSize {
             CGSize(width: min(touch.width / max(screen.width, 1), 1), height: min(touch.height / max(screen.height, 1), 1))
         }
 
-        init(full: CGSize, insets: EdgeInsets, landscape: Bool, zoomed: Bool, typing: Bool, centre: CGPoint, aspect: CGFloat) {
+        /// The Mac's pixel under a point of the session view (for direct touch): the screen's rectangle maps to
+        /// 0...width-1 and 0...height-1; a point outside it gives the nearest edge pixel.
+        func macPixel(at point: CGPoint) -> CGPoint {
+            let x = (point.x - screen.minX) / max(screen.width, 1) * pixels.width
+            let y = (point.y - screen.minY) / max(screen.height, 1) * pixels.height
+            return CGPoint(x: min(max(x.rounded(.down), 0), max(pixels.width - 1, 0)),
+                           y: min(max(y.rounded(.down), 0), max(pixels.height - 1, 0)))
+        }
+
+        /// pixels: the Mac's screen; scale: device pixels per point. Unzoomed, the screen sits on whole device pixels,
+        /// at an exact whole factor where the fit is just above one (PixelFit), so nearest scaling maps every pixel alike.
+        init(full: CGSize, insets: EdgeInsets, landscape: Bool, zoomed: Bool, typing: Bool, centre: CGPoint, pixels: CGSize, scale: CGFloat) {
             self.insets = insets
+            self.pixels = pixels
+            let aspect = pixels.width / max(pixels.height, 1)
             let big = full.height >= 600 // an iPad on its side, or a window on one
             if zoomed {
                 // Upright, as tall as the device. On its side, bigger than it fits: a big screen needs less.
@@ -37,30 +51,28 @@ extension SessionView {
                 let bar: CGFloat = 62
                 let room = typing ? full.height - insets.bottom - insets.top - bar - 8 : full.height
                 // An iPad keeps clear of its side insets; a big iPhone (iPhone Duo) fills edge to edge.
-                let side = Device.isPad ? 2 * max(insets.leading, insets.trailing) : 0
-                let height = max(min(room, (full.width - side) / aspect), 200)
-                let width = height * aspect
-                let y = typing ? insets.top + bar : (full.height - height) / 2
-                screen = CGRect(x: (full.width - width) / 2, y: y, width: width, height: height)
+                let side = Device.isPad ? max(insets.leading, insets.trailing) : 0
+                let area = CGRect(x: side, y: typing ? insets.top + bar : 0, width: full.width - 2 * side, height: max(room, 200))
+                var fit = PixelFit.fit(pixels, in: area, scale: scale)
+                if typing { fit.origin.y = area.minY }
+                screen = fit
                 touch = CGRect(origin: .zero, size: full)
                 fillsPhone = true
                 toolsY = 0
                 pad = .zero
-                if y - insets.top >= 54 { barY = insets.top + (y - insets.top) / 2 }
+                if fit.minY - insets.top >= 54 { barY = insets.top + (fit.minY - insets.top) / 2 }
             } else if landscape {
-                // Edge to edge. Phones wider than the Mac fill the height with room to spare beside the
-                // Dynamic Island; a squarer phone (iPhone Duo) fills all of it, island and corners included.
-                let height = min(full.height, full.width / aspect)
-                let width = height * aspect
-                screen = CGRect(x: (full.width - width) / 2, y: (full.height - height) / 2, width: width, height: height)
+                // The full height, centred in the safe area: clear of the Dynamic Island or notch by the same inset at
+                // both sides, so a turn by 180 degrees moves nothing (the Mac's screen is sized for that area, MacScreen).
+                let side = max(insets.leading, insets.trailing)
+                screen = PixelFit.fit(pixels, in: CGRect(x: side, y: 0, width: full.width - 2 * side, height: full.height), scale: scale)
                 touch = CGRect(origin: .zero, size: full)
                 fillsPhone = true
                 toolsY = 0
                 pad = .zero
             } else {
                 let width = full.width - 16
-                let height = width / aspect
-                screen = CGRect(x: 8, y: insets.top + 6, width: width, height: height)
+                screen = PixelFit.fit(pixels, in: CGRect(x: 8, y: insets.top + 6, width: width, height: width / aspect), scale: scale)
                 touch = screen
                 fillsPhone = false
                 toolsY = screen.maxY + 10

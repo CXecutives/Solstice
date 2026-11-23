@@ -22,7 +22,7 @@ struct DeviceProfile: Equatable {
         let headroomMB: ClosedRange<Int>
         /// The most guest RAM that boots beside the engine and iOS, in MB (nil: any).
         let guestCapMB: UInt64?
-        /// The least memory: a smaller Size of Things and the performance screen on any device.
+        /// The least memory: smaller Mac screens (screenRow) on any device.
         let lean: Bool
     }
 
@@ -57,8 +57,8 @@ struct DeviceProfile: Equatable {
     let row: Row
     var ramGB: Int { row.ramGB }
     let cpus: Int
-    let uiScale: Double? // Size of Things (#215): less for the Mac to draw where the screen is small
-    let performanceScreen: Bool
+    /// How this device sizes a Mac's screen (screenRow).
+    let screenClass: ScreenClass
     var headroomMB: ClosedRange<Int> { row.headroomMB }
     var guestCapMB: UInt64? { row.guestCapMB }
     /// The code cache without a choice in Settings, as the signing allows.
@@ -69,8 +69,9 @@ struct DeviceProfile: Equatable {
         row = Self.rows.first { physicalMB < $0.belowMB } ?? Self.rows[Self.rows.count - 1]
         // iPhone 16 Pro (2 P + 4 E): 3. M-series iPads: 4, or one past the P cores with 16 GB.
         cpus = min(max(performanceCores + 1, 3), row.maxCPUs)
-        uiScale = row.lean ? 2.0 / 3 : isPad ? nil : 0.8
-        performanceScreen = row.lean || isPad
+        // 8 GB and more: an iPad Pro (or an Air or mini with an M chip) draws its own panel at Retina density.
+        let big = physicalMB >= Self.rows[1].belowMB
+        screenClass = isPad ? (row.lean ? .leanPad : big ? .bigPad : .pad) : (row.lean ? .leanPhone : .phone)
         let device = row.codeCacheMB
         if device > 1024 {
             codeCacheMB = memoryLimitMB >= Self.largeCacheLimitMB && extendedAddressing ? device : 1024
@@ -86,4 +87,49 @@ struct DeviceProfile: Equatable {
         if mb > 1024 && !extendedAddressing { return 1024 }
         return Self.codeCacheChoices.contains(mb) ? mb : 1024
     }
+
+    // MARK: Screens (MacScreen.swift sizes them)
+
+    enum ScreenClass: Equatable { case phone, leanPhone, pad, leanPad, bigPad }
+
+    /// What a preset aims for: a 1x Mac screen this many pixels tall (as wide as the device's shape), a factor
+    /// (device pixels per Mac pixel), or the panel itself at Retina density (macOS draws 2x, nothing is scaled).
+    enum ScreenTarget: Equatable { case height(Int), factor(Double), native }
+
+    struct ScreenRow: Equatable {
+        let larger: ScreenTarget      // a smaller desktop: bigger text, less for the Mac to draw
+        let recommended: ScreenTarget
+        let moreSpace: ScreenTarget   // the next larger desktop
+        let retina: Bool              // Retina offered (a full-panel 2x Mac is heavy: not with a 2 GB Mac)
+    }
+
+    /// Phones keep their desktop 864 tall (1x, filling the landscape safe area: 1664 × 864 on an iPhone 16 Pro shown at
+    /// about 1.4x), so it is not cramped; iPads with a 2 GB Mac show half the panel at exactly 2x (1176 × 816 on an Air 4,
+    /// crisp with nearest scaling); 8 GB iPads draw their own panel at Retina density.
+    static func screenRow(_ kind: ScreenClass) -> ScreenRow {
+        switch kind {
+        case .phone: return ScreenRow(larger: .height(720), recommended: .height(864), moreSpace: .height(1080), retina: true)
+        case .leanPhone: return ScreenRow(larger: .height(640), recommended: .height(720), moreSpace: .height(864), retina: false)
+        case .leanPad: return ScreenRow(larger: .factor(2.5), recommended: .factor(2), moreSpace: .factor(1.7), retina: false)
+        case .pad: return ScreenRow(larger: .factor(2.5), recommended: .factor(2), moreSpace: .factor(1.5), retina: true)
+        case .bigPad: return ScreenRow(larger: .factor(2), recommended: .native, moreSpace: .factor(1.5), retina: true)
+        }
+    }
+
+    /// The panel's real pixel density: 460 on 3x iPhones (all OLED models, 458-460), 326 on 2x iPhones and the iPad mini,
+    /// 264 on other iPads; otherwise an estimate from the scale.
+    static func ppi(isPad: Bool, scale: Double, mini: Bool) -> Double {
+        switch (isPad, scale) {
+        case (true, 2): return mini ? 326 : 264
+        case (false, 3): return 460
+        case (false, 2): return 326
+        default: return isPad ? 132 * scale : 153 * scale
+        }
+    }
+
+    /// The refresh rates macOS can be told, as far as the panel shows them (a 60 Hz panel never shows 120: macOS would
+    /// draw frames nobody sees). 60 without a choice.
+    static let refreshRates = [30, 60, 120]
+    static let defaultRefresh = 60
+    static func refreshChoices(panelMax: Int) -> [Int] { refreshRates.filter { $0 <= max(panelMax, defaultRefresh) } }
 }

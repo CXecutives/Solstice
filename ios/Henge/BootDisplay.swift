@@ -11,6 +11,8 @@ struct BootDisplay: View {
     let role: DisplayTargetSelection.Role
     /// The id this view's layer connects to the router under.
     var surface = UUID()
+    /// Rounded corners, on the Metal layer itself (cornerRadius) rather than a mask over it.
+    var cornerRadius: CGFloat = 0
 
     @State private var image: CGImage?
     @State private var gpuLive = false
@@ -20,11 +22,12 @@ struct BootDisplay: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(Color.black)
             if !stopped {
                 if !gpuLive {
                     if let image {
                         Image(decorative: image, scale: 1).resizable().interpolation(.medium).aspectRatio(contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                         if image.height > image.width {
                             Image(systemName: "apple.logo")
                                 .font(.system(size: 44))
@@ -36,7 +39,7 @@ struct BootDisplay: View {
                             .foregroundStyle(.white)
                     }
                 }
-                GPUScreen(display: display, role: role, surface: surface,
+                GPUScreen(display: display, role: role, surface: surface, cornerRadius: cornerRadius,
                           matchScreenColors: matchScreenColors, brightness: screenBrightness)
                     .allowsHitTesting(false)
             }
@@ -106,6 +109,7 @@ private struct GPUScreen: UIViewRepresentable {
     let display: DisplayRouter
     let role: DisplayTargetSelection.Role
     let surface: UUID
+    let cornerRadius: CGFloat
     let matchScreenColors: Bool
     let brightness: Double
     private static let srgb = CGColorSpace(name: CGColorSpace.sRGB)
@@ -166,6 +170,12 @@ private struct GPUScreen: UIViewRepresentable {
         }
     }
 
+    @MainActor private func setCorners(_ view: Screen) {
+        view.layer.cornerRadius = cornerRadius
+        view.layer.cornerCurve = .continuous
+        view.layer.masksToBounds = cornerRadius > 0
+    }
+
     @MainActor private func setColorSpace(_ view: Screen) {
         let metalLayer = view.layer as! CAMetalLayer
         // The guest's display profile is sRGB, and the presenter writes sRGB
@@ -192,8 +202,12 @@ private struct GPUScreen: UIViewRepresentable {
         }
         let view = Screen(display: display, role: role, surface: surface)
         setColorSpace(view)
+        setCorners(view)
         return view
     }
-    func updateUIView(_ view: Screen, context: Context) { setColorSpace(view) }
+    func updateUIView(_ view: Screen, context: Context) {
+        setColorSpace(view)
+        setCorners(view)
+    }
     static func dismantleUIView(_ view: Screen, coordinator: ()) { view.detach() }
 }

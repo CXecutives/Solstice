@@ -12,8 +12,8 @@ enum EngineTuning {
     /// What upstream Henge starts its engine with. Safe mode (SafeMode, HV_SAFE) runs with exactly these.
     static let upstream: [String: String] = [
         // 60, not 120: every frame macOS draws is emulated and replayed, so 120 Hz
-        // halves the CPU left for apps for animation few will notice.
-        "HV_HZ": "60",         // the refresh rate macOS is told its display has
+        // halves the CPU left for apps for animation few will notice. Settings offers 120 only on a 120 Hz panel.
+        "HV_HZ": "60",         // the refresh rate macOS is told its display has (DeviceProfile.defaultRefresh)
         "HV_WFI_SPIN": "0",    // microseconds an idle CPU watches for work before sleeping
         "HV_FLUSH": "2",       // disk flush: F_BARRIERFSYNC, ordered but without a full fsync
         // The memory balloon, asking for nothing: there for MemoryRelief when iOS runs short (KeepAlive.swift; #214).
@@ -52,7 +52,9 @@ enum EngineTuning {
         let safe = overrides["HV_SAFE"].map { $0 != "0" } ?? SafeMode.active
         var env = safe ? upstream : defaults
         let d = UserDefaults.standard
-        if [30, 120].contains(d.integer(forKey: refreshKey)) { env["HV_HZ"] = String(d.integer(forKey: refreshKey)) }
+        // A rate the panel cannot show (120 chosen before, or on another device) stays at the default.
+        let hz = d.integer(forKey: refreshKey)
+        if hz != Device.defaultRefresh, Device.refreshChoices.contains(hz) { env["HV_HZ"] = String(hz) }
         if d.bool(forKey: superblocksKey) { env["HV_SUPERBLOCKS"] = "1" } else { unsetenv("HV_SUPERBLOCKS") }
         if d.bool(forKey: wfiSpinKey) { env["HV_WFI_SPIN"] = "50" }
         if d.object(forKey: fastFlushKey) as? Bool == false { env["HV_FLUSH"] = "0" }
