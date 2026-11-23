@@ -42,7 +42,7 @@ struct SettingsView: View {
                         Text("Henge connects LocalDevVPN first when it is off, and comes back.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    LabeledContent("Code region", value: "\(JITBootstrap.jitBytes >> 20) MB, claimed once per launch")
+                    LabeledContent("Code region", value: "\(JITBootstrap.regionBytes >> 20) MB, claimed once per launch")
                 }
                 .listRowBackground(Desk.card)
                 Section("Memory") {

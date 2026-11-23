@@ -50,6 +50,9 @@ struct DeviceProfileTests {
             }
         }
 
+        // The fallback when a region cannot be had is under every size asked for, so halving has somewhere to go.
+        check(DeviceProfile.codeCacheChoices.allSatisfy { $0 > DeviceProfile.minCodeCacheMB }, "the least region is under every choice")
+
         if failures > 0 { print("\(failures) failed"); exit(1) }
         print("device profile: all passed")
     }

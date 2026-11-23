@@ -73,10 +73,13 @@ HENGE_EXPORT void henge_ios_jit_install_trap_handler(void);
  * Claim the JIT region now, at app launch, and hold it until QEMU asks.
  * StikDebug does not stay attached forever, and a first run spends a minute
  * downloading the guest before QEMU starts -- by which time the debugger has
- * let go and no executable memory can be had at all. Pass the same size QEMU
- * will ask for (tb-size).
+ * let go and no executable memory can be had at all. When `bytes` cannot be
+ * had, half as much is asked for, and so on down to min_bytes.
  */
-HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes);
+HENGE_EXPORT bool henge_ios_jit_prewarm(size_t bytes, size_t min_bytes);
+
+/* The size of the region held (it may be smaller than asked for), or 0. */
+HENGE_EXPORT size_t henge_ios_jit_region_bytes(void);
 
 /* Release a mapping obtained from the debugger. */
 void henge_ios_jit_release(HengeDualMapping *m);

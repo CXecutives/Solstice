@@ -26,6 +26,10 @@ typedef struct HvJitRegion {
 } HvJitRegion;
 
 int hv_jit_region_open(HvJitRegion *region, size_t bytes);
+/* Ask for a region of `want` bytes through claim (> 0: got it; 0: not at that size; < 0: not at any, stop), and on a
+   refusal for half as much (whole 16 KB pages), and so on while at least min_bytes: the bytes obtained, or 0. A region
+   smaller than wanted only empties more often; none at all and the Mac cannot start (the 4 GB iPad's case). */
+size_t hv_jit_claim_halving(size_t want, size_t min_bytes, int (*claim)(size_t bytes, void *ctx), void *ctx);
 /* Use memory the host already has: rx executable, rw a writable alias of it (or rx itself on macOS MAP_JIT). */
 int hv_jit_region_attach(HvJitRegion *region, void *rx, void *rw, size_t bytes);
 void hv_jit_region_close(HvJitRegion *region);
