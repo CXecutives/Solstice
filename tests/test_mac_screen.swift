@@ -14,24 +14,28 @@ struct MacScreenTests {
     static func px(_ w: Int, _ h: Int) -> PixelSize { PixelSize(width: w, height: h) }
 
     static func main() {
-        // iPhone 16 Pro: 2622 × 1206 at 3x, 460 ppi, 8 GB; landscape safe area about 776 × 402 points.
-        let phone = ScreenFacts(panel: px(2622, 1206), scale: 3, sideInset: 49, ppi: DeviceProfile.ppi(isPad: false, scale: 3, mini: false),
+        // iPhone 16 Pro: 2622 × 1206 at 3x, 460 ppi, 8 GB; landscape safe area 750 × 402 points (62-point side insets).
+        let phone = ScreenFacts(panel: px(2622, 1206), scale: 3, sideInset: 62, ppi: DeviceProfile.ppi(isPad: false, scale: 3, mini: false),
                                 kind: DeviceProfile(physicalMB: 7_680, performanceCores: 2, memoryLimitMB: 6_144, extendedAddressing: false, isPad: false).screenClass)
         check(phone.kind == .phone && phone.ppi == 460, "iPhone 16 Pro: a phone at 460 ppi")
+        let (aw, ah) = phone.area
         let rec = MacScreen.size(.recommended, phone)
-        check(rec.pixels == px(1664, 864) && rec.mm == nil && !rec.crisp, "phone: 1664 × 864 at 1x, soft (\(rec.pixels))")
-        check(Double(rec.pixels.width) * rec.factor <= 2622 - 2 * 49 * 3, "phone: clear of the Dynamic Island")
+        check(rec.pixels == px(MacScreen.floor8(864 * aw / ah), 864) && rec.mm == nil && !rec.crisp,
+              "phone: 864 tall in the safe area's shape at 1x, soft (\(rec.pixels))")
+        check(Double(rec.pixels.width) * rec.factor <= aw, "phone: clear of the Dynamic Island")
         let retina = MacScreen.size(.retina, phone)
-        check(retina.pixels == px(2328, 1200) && retina.factor == 1 && retina.crisp, "phone Retina: the safe area at 1:1 (\(retina.pixels))")
-        check(retina.looksLike == px(1164, 600), "phone Retina looks like half")
-        check(retina.mm == px(129, 66), "phone Retina: millimetres from 460 ppi (\(String(describing: retina.mm)))")
+        check(retina.pixels == px(MacScreen.floor8(aw), MacScreen.floor8(ah)) && retina.factor == 1 && retina.crisp,
+              "phone Retina: the safe area at 1:1 (\(retina.pixels))")
+        check(retina.looksLike == px(retina.pixels.width / 2, retina.pixels.height / 2), "phone Retina looks like half")
+        check(retina.mm == px(124, 66), "phone Retina: millimetres from 460 ppi (\(String(describing: retina.mm)))")
         check(MacScreen.line(retina, against: rec).hasSuffix("heavier for the Mac"), "phone Retina is heavier")
         check(MacScreen.line(MacScreen.size(.larger, phone), against: rec).hasSuffix("lighter for the Mac"), "Larger Text is lighter")
         let phoneList = MacScreen.offered(phone).map(\.preset)
         check(phoneList == [.recommended, .moreSpace, .larger, .retina], "phone offers all four")
-        // The real inset (62 points on a 16 Pro) only narrows the desktop; the height stays.
-        var wide = phone; wide.sideInset = 62
-        check(MacScreen.size(.recommended, wide).pixels.height == 864, "phone: 864 tall whatever the inset")
+        // An inset only narrows the desktop; the height stays.
+        var wide = phone; wide.sideInset = 49
+        check(MacScreen.size(.recommended, wide).pixels.height == 864 && MacScreen.size(.recommended, wide).pixels.width > rec.pixels.width,
+              "phone: 864 tall whatever the inset")
 
         // iPad Air 4: 2360 × 1640 at 2x, 264 ppi, 4 GB (a 2 GB Mac).
         let air = ScreenFacts(panel: px(2360, 1640), scale: 2, sideInset: 0, ppi: DeviceProfile.ppi(isPad: true, scale: 2, mini: false),
@@ -79,9 +83,9 @@ struct MacScreenTests {
         // Pixel snapping.
         let snapped = PixelFit.fit(CGSize(width: 1176, height: 816), in: CGRect(x: 0, y: 0, width: 1180, height: 820), scale: 2)
         check(snapped == CGRect(x: 2, y: 2, width: 1176, height: 816), "a 2x fit is exact and centred (\(snapped))")
-        let soft = PixelFit.fit(CGSize(width: 1664, height: 864), in: CGRect(x: 49, y: 0, width: 776, height: 402), scale: 3)
+        let soft = PixelFit.fit(CGSize(width: rec.pixels.width, height: rec.pixels.height), in: CGRect(x: 62, y: 0, width: 750, height: 402), scale: 3)
         for v in [soft.minX, soft.minY, soft.width, soft.height] { check((v * 3).rounded() == v * 3, "edges on device pixels (\(soft))") }
-        check(soft.height == 402 && soft.midX == 49 + 388, "a soft fit fills the height, centred in the safe area (\(soft))")
+        check(soft.height == 402 && abs(soft.midX - (62 + 375)) <= 1.0 / 3, "a soft fit fills the height, centred in the safe area (\(soft))")
 
         // iPhone 13 mini: 375 × 812 points at scale 3, 1125 × 2436 render pixels (the panel itself is 1080 × 2340, at
         // 2.88). Sized in render pixels, a Mac's screen is laid out at the factor MacScreen gives it: a whole one stays whole.

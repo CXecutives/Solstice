@@ -137,7 +137,7 @@ struct MacScreen: Equatable {
         offered(facts).first { $0.preset == preset }?.screen ?? size(.recommended, facts)
     }
 
-    /// The line the picker shows under a preset: "looks like 1664 × 864 · crisp · lighter for the Mac".
+    /// The line the picker shows under a preset: "looks like 1608 × 864 · crisp · lighter for the Mac".
     static func line(_ s: MacScreen, against recommended: MacScreen) -> String {
         var parts = ["looks like \(s.looksLike.width) × \(s.looksLike.height)", s.crisp ? "crisp" : "soft"]
         let mine = s.pixels.width * s.pixels.height, base = recommended.pixels.width * recommended.pixels.height
