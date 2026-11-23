@@ -3,3 +3,4 @@ out/
 henge.log
 henge-stream.log
 .claude/
+tools/*.log
