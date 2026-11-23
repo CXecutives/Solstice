@@ -452,7 +452,7 @@ struct SessionView: View {
                         }
                     }
                     Text(helperRunning
-                         ? "Put files in Files, Solstice, Shared to see them in the Solstice folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
+                         ? "Put files in Files > On My \(Device.name) > \(Brand.name) > Shared to see them in the \(Brand.shareName) folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
                          : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about solstice-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) for the Mac keyboard layout chosen in Settings (\(KeyLayout.current.title)).")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

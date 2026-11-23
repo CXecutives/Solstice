@@ -116,7 +116,7 @@ private struct DiagnosticsSettings: View {
             Text("Diagnostics")
         } footer: {
             let note = (Entitlements.increasedMemory ? "" : "This install is signed without the increased memory limit: reinstall Solstice with a certificate that has it, after exporting your Macs. ")
-                + (streamOn ? "tools/henge-log-listen.py on the computer shows the address to type here. iOS asks for local network access the first time." : "")
+                + (streamOn ? "tools/solstice-log-listen.py on the computer shows the address to type here. iOS asks for local network access the first time." : "")
             if !note.isEmpty { Text(note) }
         }
         .onChange(of: streamOn) { _ in LogStream.shared.applySettings() }

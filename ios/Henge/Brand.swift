@@ -8,4 +8,5 @@ enum Brand {
     static let nativeLogFile = SOLSTICE_NATIVE_LOG_FILE
     static let nativeLogPrevFile = SOLSTICE_NATIVE_LOG_PREV_FILE
     static let envFile = SOLSTICE_ENV_FILE
+    static let shareName = SOLSTICE_SHARE_NAME
 }
