@@ -127,6 +127,7 @@ jobs:
           SCREENS_OUT: ${{ github.workspace }}/screens
         run: bash ios/scripts/screens.sh
       - name: Upload the screenshots
+        if: always() # what was taken, also when a screen failed
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Solstice-screens

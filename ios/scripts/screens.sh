@@ -41,15 +41,18 @@ for r in reversed(json.load(sys.stdin)["runtimes"]):
 [ -n "${PAD:-}" ] || { echo "no iOS runtime with an iPhone Pro and an 11-inch iPad Air:" >&2; xcrun simctl list runtimes >&2; exit 1; }
 echo "==> $RUNTIME: $PHONE, $PAD"
 
+# A simulator command that may hang gets this many seconds (simctl reads no stdin here: the screen list is on it).
+limit() { local s="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@" < /dev/null; }
+
 # Boots one device and installs the app; prints its UDID.
 prepare() {
     local udid
     udid="$(xcrun simctl create "Screens $1" "$2" "$RUNTIME")"
-    xcrun simctl boot "$udid"
-    xcrun simctl bootstatus "$udid" -b > /dev/null
-    xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+    limit 300 xcrun simctl boot "$udid"
+    limit 300 xcrun simctl bootstatus "$udid" -b > /dev/null
+    limit 60 xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
         --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 > /dev/null
-    xcrun simctl install "$udid" "$APP"
+    limit 120 xcrun simctl install "$udid" "$APP"
     echo "$udid"
 }
 
@@ -57,8 +60,8 @@ prepare() {
 launch() { # udid container argument
     local marker="$2/tmp/solstice-preview-ready"
     rm -f "$marker"
-    xcrun simctl launch --terminate-running-process "$1" "$BUNDLE" -solsticePreview "$3" > /dev/null
-    for _ in $(seq 1 200); do
+    limit 60 xcrun simctl launch --terminate-running-process "$1" "$BUNDLE" -solsticePreview "$3" > /dev/null || { echo "launch failed"; return; }
+    for _ in $(seq 1 120); do
         [ -s "$marker" ] && { cat "$marker"; return; }
         sleep 0.1
     done
@@ -70,21 +73,26 @@ shoot_all() { # label udid
     local label="$1" udid="$2" container ready name flags file
     container="$(xcrun simctl get_app_container "$udid" "$BUNDLE" data)"
     for appearance in light dark; do
-        xcrun simctl ui "$udid" appearance "$appearance"
+        limit 60 xcrun simctl ui "$udid" appearance "$appearance"
         while read -r name flags; do
             [ -n "$name" ] || continue
+            [ "$SECONDS" -lt "$DEADLINE" ] || { echo "::warning::$label: out of time, $appearance $name and after not taken"; break 2; }
             case " $flags " in *" dark-only "*) [ "$appearance" = dark ] || continue ;; esac
             ready="$(launch "$udid" "$container" "$name")"
             [ "$ready" = skip ] && continue
-            [ "$ready" = "$name" ] || echo "::warning::$label $appearance $name: not ready ($ready); photographed anyway"
+            if [ "$ready" != "$name" ]; then
+                echo "::warning::$label $appearance $name: not ready ($ready); photographed anyway"
+                mkdir -p "$OUT/logs" && cp "$container/Documents/solstice.log" "$OUT/logs/$label-$appearance-$name.log" 2>/dev/null || true
+            fi
             sleep 0.3
             file="$OUT/$label-$appearance-$name.png"
-            xcrun simctl io "$udid" screenshot --type=png "$file" > /dev/null 2>&1
+            limit 30 xcrun simctl io "$udid" screenshot --type=png "$file" > /dev/null 2>&1 || echo "::warning::$label $appearance $name: no screenshot"
+            echo "$label $appearance $name ${SECONDS}s"
             # simctl photographs the panel as it is mounted: a landscape screen comes out on its side.
             case " $flags " in *" landscape "*)
                 w="$(sips -g pixelWidth "$file" | awk '/pixelWidth/ {print $2}')"
                 h="$(sips -g pixelHeight "$file" | awk '/pixelHeight/ {print $2}')"
-                [ "$w" -lt "$h" ] && sips -r 270 "$file" > /dev/null ;;
+                [ -n "$w" ] && [ "$w" -lt "$h" ] && sips -r 270 "$file" > /dev/null ;;
             esac
         done < "$OUT/screens.txt"
     done
@@ -92,6 +100,8 @@ shoot_all() { # label udid
     echo "==> $label done at ${SECONDS}s"
 }
 
+# Whatever is left after this many seconds is not photographed, so that what was taken is still uploaded.
+DEADLINE=$((SECONDS + ${SCREENS_MINUTES:-15} * 60))
 IPHONE_UDID="$(prepare iPhone "$PHONE")"
 IPAD_UDID="$(prepare iPad "$PAD")"
 echo "==> booted in ${SECONDS}s"
@@ -108,5 +118,9 @@ shoot_all ipad "$IPAD_UDID"
 wait "$phone_job"
 
 python3 -I "$IOS/scripts/screens_index.py" "$OUT"
+# Crashes of the app, if any, go with the screenshots.
+mkdir -p "$OUT/crashes"
+find ~/Library/Logs/DiagnosticReports -name 'Solstice*' -newer "$DD.buildlog" -exec cp {} "$OUT/crashes/" \; 2>/dev/null || true
+rmdir "$OUT/crashes" 2>/dev/null || true
 for udid in "$IPHONE_UDID" "$IPAD_UDID"; do xcrun simctl shutdown "$udid" || true; xcrun simctl delete "$udid" || true; done
 echo "==> $(ls "$OUT"/*.png | wc -l | tr -d ' ') screenshots in ${SECONDS}s"
