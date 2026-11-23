@@ -42,6 +42,17 @@ enum Device {
         let performanceScreen: Bool
         /// The code cache with the increased memory limit (JITBootstrap.defaultCodeCacheMB applies the signing).
         let codeCacheMB: Int
+        /// The system's available memory as jetsam counts it (free and file-backed pages, henge_system_headroom_mb)
+        /// that MemoryRelief keeps the Mac between: under the low mark the Mac hands memory over in 256 MB steps,
+        /// over the high mark it gets it back slowly. From XNU's jetsam levels (bsd/kern/kern_memorystatus.c, the
+        /// fallback table: at most 6 GB idle apps are closed under 9% available and apps warned under 15%, above
+        /// 6 GB under 8% and 12%; 4% is critical; a device's own values may differ, and the log shows each step's
+        /// headroom). The low mark is about where iOS starts closing suspended apps:
+        /// they go before the Mac shrinks, and the Mac is still asked well before critical, where the pressure
+        /// path's 1 GB used to come too late. The high mark sits just over the warning level, which a calm device
+        /// gets back to (so memory handed over does not stay away for good), and more than one step above the low
+        /// mark, so a step either way cannot cross the other mark (no seesaw).
+        let headroomMB: ClosedRange<Int>
     }
 
     static let profile: MacProfile = {
@@ -50,7 +61,8 @@ enum Device {
         // 4 GB (iPad Air 4, A14): the least that runs; a 2 GB Mac, and as little else as possible: a 384 MB code
         // cache (its records come to another 200-270 MB).
         if mb < 5_000 {
-            return MacProfile(ramGB: 2, cpus: 2, uiScale: 2.0 / 3, performanceScreen: true, codeCacheMB: 384)
+            return MacProfile(ramGB: 2, cpus: 2, uiScale: 2.0 / 3, performanceScreen: true, codeCacheMB: 384,
+                              headroomMB: 340...700)
         }
         // 8 GB: a 4 GB Mac, its code cache and records left iOS so little that it closed Henge (#214), so 3 GB.
         // A 6 GB device installed a 3 GB Mac too (#70). 16 GB: room for 6.
@@ -61,7 +73,7 @@ enum Device {
         // allows it, else 1 GB (JITBootstrap).
         let big = mb >= 9_000
         return MacProfile(ramGB: ram, cpus: cpus, uiScale: isPad ? nil : 0.8, performanceScreen: isPad,
-                          codeCacheMB: big ? 1536 : 768)
+                          codeCacheMB: big ? 1536 : 768, headroomMB: big ? 1100...2100 : 600...1100)
     }()
 
     /// How much memory to suggest for a new Mac.

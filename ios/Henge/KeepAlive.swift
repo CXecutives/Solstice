@@ -33,8 +33,8 @@ enum KeepAlive {
     /// Once, at launch: follow what Henge is doing, and say in the log what iOS tells it about memory.
     static func start() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            MainActor.assumeIsolated { update(); MemoryRelief.tick() }
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            MainActor.assumeIsolated { update(); MemoryRelief.sample() }
         }
         let center = NotificationCenter.default
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { note in
@@ -63,6 +63,7 @@ enum KeepAlive {
         center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
             HengeLog.log("memory", "iOS sent a memory warning; \(henge_available_memory() >> 20) MB left before Henge's limit")
             HengeLog.logFootprint("memory-warning")
+            MainActor.assumeIsolated { MemoryRelief.warning() }
         }
         center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
             HengeLog.log("app", "iOS is ending Henge (willTerminate)")
@@ -91,6 +92,7 @@ enum KeepAlive {
         update()
     }
 
+    /// Every second (the one timer), and when what Henge is doing changes.
     private static func update() {
         let want = needed
         if want && !playing { play() }
@@ -145,27 +147,37 @@ enum KeepAlive {
 
 /// When iOS runs short of memory, the Mac is asked to hand some of its own back (its memory balloon: macOS gives
 /// up file cache and idle pages first, and Henge returns them to iOS), instead of iOS closing Henge with the Mac
-/// in it. What a hypervisor does for a host under pressure. Given back slowly once the pressure is gone.
+/// in it. What a hypervisor does for a host under pressure. Watched every second against the device's marks
+/// (Device.profile.headroomMB), so it starts before iOS warns; iOS's own warnings stay the backstop. Given back
+/// slowly once the system has room again.
 @MainActor
 enum MemoryRelief {
     private static var targetMB = 0
-    private static var lastPressure = Date.distantPast
+    private static var lastGrow = Date.distantPast // the last time the Mac was asked for more, for whatever reason
     private static var lastEase = Date.distantPast
     private static var level = 0
 
+    /// The system's memory pressure changed (KeepAlive's source): 512 MB more on a warning, 1 GB on critical.
     static func pressure(_ now: Int) {
         level = now
-        guard now > 0, henge_vm_state() == 1 else { return }
-        lastPressure = Date()
+        if now > 0 { grow(now == 2 ? 1024 : 512, "system memory pressure \(now == 2 ? "critical" : "warning")") }
+    }
+
+    /// iOS sent Henge a memory warning: as much as for a pressure warning (it says nothing when it is over).
+    static func warning() { grow(512, "memory warning") }
+
+    /// Half the Mac's memory at most: macOS itself needs the rest to stay up. Said once for each change.
+    private static func grow(_ mb: Int, _ why: String) {
+        guard henge_vm_state() == 1 else { return }
         let held = henge_vm_balloon(-1)
         guard held >= 0 else { return } // no balloon in this Mac
-        // Half the Mac's memory at most: macOS itself needs the rest to stay up.
+        lastGrow = Date()
         let ram = Int(henge_vm_ram_mb()), most = max(ram / 2, 0)
-        let want = min(max(targetMB, Int(held)) + (now == 2 ? 1024 : 512), most)
+        let want = min(max(targetMB, Int(held)) + mb, most)
         guard want > targetMB else { return }
         targetMB = want
         _ = henge_vm_balloon(want)
-        HengeLog.log("memory", "asking the Mac for \(want) MB of its \(ram) MB back (it had given \(held) MB)")
+        HengeLog.log("memory", "\(why): asking the Mac for \(want) MB of its \(ram) MB back (it had given \(held) MB)")
     }
 
     /// Henge goes into the background with a Mac that is to wait there paused (InstantResume.rest): it is asked for
@@ -194,15 +206,26 @@ enum MemoryRelief {
         HengeLog.log("memory", "back in the foreground: the Mac keeps \(targetMB) MB handed over")
     }
 
-    /// Every 2 s: with no pressure for two minutes, 256 MB goes back to the Mac each minute.
-    static func tick() {
-        guard targetMB > 0 else { return }
-        guard henge_vm_state() == 1 || henge_vm_state() == 4 else { targetMB = 0; return } // that Mac is gone
-        let now = Date()
-        guard level == 0, now.timeIntervalSince(lastPressure) > 120, now.timeIntervalSince(lastEase) > 60 else { return }
+    /// Every second while a Mac runs: the system's headroom (henge_system_headroom_mb) against the device's marks.
+    /// Under the low mark, 256 MB more once the last step has arrived (macOS frees pages over a few seconds) and at
+    /// most every 2 s. With two minutes of no asking, no pressure from iOS and headroom over the high mark (or no
+    /// way to tell), 256 MB goes back to the Mac each minute. A timer tick's worth of work: one host_statistics64.
+    static func sample() {
+        let state = henge_vm_state()
+        guard state == 1 || state == 4 else { targetMB = 0; return } // that Mac is gone
+        guard state == 1, !askedForBackground else { return }
+        let room = henge_system_headroom_mb(), marks = Device.profile.headroomMB, now = Date()
+        if room >= 0 && room < marks.lowerBound {
+            guard now.timeIntervalSince(lastGrow) >= 2, henge_vm_balloon(-1) + 64 >= targetMB else { return }
+            grow(256, "\(room) MB available to iOS, under \(marks.lowerBound) MB")
+            return
+        }
+        guard targetMB > 0, level == 0, room < 0 || room > marks.upperBound,
+              now.timeIntervalSince(lastGrow) > 120, now.timeIntervalSince(lastEase) > 60 else { return }
         lastEase = now
         targetMB = max(targetMB - 256, 0)
         _ = henge_vm_balloon(targetMB)
-        HengeLog.log("memory", "no pressure for a while: the Mac keeps \(targetMB) MB handed over")
+        HengeLog.log("memory", (room < 0 ? "no pressure for a while" : "\(room) MB available to iOS, over \(marks.upperBound) MB")
+                     + ": the Mac keeps \(targetMB) MB handed over")
     }
 }
