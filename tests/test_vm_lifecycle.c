@@ -263,7 +263,6 @@ int main(void) {
     hv_vm_destroy();
     hv_jit_region_close(&jit);
     unlink(rom); unlink(disk); unlink(aux); rmdir(dir);
-    printf("VM lifecycle: 12 power cycles, 3 failed boots, suspend/resume, an install and installer preflight, %d failures
-", failures);
+    printf("VM lifecycle: 12 power cycles, 3 failed boots, suspend/resume, an install and installer preflight, %d failures\n", failures);
     return failures != 0;
 }
