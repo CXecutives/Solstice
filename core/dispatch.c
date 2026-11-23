@@ -400,6 +400,7 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what) {
    runs again if nothing happened. */
 static int wait_for_interrupt(HvCpu *cpu) {
     HvMachine *m = cpu->m;
+    hv_storm_flush(cpu); /* a storm noted in the GIC's register path: printed here */
     uint64_t deadline = m->tick ? m->tick(m, cpu) : 0;
     HvPerCpu *p = cpu->pc_state;
     if (p->irq_line || p->fiq_line) return 0;
@@ -948,6 +949,7 @@ static int run_loop(HvCpu *cpu, int one) {
         if (m->tick && (kicked || (++since_tick >= 64 && (since_tick = 0, cpu->timer_due && mach_absolute_time() >= cpu->timer_due)))) {
             since_tick = 0;
             hv_cpu_set_due(cpu, m->tick(m, cpu));
+            hv_storm_flush(cpu); /* the end of a storm, on a CPU that no longer waits */
         }
         int why = pending_chain ? 0 : kicked ? 1 : last_reason != HV_EXIT_BRANCH ? 2 : 5;
         if (hv_check_interrupts(cpu)) {

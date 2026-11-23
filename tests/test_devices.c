@@ -141,8 +141,8 @@ static void test_gic(void) {
 }
 
 /* The idle storm seen on a device: an idle CPU taken out of WFI by an interrupt tens of thousands of times a second,
-   writing its timer each time. The detector logs it once, with the interrupt and the register, and ends the episode
-   at the first quiet window. n windows of SPI 33 acknowledged, each after a WFI if wfi, with a CNTV_CVAL write. */
+   writing its timer each time. The detector logs it once, with the interrupt and the register (printed from the
+   dispatcher, not the GIC's register path), and ends the episode after two quiet windows in a row. n windows of SPI 33 acknowledged, each after a WFI if wfi, with a CNTV_CVAL write. */
 static void storm_windows(HvGic *g, int n, int wfi) {
     HvStorm *s = &m.percpu[0].storm;
     for (uint32_t i = 0; i < (uint32_t)n * HV_STORM_WINDOW; i++) {
@@ -174,13 +174,24 @@ static void test_storm(void) {
     check("storm: not logged before it has recorded a window", s->episodes, 0);
     storm_windows(g, 1, 1);
     check("storm: logged once", s->episodes, 1);
+    check("storm: noted for the dispatcher to print", s->report, HV_STORM_BEGAN);
+    hv_storm_flush(&cpu);
+    check("storm: printed once", s->report, 0);
     storm_windows(g, 2, 1);
     check("storm: once per episode", s->episodes, 1);
+    /* A rate hovering at the threshold: one cool window between hot ones does not end the episode. */
     storm_windows(g, 1, 0);
-    check("storm: a window without WFIs ends it", s->armed + s->logged, 0);
+    check("storm: one window without WFIs does not end it", s->armed && s->logged && !s->report, 1);
+    storm_windows(g, 1, 1);
+    storm_windows(g, 1, 0);
+    check("storm: hovering is one episode", s->episodes * 2 + s->logged, 3);
+    storm_windows(g, 1, 0);
+    check("storm: two windows without WFIs end it", s->armed + s->logged, 0);
+    check("storm: its end noted for the dispatcher", s->report, HV_STORM_OVER);
+    hv_storm_flush(&cpu);
     storm_windows(g, 2, 1);
     check("storm: the next episode is logged again", s->episodes, 2);
-    storm_windows(g, 1, 0);
+    storm_windows(g, 2, 0);
     memset(s, 0, sizeof *s);
     wr32(VMAPPLE_GIC_DIST + 0x184, 1u << 1);
 }
