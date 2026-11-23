@@ -128,7 +128,7 @@ static void test_server(void) {
     hv_share_set_clipboard("to paste");
     check("pasted text: not the helper's yet", !hv_share_clipboard_taken());
     char seq_header[64];
-    snprintf(seq_header, sizeof seq_header, "X-Henge-Seq: %lu\r\n", device_seq);
+    snprintf(seq_header, sizeof seq_header, SOLSTICE_HEADER_SEQ ": %lu\r\n", device_seq);
     snprintf(req, sizeof req, "GET " SOLSTICE_URL_PREFIX "clipboard?since=%lu HTTP/1.1\r\nHost: 10.0.2.4\r\n" SOLSTICE_HEADER_TOKEN ": %s\r\n\r\n", device_seq + 1000, key);
     r = exchange(req, 0);
     check("a since beyond the newest (an earlier run's): answered at once with the newest", status_is(r, 204) && strstr(r, seq_header));

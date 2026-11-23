@@ -110,7 +110,7 @@ macOS keys some hardware decisions off `hw.model`.
 guest reaches it at 10.0.2.4, which the user-mode network hands to a Unix socket in the
 app's storage: no TCP port is open, so other apps on the device can't reach it. Under
 `/.solstice/` it also has the clipboard and what it takes to install `tools/henge-agent.m`, a
-small helper that runs inside macOS as a LaunchAgent, mounts the folder at `~/Henge` and
+small helper that runs inside macOS as a LaunchAgent, mounts the folder at `~/Solstice` and
 follows the clipboard. The app types the set up command but never presses Return: it can't
 see what has the keyboard on the Mac.
 
