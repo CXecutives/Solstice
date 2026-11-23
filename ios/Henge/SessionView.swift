@@ -35,8 +35,6 @@ struct SessionView: View {
     @State private var showRevealHint = false
     @State private var pointerRefused = false
     @AppStorage("henge.controls.hintsShown") private var revealHintsShown = 0
-    @AppStorage(VolumeClicks.inputModeKey) private var inputMode = VolumeClicks.InputMode.touchscreen
-    @AppStorage(VolumeClicks.modeKey) private var volumeMode = VolumeClicks.Mode.delayHold
     /// Once per install: macOS's moving wallpapers and aerial screen saver are video, decoded by the emulated
     /// CPUs (a phone ran about 30% faster with a still one).
     @AppStorage("henge.tips.stillWallpaperShown") private var stillWallpaperTipShown = false
@@ -92,13 +90,6 @@ struct SessionView: View {
                     Trackpad()
                         .frame(width: layout.touch.width, height: layout.touch.height)
                         .position(x: layout.touch.midX, y: layout.touch.midY)
-                    if inputMode == .volumeButtons && volumeMode == .intercept {
-                        // The capture interaction must live in the SwiftUI hierarchy to receive
-                        // the volume-button events; it passes touches through to the trackpad.
-                        CaptureInteractionView()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .allowsHitTesting(false)
-                    }
                     if !layout.fillsPhone {
                         uprightControls(layout)
                     } else {
@@ -205,7 +196,6 @@ struct SessionView: View {
             if phase == .background { SafeMode.macLive(false) }
             HardwareKeys.releaseAll()
             HardwareMouse.shared.releaseButtons()
-            VolumeClicks.shared.releaseButtons()
             if phase == .inactive { InstantResume.pause() }
             if phase == .background && bootRAM > 0 { InstantResume.suspend(mac, ramMB: bootRAM, cpus: cpus) }
             if phase == .background { InstantResume.rest() }
@@ -222,7 +212,6 @@ struct SessionView: View {
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             HardwareMouse.shared.start()
-            VolumeClicks.shared.start()
         }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
@@ -232,7 +221,6 @@ struct SessionView: View {
             StickyKeys.shared.releaseAll()
             HardwareKeys.releaseAll()
             HardwareMouse.shared.stop()
-            VolumeClicks.shared.stop()
         }
         .modifier(ExternalMacDisplayModifier(presentation: MacPresentation(display: display, aspect: mac.aspect)))
         .task(id: bootAttempt) { await run() }
