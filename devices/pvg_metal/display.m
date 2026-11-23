@@ -447,6 +447,8 @@ static CGImageRef cursor_image(const uint8_t *bits, uint32_t w, uint32_t h, uint
             [e setRenderPipelineState:cursor_pipe];
             [e setVertexBytes:r length:sizeof r atIndex:0];
             [e setFragmentTexture:ctex atIndex:0];
+            float bright = brightness_now(); /* dimmed as the screen is */
+            [e setFragmentBytes:&bright length:sizeof bright atIndex:1];
             cursor_settings_refresh();
             [e setFragmentSamplerState:atomic_load(&cursor_sharp) ? cursor_sampler : screen_sampler atIndex:0];
             [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
