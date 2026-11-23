@@ -192,7 +192,7 @@ static void test_refresh_rate_per_start(void) {
         setenv("HV_HZ", hz, 1);
         HvCfgParams cfg = {.nr_cpus = 2};
         if (hv_machine_init(&machine, 4 << 20) ||
-            hv_vmapple_create(&board, &machine, cpus, 64 << 20, NULL, NULL, &cfg, NULL)) { failures++; break; }
+            hv_vmapple_reserve_ram(&board, 64 << 20) || hv_vmapple_create(&board, &machine, cpus, NULL, NULL, &cfg, NULL)) { failures++; break; }
         size_t size = hv_pvg_lite_state(board.pvg, NULL, 0);
         uint8_t *blob = malloc(size);
         hv_pvg_lite_state(board.pvg, blob, size);
