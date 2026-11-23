@@ -20,14 +20,12 @@ struct HengeApp: App {
         HengeLog.log("app", "increased memory limit: \(Entitlements.increasedMemory ? "yes" : "no"); extended addressing: \(Entitlements.extendedAddressing ? "yes" : "no"); limit \(Entitlements.memoryLimitAtLaunch >> 20) MB")
         // Without the guard, a brk no debugger answers kills the app instead of failing.
         JITBootstrap.installTrapGuard()
-        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        // The Mac's sound plays in this category; setting it can take a while, and nothing before the first frame needs it.
+        DispatchQueue.global(qos: .utility).async {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        }
         Machines.shared.collectImports()
         DispatchQueue.main.async { KeepAlive.start() } // once the app is up: it watches the Mac and the installer
-        // The display question: does this iOS have Apple's paravirtualized graphics at all?
-        for path in ["/System/Library/Frameworks/ParavirtualizedGraphics.framework/ParavirtualizedGraphics",
-                     "/System/Library/PrivateFrameworks/ParavirtualizedGraphics.framework/ParavirtualizedGraphics"] {
-            HengeLog.log("app", "\(path): \(dlopen(path, RTLD_LAZY) != nil ? "present" : "absent")")
-        }
     }
 
     var body: some Scene {
@@ -90,23 +88,10 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             machines.collectImports()
             jit.enableAtLaunchIfAsked()
-            // The helper can attach a moment after Henge is active. A task also runs
-            // on the first appearance, when there may be no phase change.
-            for _ in 0..<100 {
-                guard !Task.isCancelled else { return }
-                if JITBootstrap.prewarmed || JITBootstrap.isLive {
-                    jit.objectWillChange.send()
-                    return
-                }
-                if JITBootstrap.debuggedFlag {
-                    JITBootstrap.prewarm()
-                    // Readiness lives outside the observable coordinator.
-                    jit.objectWillChange.send()
-                    return
-                }
-                do { try await Task.sleep(nanoseconds: 100_000_000) }
-                catch { return } // going into the background cancels this wait
-            }
+            // Attached already (a task also runs on the first appearance, when there may be no phase change): claim the
+            // region now. The helper attaching later bumps attachGeneration, which claims it below.
+            if !JITBootstrap.ready && JITBootstrap.debuggedFlag { JITBootstrap.prewarm() }
+            jit.objectWillChange.send() // readiness lives outside the observable coordinator
         }
         .onChange(of: jit.attachGeneration) { _ in JITBootstrap.prewarm() } // the built-in helper attached
         .task {
@@ -131,7 +116,12 @@ extension RootView {
     /// Starts the Mac an install just made, once the installer's machine is released (#183).
     func startWhenFree(_ mac: VirtualMac) async {
         for _ in 0..<60 where henge_vm_can_start() == 0 { try? await Task.sleep(nanoseconds: 500_000_000) }
-        guard henge_vm_can_start() != 0, running == nil else { return }
+        guard henge_vm_can_start() != 0 else {
+            HengeLog.log("app", "the installed Mac was not started: the installer's machine was not released in 30 s")
+            machines.lastError = "\(mac.name) is installed. Quit Solstice and open it again to start it."
+            return
+        }
+        guard running == nil else { return }
         tab = .macs
         running = mac
     }
@@ -140,12 +130,12 @@ extension RootView {
     /// failed to come up twice in a row turns this off until one starts by hand.
     func autoStartLastMac() async {
         guard !autoStarted, AutoStart.enabled, running == nil, !installer.busy else { return }
-        for _ in 0..<150 where !JITBootstrap.ready { try? await Task.sleep(nanoseconds: 200_000_000) }
-        guard JITBootstrap.ready, !autoStarted, running == nil, !installer.busy, henge_vm_can_start() != 0,
+        guard await JITBootstrap.waitUntilReady(timeout: 30), !autoStarted, running == nil, !installer.busy, henge_vm_can_start() != 0,
               let mac = machines.all.max(by: { ($0.lastUsed ?? $0.added) < ($1.lastUsed ?? $1.added) }) else { return }
         autoStarted = true
         guard AutoStart.attempt() else {
             HengeLog.log("app", "auto-start skipped: the last two did not get going")
+            machines.lastError = AutoStart.heldOffNotice(mac.name)
             return
         }
         HengeLog.log("app", "auto-start: \(mac.name)")

@@ -13,13 +13,16 @@ controls) are highlighted, and the lines after one say what the engine and the
 GPU did over that window.
 
 Ctrl-C stops it. Nothing is sent back, and the file is plain text in the same
-format as Documents/henge.log on the device.
+format as Documents/henge.log on the device. --allow takes only the phone's
+address; control characters (a peer's terminal escapes) are taken out of each
+line, and lines are cut at --max-line characters.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import re
 import socket
 import sys
 import threading
@@ -31,6 +34,14 @@ BOLD = "\033[1m"
 MARK = "\033[1;36m"      # a performance mark's own lines
 ENGINE = "\033[0;33m"    # the engine's detailed stats lines
 BAD = "\033[1;31m"
+# Everything a terminal could act on: C0 controls (ESC among them) but tab, DEL, and the C1 controls.
+CONTROL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def clean(line: str, limit: int) -> str:
+    # A peer's line as it may be printed and stored: no control characters, at most limit characters.
+    line = CONTROL.sub("", line)
+    return line if len(line) <= limit else line[:limit] + f" [... {len(line) - limit} more characters cut]"
 
 
 def local_addresses() -> list[str]:
@@ -84,8 +95,16 @@ def serve_connection(conn: socket.socket, peer: str, out, args, lock: threading.
             if not args.quiet:
                 print(f"{DIM}{note}{RESET}", flush=True)
         try:
-            for raw in reader:
-                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            while True:
+                # At most a little over one line's worth at a time: a peer sending no newline cannot fill memory.
+                raw = reader.readline(args.max_line * 4 + 2)
+                if not raw:
+                    break
+                while not raw.endswith(b"\n") and len(raw) >= args.max_line * 4 + 2:
+                    rest = reader.readline(args.max_line * 4 + 2)  # the rest of an over-long line is dropped
+                    if not rest or rest.endswith(b"\n"):
+                        break
+                line = clean(raw.decode("utf-8", "replace").rstrip("\r\n"), args.max_line)
                 with lock:
                     out.write(line + "\n")
                     out.flush()
@@ -110,6 +129,9 @@ def main() -> int:
     )
     parser.add_argument("--port", type=int, default=7777, help="TCP port to listen on")
     parser.add_argument("--bind", default="0.0.0.0", help="address to listen on")
+    parser.add_argument("--allow", action="append", default=[], metavar="ADDRESS",
+                        help="take connections only from this address (the phone's; repeat for more); default: anyone")
+    parser.add_argument("--max-line", type=int, default=4096, help="characters kept of one line")
     parser.add_argument("--out", default="henge-stream.log", help="file to append the log to")
     parser.add_argument("--quiet", action="store_true", help="write the file only, print nothing")
     parser.add_argument("--no-stamp", dest="stamp_console", action="store_false",
@@ -143,6 +165,11 @@ def main() -> int:
         while True:
             conn, peer = listener.accept()
             peer_name = f"{peer[0]}:{peer[1]}"
+            if args.allow and peer[0] not in args.allow:
+                conn.close()
+                if not args.quiet:
+                    print(f"{DIM}---- refused {peer_name}: not in --allow ----{RESET}", flush=True)
+                continue
             threading.Thread(target=serve_connection, args=(conn, peer_name, out, args, lock),
                              daemon=True).start()
     except KeyboardInterrupt:

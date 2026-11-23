@@ -148,16 +148,6 @@ enum EngineKnob: String, CaseIterable {
     case pvgShotSecs = "HV_PVG_SHOT_SECS"
     /// Mac tool: seconds between named screenshots (for timing a boot).
     case shotSecs = "HV_SHOT_SECS"
-    /// Measuring: what the display is told and shown, for colour problems.
-    case colorProbe = "HV_COLOR_PROBE"
-    /// Measuring: HV_COLOR_PROBE's folder (default Documents/colorprobe).
-    case colorProbeDir = "HV_COLOR_PROBE_DIR"
-    /// Measuring: seconds between HV_COLOR_PROBE captures (0: on trigger only).
-    case colorProbeSecs = "HV_COLOR_PROBE_SECS"
-    /// Measuring: seconds between HV_COLOR_PROBE metrics lines.
-    case colorProbeMetricsSecs = "HV_COLOR_PROBE_METRICS_SECS"
-    /// Measuring: HV_COLOR_PROBE captures at most.
-    case colorProbeMax = "HV_COLOR_PROBE_MAX"
     /// Guest RAM backed by this file (unlinked at once) when it cannot be kept out of the footprint.
     case ramFile = "HV_RAM_FILE"
     /// Guest RAM never kept out of the app's memory footprint.

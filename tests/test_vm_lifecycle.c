@@ -185,14 +185,31 @@ int main(void) {
         rc |= henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
         if (rc) fprintf(stderr, "resume: %s\n", error);
         check("resume starts the saved Mac", rc == 0 && henge_vm_state() == HENGE_VM_RUNNING);
-        check("the file is used once", access(snap, F_OK) != 0);
         count = (volatile uint64_t *)hv_vm_board()->ram;
         check("resumed: the counter is where it was", *count >= c2);
         for (int n = 0; n < 1000 && *count == c2; n++) usleep(1000);
         check("resumed: the counter moves on", *count > c2);
+        /* The save stays valid while the disk is as it was: a kill now must find it again. */
+        check("the save is kept while the resumed Mac has not written its disk",
+              henge_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
+        check("a disk write", hv_disk_write(hv_vm_board()->root_blk->disk, 8192, "w", 1) == 0);
+        check("the first disk write deletes the save", henge_vm_drop_spent_save() == 1 && access(snap, F_OK) != 0);
+        /* Saved, run on, saved again: the new save is never taken for the spent one. */
+        rc = henge_vm_suspend(snap, "test", error, sizeof error);
+        check("a paused, saved Mac keeps its save", rc == 0 && henge_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
+        check("paused since the save: nothing new to save", henge_vm_saved_unchanged() == 1);
+        check("it runs on", henge_vm_continue() == 0);
+        check("run on: the save is behind", henge_vm_saved_unchanged() == 0);
+        check("running on without a disk write keeps the save", henge_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
+        hv_disk_write(hv_vm_board()->aux_blk->disk, 8192, "a", 1);
+        check("an auxiliary storage write spends it too", henge_vm_drop_spent_save() == 1 && access(snap, F_OK) != 0);
+        /* The power button: pin 3 of the PL061 goes high, as Virtualization.framework presses it. */
+        check("the power button is pressed", henge_vm_power_button() == 0 && (hv_vm_board()->gpio->input & (1u << 3)));
+        check("pressed again, it is still a press", henge_vm_power_button() == 0 && (hv_vm_board()->gpio->input & (1u << 3)));
         henge_vm_stop();
         for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
         check("resumed Mac stops", henge_vm_state() == HENGE_VM_STOPPED);
+        check("no power button without a Mac", henge_vm_power_button() != 0);
         /* A disk written after the save: the saved Mac must not come back over it. */
         rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         usleep(30000);

@@ -101,11 +101,6 @@ KNOB(pvg_gpu_test, "HV_PVG_GPU_TEST", FLAG, 0, 0, 0, "Mac tool: the phone's GPU 
 KNOB(pvg_shot, "HV_PVG_SHOT", STR, NULL, 0, 0, "Mac tool: a file for screenshots of the drawable.")
 KNOB(pvg_shot_secs, "HV_PVG_SHOT_SECS", DOUBLE, 5, 0.01, 86400, "Mac tool: seconds between HV_PVG_SHOT screenshots.")
 KNOB(shot_secs, "HV_SHOT_SECS", DOUBLE, 5, 0.01, 86400, "Mac tool: seconds between named screenshots (for timing a boot).")
-KNOB(color_probe, "HV_COLOR_PROBE", FLAG, 0, 0, 0, "Measuring: what the display is told and shown, for colour problems.")
-KNOB(color_probe_dir, "HV_COLOR_PROBE_DIR", STR, NULL, 0, 0, "Measuring: HV_COLOR_PROBE's folder (default Documents/colorprobe).")
-KNOB(color_probe_secs, "HV_COLOR_PROBE_SECS", DOUBLE, 0, 0, 86400, "Measuring: seconds between HV_COLOR_PROBE captures (0: on trigger only).")
-KNOB(color_probe_metrics_secs, "HV_COLOR_PROBE_METRICS_SECS", DOUBLE, 15, 0, 86400, "Measuring: seconds between HV_COLOR_PROBE metrics lines.")
-KNOB(color_probe_max, "HV_COLOR_PROBE_MAX", INT, 8, 0, INT_MAX, "Measuring: HV_COLOR_PROBE captures at most.")
 
 /* ---- Devices ---- */
 KNOB(ram_file, "HV_RAM_FILE", STR, NULL, 0, 0, "Guest RAM backed by this file (unlinked at once) when it cannot be kept out of the footprint.")

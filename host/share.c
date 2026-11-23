@@ -45,6 +45,13 @@
 #define SMALL_BODY_MAX (16 * 1024 * 1024) /* a clipboard, or a request's XML */
 #define TEMP_PREFIX ".henge-put-"
 
+/* Seconds a connection may sit without a request before it is closed, so idle keep-alive connections do not keep
+   the MAX_CONNS threads. A clipboard long-poll waits on clip_cond, not in recv, and is not cut short by it. */
+static int idle_seconds = 90;
+/* Seconds a clipboard request without X-Henge-Token (a helper from before the key) is held before its 403: that
+   helper retries at once on an answer, so an immediate one would have it loop nonstop. */
+static int keyless_hold_seconds = 25;
+
 static char root[PATH_MAX];
 static char agent_path[PATH_MAX];
 
@@ -56,6 +63,7 @@ static char *device_clip; /* the device's, for the guest */
 static unsigned long device_seq;
 static char *guest_clip; /* the guest's, until the device takes it */
 static time_t agent_seen;
+static unsigned long agent_has; /* the newest device clipboard the helper has: what its long poll asks to be newer than */
 
 void hv_share_set_clipboard(const char *text) {
     pthread_mutex_lock(&clip_mu);
@@ -72,6 +80,13 @@ char *hv_share_take_clipboard(void) {
     guest_clip = NULL;
     pthread_mutex_unlock(&clip_mu);
     return text;
+}
+
+int hv_share_clipboard_taken(void) {
+    pthread_mutex_lock(&clip_mu);
+    int taken = agent_has >= device_seq;
+    pthread_mutex_unlock(&clip_mu);
+    return taken;
 }
 
 long hv_share_agent_seen(void) {
@@ -501,11 +516,18 @@ static int do_put(Conn *c, Request *r) {
         return gone ? respond_empty(c, r, 409, "Conflict") : respond_empty(c, r, 507, "Insufficient Storage");
     }
     fchmod(fd, 0644);
+    /* Room for it above the floor: known at once with a length, checked as it comes in otherwise. Without room the
+       client is told before it sends the body (no 100 Continue), and the body is not read: the connection ends. */
+    int full = !r->chunked && r->length > free_bytes(fd) - FREE_FLOOR;
+    if (full) {
+        close(fd);
+        unlink(temp);
+        r->close = 1;
+        return respond_empty(c, r, 507, "Insufficient Storage");
+    }
     body_ready(c, r);
     static const size_t piece = 256 * 1024;
     char *buf = malloc(piece);
-    /* Room for it above the floor: known at once with a length, checked as it comes in otherwise. */
-    int full = !r->chunked && r->length > free_bytes(fd) - FREE_FLOOR;
     long long written = 0, checked = 0;
     for (;;) {
         ssize_t got = body_read(c, r, buf, piece);
@@ -794,7 +816,9 @@ static int serve_agent(Conn *c, Request *r) {
     return rc;
 }
 
-/* GET ?since=N waits up to 25 s for a newer clipboard than N. */
+/* GET ?since=N waits up to 25 s for a newer clipboard than N. Asking that says the helper has N: the device
+   pastes once it does (hv_share_clipboard_taken). A since beyond the newest (the helper's first request, or one
+   from before the app started again) is answered at once with the newest number, to count on from. */
 static int clipboard_get(Conn *c, Request *r) {
     if (body_discard(c, r) != 0) return -1;
     unsigned long since = 0;
@@ -807,7 +831,8 @@ static int clipboard_get(Conn *c, Request *r) {
     until.tv_nsec = now.tv_usec * 1000;
     pthread_mutex_lock(&clip_mu);
     agent_seen = time(NULL);
-    while (device_seq <= since && pthread_cond_timedwait(&clip_cond, &clip_mu, &until) != ETIMEDOUT) {}
+    if (since <= device_seq && since > agent_has) agent_has = since;
+    while (device_seq == since && pthread_cond_timedwait(&clip_cond, &clip_mu, &until) != ETIMEDOUT) {}
     agent_seen = time(NULL);
     unsigned long seq = device_seq;
     char *text = seq > since && device_clip ? strdup(device_clip) : NULL;
@@ -865,6 +890,22 @@ static int host_ok(const Request *r) {
     return r->host[n] == 0 || strcmp(r->host + n, ":80") == 0;
 }
 
+/* Holds a key-less clipboard request for keyless_hold_seconds, as long as a long-poll waits, and says once per run
+   that the helper in the Mac is too old to have a key. */
+static void hold_keyless(void) {
+    static int told;
+    if (!__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED))
+        fprintf(stderr, "solstice: share: the clipboard helper in the Mac is from an older version: run Set Up again in the Mac\n");
+    struct timespec until;
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    until.tv_sec = now.tv_sec + keyless_hold_seconds;
+    until.tv_nsec = now.tv_usec * 1000;
+    pthread_mutex_lock(&clip_mu);
+    while (pthread_cond_timedwait(&clip_cond, &clip_mu, &until) != ETIMEDOUT) {}
+    pthread_mutex_unlock(&clip_mu);
+}
+
 static int serve_henge(Conn *c, Request *r) {
     const char *what = r->path + strlen("/.henge/");
     if (!strcmp(what, "token") && !strcmp(r->method, "GET")) {
@@ -874,6 +915,7 @@ static int serve_henge(Conn *c, Request *r) {
     }
     if (!strcmp(what, "clipboard") && !token_ok(r)) {
         if (body_discard(c, r) != 0) return -1;
+        if (!r->token[0]) hold_keyless();
         return respond_empty(c, r, 403, "Forbidden");
     }
     if (!strcmp(what, "install") && !strcmp(r->method, "GET")) {
@@ -1010,6 +1052,8 @@ static int handle(Conn *c, Request *r) {
 static void *connection(void *arg) {
     Conn *c = arg;
     Request *r = malloc(sizeof *r);
+    struct timeval idle = {.tv_sec = idle_seconds};
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &idle, sizeof idle);
     for (;;) {
         int got = read_request(c, r);
         if (got <= 0) {

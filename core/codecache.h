@@ -6,10 +6,11 @@
 
 /* The code cache in segments (codecache.c). The JIT region is cut into equal segments that two streams of blocks fill
    in turn: young blocks, and tenured ones (blocks translated again soon after an eviction dropped them: the working
-   set), which may hold about three quarters and are evicted only when they hold more. When only one free segment is
+   set), which may hold about seven eighths and are evicted only when they hold more, a segment in use since its
+   last chance getting a second one. When only one free segment is
    left, the oldest full segment of one stream is condemned: nothing new may lead
-   into it, the chained exits into it go back to their stubs, its blocks leave the hash, and every CPU is asked to empty
-   its branch caches. Once every CPU has been back at the top of its dispatcher loop since then (or was parked), nothing
+   into it, the chained exits into it go back to their stubs, its blocks leave the hash, and every CPU is asked to drop
+   what its branch caches and return predictions hold into it. Once every CPU has been back at the top of its dispatcher loop since then (or was parked), nothing
    can reach its code any more, and it is freed for new code. No CPU stops for it. A full flush (every CPU stopped) is
    left for what this cannot do: a region too small for segments, or nothing that could be taken back.
 
@@ -22,6 +23,7 @@ struct HvBlock;
 struct HvRam;
 
 #define HV_CC_MAX_SEGS 64
+#define HV_CC_EPOCHS 16 /* the segments the last epochs condemned, for CPUs catching up (a power of two) */
 enum { HV_CC_YOUNG, HV_CC_TENURED };
 enum { HV_CC_OK, HV_CC_STALE, HV_CC_NOSPACE, HV_CC_FLUSH }; /* hv_cc_publish */
 #define HV_CC_NEED 1u /* HvPerCpu.cc_work: this CPU waits for room (at the top of its loop) */
@@ -33,6 +35,9 @@ typedef struct HvCodeCache {
     uint32_t nseg;      /* segments in use; 0: one region, filled, then flushed whole */
     uint32_t seg_shift; /* a segment is 1 << seg_shift words */
     uint32_t tag[HV_CC_MAX_SEGS]; /* seg << 24 | generation, bumped at a condemn: a block whose stag differs is gone */
+    uint8_t epoch_seg[HV_CC_EPOCHS]; /* [e % HV_CC_EPOCHS]: the segment epoch e condemned, written before e is */
+    /* Written by any CPU, rarely: a segment's code was entered since it filled, or since its last second chance. */
+    uint8_t used[HV_CC_MAX_SEGS] __attribute__((aligned(128)));
     /* The rest under the translation lock (m->tr_mu), but slot_top. */
     uint8_t state[HV_CC_MAX_SEGS] __attribute__((aligned(128)));
     uint8_t kind[HV_CC_MAX_SEGS];
@@ -63,7 +68,16 @@ typedef struct HvCodeCache {
     /* Counters, for the stats line and the tests (mostly under the lock; tenured translations: HvStats.cc_tenured). */
     uint64_t evictions, evict_tenured, evict_blocks, evict_unchained, evict_ticks;
     uint64_t waits, wait_ticks, stale, check_bad;
+    uint64_t ijc_scans, ijc_scan_ticks, ijc_dropped, ijc_resets; /* catching up: branch caches scanned, or reset */
+    uint64_t second_chances;
 } HvCodeCache;
+
+/* A block of the segment its tag names was found by a lookup or chained to (the dispatcher, never translated code):
+   the segment is in use (an eviction gives a tenured one in use a second chance). */
+static inline void hv_cc_touch(HvCodeCache *cc, uint32_t stag) {
+    uint8_t *u = &cc->used[(stag >> 24) & (HV_CC_MAX_SEGS - 1)];
+    if (!__atomic_load_n(u, __ATOMIC_RELAXED)) __atomic_store_n(u, 1, __ATOMIC_RELAXED);
+}
 
 int hv_cc_init(struct HvMachine *m);
 void hv_cc_free(struct HvMachine *m);

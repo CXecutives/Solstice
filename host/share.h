@@ -11,6 +11,8 @@ int hv_share_start(const char *folder, const char *socket_path, const char *agen
 
 /* The device's clipboard, for the guest to pick up. */
 void hv_share_set_clipboard(const char *text);
+/* 1 once the helper has the device's newest clipboard (it then asks for anything newer), so ⌘V pastes it. */
+int hv_share_clipboard_taken(void);
 /* What the guest last copied, once: a malloc'd string, or NULL if nothing is new. */
 char *hv_share_take_clipboard(void);
 /* Seconds since the helper in macOS was last heard from, or -1 if it never has been. */

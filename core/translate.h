@@ -41,14 +41,20 @@ int hv_translate_block(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t 
 int hv_translate_emit(HvMachine *m, HvBlock *b, const uint32_t *code, uint32_t avail);
 int hv_translate_place(HvMachine *m, HvBlock *b);
 uint32_t hv_translate_last_words(void);
+/* Every word this thread's last block took: hot part, cold part and literal pool. */
+uint32_t hv_translate_last_size(void);
 /* This thread's last translation: its chainable exits' slots, and giving them back when it is dropped. */
 uint32_t hv_translate_nsites(void);
 uint32_t hv_translate_site_slot(uint32_t k);
 void hv_translate_discard_slots(HvMachine *m);
+/* What a block's cold code is for: exit stubs (and an exit's checks), memory and other slow-path records, groups'
+   plain copies, indirect-branch cache misses (the second way and the way out), the rest. */
+enum { HV_COLD_EXIT, HV_COLD_SLOW, HV_COLD_GROUP, HV_COLD_IJC, HV_COLD_OTHER, HV_COLD_KINDS };
 /* Totals over every block placed, for code size per guest instruction (tests and test_bench print them). */
 typedef struct HvXlateCounts {
     uint64_t blocks, insns;
     uint64_t hot, cold, pool; /* words: the hot part, the cold part's code, the literal pool */
+    uint64_t cold_kind[HV_COLD_KINDS]; /* the cold part's code by what it is for (HV_COLD_*) */
 } HvXlateCounts;
 extern HvXlateCounts hv_xlate_counts;
 

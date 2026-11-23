@@ -506,6 +506,48 @@ static void keep_test(void) {
     free(sw_mem);
 }
 
+/* A busy process keeps its stash: switching to B brings back B's whole stash while 1500 of A's shared entries could
+   stay, then B fills 400 more (a device: 31-94 a switch). Kept and brought-back entries leave room for those, so the
+   next switch away still saves B's stash and B gets its entries back. */
+#define SW_RS(i) (0x180000000ull + ((uint64_t)(i) << 14))          /* shared twig: TLB slots 0-2047 */
+#define SW_RP(i) (0x100000000ull + (((uint64_t)(i) + 2048) << 14)) /* B's own twig: slots 2048-4095 */
+
+static void room_test(void) {
+    static HvMachine rm;
+    static HvCpu c0;
+    if (hv_machine_init(&rm, 1 << 20) != 0) exit(1);
+    rm.stats_interval = 3600;
+    sw_mem = aligned_alloc(16384, (SW_TABLES + SW_DATA) * 16384);
+    sw_next = 0;
+    hv_machine_add_ram(&rm, ADDR(sw_mem), (SW_TABLES + SW_DATA) * 16384, sw_mem, 0);
+    uint64_t ra = sw_table(), rb = sw_table(), shared = sw_table();
+    for (int i = 0; i < 2048; i++) ((uint64_t *)(uintptr_t)shared)[i] = sw_data(i % SW_DATA) | SW_USER;
+    *sw_desc(ra, SW_RS(0), 2) = shared | 3, *sw_desc(rb, SW_RS(0), 2) = shared | 3;
+    const int own = HV_STASH_CAP + 400;
+    for (int i = 0; i < own; i++) *sw_desc(rb, SW_RP(i), 3) = sw_data(i % SW_DATA) | SW_USER;
+    const uint64_t A = ra | 30ull << 48, B = rb | 31ull << 48;
+    sw_cpu(&c0, &rm, 0, A);
+    HvStats *st = &c0.pc_state->own.stats;
+
+    sw_switch(&c0, B);
+    for (int i = 0; i < HV_STASH_CAP; i++) sw_fill(&c0, SW_RP(i));
+    sw_switch(&c0, A); /* B's stash: full */
+    for (int i = 0; i < 1500; i++) sw_fill(&c0, SW_RS(i));
+    sw_switch(&c0, B); /* A's shared entries may stay, B's stash comes back */
+    for (int i = HV_STASH_CAP; i < own; i++) sw_fill(&c0, SW_RP(i));
+    checks++;
+    if (c0.nuser_fills > HV_USER_FILLS)
+        printf("  FAIL kept and brought-back entries left no room for 400 fills: %u listed\n", c0.nuser_fills), failures++;
+    sw_switch(&c0, A);
+    uint64_t hits0 = st->stash_hits;
+    sw_switch(&c0, B);
+    checks++;
+    if (st->stash_hits != hits0 + 1) printf("  FAIL a busy process lost its stash\n"), failures++;
+    sw_expect("busy process: its first entry back", &c0, SW_RP(0), sw_data(0));
+    sw_expect("busy process: its last stashed entry back", &c0, SW_RP(HV_STASH_CAP - 1), sw_data((HV_STASH_CAP - 1) % SW_DATA));
+    free(sw_mem);
+}
+
 /* O8b: a TTBR0 write (a process switch) does the TLBIs other CPUs asked of this one first. */
 static void switch_does_requests(HvMachine *m) {
     static HvCpu c;
@@ -976,6 +1018,7 @@ int main(void) {
     switch_does_requests(&m);
     stash_test();
     keep_test();
+    room_test();
     remap_test();
 
     printf("%d checks, %d failures\n", checks, failures);

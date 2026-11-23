@@ -1,15 +1,21 @@
+#define __ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES 0 /* no check() macro from AudioToolbox's headers */
 #include "harness.h"
 #include "knobs.h"
 
 #include <fcntl.h>
 #include <mach/mach_time.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "pvg_lite.h"
 #include "sysreg.h"
 #include "vmapple.h"
+
+#include "../host/audio_mac.c" /* the player's queue state, for test_audio_lone_began */
 
 DECLARE_PROGRAM(p_timer_irq);
 DECLARE_PROGRAM(p_uart);
@@ -141,8 +147,8 @@ static void test_gic(void) {
 }
 
 /* The idle storm seen on a device: an idle CPU taken out of WFI by an interrupt tens of thousands of times a second,
-   writing its timer each time. The detector logs it once, with the interrupt and the register, and ends the episode
-   at the first quiet window. n windows of SPI 33 acknowledged, each after a WFI if wfi, with a CNTV_CVAL write. */
+   writing its timer each time. The detector logs it once, with the interrupt and the register (printed from the
+   dispatcher, not the GIC's register path), and ends the episode after two quiet windows in a row. n windows of SPI 33 acknowledged, each after a WFI if wfi, with a CNTV_CVAL write. */
 static void storm_windows(HvGic *g, int n, int wfi) {
     HvStorm *s = &m.percpu[0].storm;
     for (uint32_t i = 0; i < (uint32_t)n * HV_STORM_WINDOW; i++) {
@@ -174,15 +180,62 @@ static void test_storm(void) {
     check("storm: not logged before it has recorded a window", s->episodes, 0);
     storm_windows(g, 1, 1);
     check("storm: logged once", s->episodes, 1);
+    check("storm: noted for the dispatcher to print", s->report, HV_STORM_BEGAN);
+    hv_storm_flush(&cpu);
+    check("storm: printed once", s->report, 0);
     storm_windows(g, 2, 1);
     check("storm: once per episode", s->episodes, 1);
+    /* A rate hovering at the threshold: one cool window between hot ones does not end the episode. */
     storm_windows(g, 1, 0);
-    check("storm: a window without WFIs ends it", s->armed + s->logged, 0);
+    check("storm: one window without WFIs does not end it", s->armed && s->logged && !s->report, 1);
+    storm_windows(g, 1, 1);
+    storm_windows(g, 1, 0);
+    check("storm: hovering is one episode", s->episodes * 2 + s->logged, 3);
+    storm_windows(g, 1, 0);
+    check("storm: two windows without WFIs end it", s->armed + s->logged, 0);
+    check("storm: its end noted for the dispatcher", s->report, HV_STORM_OVER);
+    hv_storm_flush(&cpu);
     storm_windows(g, 2, 1);
     check("storm: the next episode is logged again", s->episodes, 2);
-    storm_windows(g, 1, 0);
+    storm_windows(g, 2, 0);
     memset(s, 0, sizeof *s);
     wr32(VMAPPLE_GIC_DIST + 0x184, 1u << 1);
+}
+
+/* Device work no thread signals (a display channel waiting for another channel's stamp) while CPU 0 sleeps: the
+   kicker polls only a running CPU 0, so CPU 0's own tick keeps the HV_POLL_BUSY cadence while a bit is set; with none,
+   no poll comes before the safety poll. A stamp finished while a channel waits asks for a poll at once (with more
+   CPUs its interrupt alone wakes CPU 0 without one). Run last: it leaves a display interrupt pending. */
+static void test_unsignalled_poll(void) {
+    cpu.cntv_ctl = cpu.cntp_ctl = 0; /* no guest timer deadline in the way */
+    board.poll_due = 0;
+    m.tick(&m, &cpu); /* a poll now */
+    uint64_t polled = mach_absolute_time(), polls = HV_ST(&cpu).dev_polls, due = m.tick(&m, &cpu);
+    check("nothing flagged: no device poll before the safety poll", due >= polled + HV_DEV_SAFETY - HV_TICKS_MS, 1);
+    hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, 1);
+    due = m.tick(&m, &cpu);
+    check("flagged: the next device poll within HV_POLL_BUSY", due && due <= polled + HV_POLL_BUSY, 1);
+    check("flagged: no poll before it is due", HV_ST(&cpu).dev_polls, polls);
+    while (mach_absolute_time() < due) {
+    }
+    m.tick(&m, &cpu);
+    check("flagged: polled when it was due", HV_ST(&cpu).dev_polls, polls + 1);
+
+    /* That poll cleared the bit (pvg_lite owns it: no channel waits here); a channel waiting again sets it. */
+    check("polled: the bit follows the channels", __atomic_load_n(&m.dev_unsignalled, __ATOMIC_SEQ_CST), 0);
+    hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, 1);
+
+    int ncpus = m.ncpus;
+    m.ncpus = 2;
+    __atomic_store_n(&m.percpu[0].poll_req, 0, __ATOMIC_SEQ_CST);
+    hv_pvg_lite_complete(board.pvg, 0, 1);
+    check("stamp while a channel waits: a poll asked of cpu 0", __atomic_load_n(&m.percpu[0].poll_req, __ATOMIC_SEQ_CST), 1);
+    hv_machine_unsignalled(&m, HV_UNSIG_PVG_CHAN, 0);
+    __atomic_store_n(&m.percpu[0].poll_req, 0, __ATOMIC_SEQ_CST);
+    hv_pvg_lite_complete(board.pvg, 0, 2);
+    check("stamp with no channel waiting: no poll asked", __atomic_load_n(&m.percpu[0].poll_req, __ATOMIC_SEQ_CST), 0);
+    m.ncpus = ncpus;
+    __atomic_store_n(&cpu.exit_req, 0, __ATOMIC_SEQ_CST);
 }
 
 static int make_disk(const char *path, uint64_t size, uint8_t salt) {
@@ -721,6 +774,83 @@ static void test_virtio_snd_drain(void) {
     atomic_store(&d->consumed, 0);
 }
 
+/* The player starting again while a poll that still saw it off drains by the clock: the render callback's pull and
+   the poll both move `consumed`, and it only ever goes forward (a step back would play audio twice and return
+   buffers out of step). While the clock drains, the kicker polls for it (nothing else signals its progress). */
+static _Atomic int snd_race_stop, snd_race_back;
+
+static void *snd_puller(void *arg) {
+    HvVirtioSnd *d = arg;
+    uint8_t buf[256];
+    uint64_t last = 0;
+    while (!atomic_load(&snd_race_stop)) {
+        uint64_t c = atomic_load(&d->consumed);
+        if (c < last) atomic_store(&snd_race_back, 1);
+        last = c;
+        hv_virtio_snd_pull(d, buf, sizeof buf);
+    }
+    return NULL;
+}
+
+/* iOS does not send an "ended" for every "began" (an app back from suspension gets a lone "began"): a new stream from
+   the guest still tries the player, and either it plays or the stream drains by the clock, never silent and stuck. */
+static void audio_queue_done(void *ctx) { (void)ctx; }
+
+static void test_audio_lone_began(void) {
+    HvVirtioSnd *d = board.snd;
+    if (!d) return;
+    hv_audio_attach(d);
+    hv_audio_interrupted();
+    d->backend.start(d->backend.opaque, 2, HV_VSND_FMT_S16, 48000);
+    dispatch_sync_f(queue, NULL, audio_queue_done);
+    check("sound: a stream start after a lone 'began' tries the player", atomic_load(&interrupted), 0);
+    UInt32 playing = 0, size = sizeof playing;
+    if (unit) AudioUnitGetProperty(unit, kAudioOutputUnitProperty_IsRunning, kAudioUnitScope_Global, 0, &playing, &size);
+    check("sound: the player plays, or the stream drains by the clock", playing ? !atomic_load(&d->host_off) : atomic_load(&d->host_off) != 0, 1);
+    hv_audio_detach();
+    d->backend = (HvVirtioSndBackend){0};
+    atomic_store(&d->host_off, 0);
+}
+
+static void test_virtio_snd_forward(void) {
+    HvVirtioSnd *d = board.snd;
+    if (!d) return;
+    d->backend = (HvVirtioSndBackend){fake_start, fake_stop, d};
+    d->running = 1, d->frame_bytes = 4, d->rate_hz = 0; /* the clock's target: clock_start_consumed, set below */
+    atomic_store(&d->written, 1ull << 40);               /* never runs dry */
+    atomic_store(&d->consumed, 0);
+    atomic_store(&d->host_off, 1);
+    hv_virtio_snd_poll(d);
+    check("snd: the clock drains with no buffer waiting: no polling for it", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    uint32_t head = d->phead; /* one buffer waiting, its audio not all played yet */
+    d->phead = head - 1, d->pending_end[(head - 1) % HV_VSND_PENDING] = UINT64_MAX;
+    hv_virtio_snd_poll(d);
+    check("snd: the clock drains with a buffer waiting: the kicker polls for it", (d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK) != 0, 1);
+    d->phead = head;
+    hv_virtio_snd_poll(d);
+    check("snd: no buffer waiting any more: no polling for it", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    d->phead = head - 1;
+    hv_virtio_snd_poll(d);
+    atomic_store(&snd_race_stop, 0);
+    atomic_store(&snd_race_back, 0);
+    pthread_t t;
+    pthread_create(&t, NULL, snd_puller, d);
+    for (int i = 0; i < 200000 && !atomic_load(&snd_race_back); i++) {
+        d->clock_start_consumed = atomic_load(&d->consumed) + 512; /* just ahead: the pull may pass it meanwhile */
+        hv_virtio_snd_poll(d);
+    }
+    atomic_store(&snd_race_stop, 1);
+    pthread_join(t, NULL);
+    check("snd: a poll and a pull together never move consumed backwards", atomic_load(&snd_race_back), 0);
+    atomic_store(&d->host_off, 0);
+    hv_virtio_snd_poll(d);
+    check("snd: the player back, the kicker stops polling for the clock", d->vio.m->dev_unsignalled & HV_UNSIG_SND_CLOCK, 0);
+    d->phead = head;
+    d->running = 0, d->backend = (HvVirtioSndBackend){0};
+    atomic_store(&d->written, 0);
+    atomic_store(&d->consumed, 0);
+}
+
 /* The memory balloon: a new target reaches the driver (config change interrupt), inflated 16 KB pages go back
    to the OS (with the RAM file under the board, as holes: they read as zero at once), a page with only some
    of its 4 KB quarters stays, a driver listing one page number per 16 KB page works too, and deflate counts. */
@@ -864,6 +994,93 @@ static void capture_uart(void *opaque, uint8_t c) {
     if (uart_n < (int)sizeof uart_out - 1) uart_out[uart_n++] = (char)c;
 }
 
+/* The trackpad's reports, as they wait for the guest: the newest, n back from the end. */
+static const uint8_t *tp_back(HvXhci *x, uint32_t n, unsigned *len) {
+    unsigned at = (x->tp_rtail - 1 - n) % HV_TP_REPORTS;
+    *len = x->tp_rlen[at];
+    return x->tp_reports[at];
+}
+static uint32_t tp_stamp(const uint8_t *r) { return (uint32_t)(r[9] >> 3) | (uint32_t)r[10] << 5 | (uint32_t)r[11] << 13; }
+static int tp_state(const uint8_t *r, int finger) { return (r[12 + 9 * finger + 3] >> 5) & 7; }
+
+/* The USB input devices with a guest that reads nothing (as one under load): what waits for it. */
+static void test_xhci_input(HvXhci *x) {
+    unsigned len;
+    /* A long drag, then the lift: the lift and the final "no fingers" report are what count. */
+    x->tp_rhead = x->tp_rtail;
+    uint32_t t = 1000;
+    hv_xhci_touch(x, 1, 0, 4000, 2500, t);
+    for (int i = 0; i < 200; i++) {
+        hv_xhci_touch(x, 1, 1, 4000 + i, 2500, t += 8);
+        hv_xhci_touch_frame(x, t);
+    }
+    hv_xhci_touch(x, 1, 2, 0, 0, t += 8);
+    check("trackpad: no more waiting than the ring holds", x->tp_rtail - x->tp_rhead <= HV_TP_REPORTS, 1);
+    const uint8_t *r = tp_back(x, 0, &len);
+    check("trackpad: a lift after a long drag ends in no fingers", len, 12);
+    r = tp_back(x, 1, &len);
+    check("trackpad: ... after the finger's stop", len == 21 && tp_state(r, 0) == 7, 1);
+    r = tp_back(x, 2, &len);
+    check("trackpad: ... after its newest place", len == 21 && r[12] == (uint8_t)(4199 - HV_TP_SENSOR_X / 2), 1);
+    r = x->tp_reports[x->tp_rhead % HV_TP_REPORTS];
+    check("trackpad: the touch still comes first", x->tp_rlen[x->tp_rhead % HV_TP_REPORTS] == 21 && tp_state(r, 0) == 4, 1);
+    int increasing = 1;
+    for (uint32_t i = x->tp_rhead + 1; i != x->tp_rtail; i++)
+        increasing &= tp_stamp(x->tp_reports[i % HV_TP_REPORTS]) > tp_stamp(x->tp_reports[(i - 1) % HV_TP_REPORTS]);
+    check("trackpad: stamps keep increasing", increasing, 1);
+    /* Nothing but taps: the newest still gets in. */
+    for (int i = 0; i < 100; i++) {
+        hv_xhci_touch(x, 2, 0, 4000, 2500, t += 8);
+        hv_xhci_touch(x, 2, 2, 0, 0, t += 8);
+    }
+    check("trackpad: taps fill the ring", x->tp_rtail - x->tp_rhead, HV_TP_REPORTS);
+    tp_back(x, 0, &len);
+    check("trackpad: the last tap's lift is there", len, 12);
+
+    /* The secondary click: two fingers rest, the pad is pressed, released, the fingers lift. */
+    x->tp_rhead = x->tp_rtail;
+    hv_xhci_secondary_click(x, 1);
+    r = tp_back(x, 0, &len);
+    check("secondary click: pressed with two fingers", len == 30 && (r[1] & 1) && tp_state(r, 0) == 4 && tp_state(r, 1) == 4, 1);
+    r = tp_back(x, 1, &len);
+    check("secondary click: the fingers rest first", len == 30 && !(r[1] & 1), 1);
+    hv_xhci_secondary_click(x, 0);
+    r = tp_back(x, 2, &len);
+    check("secondary click: released with the fingers down", len == 30 && !(r[1] & 1), 1);
+    r = tp_back(x, 1, &len);
+    check("secondary click: the fingers stop", len == 30 && tp_state(r, 0) == 7, 1);
+    tp_back(x, 0, &len);
+    check("secondary click: and lift", len, 12);
+    check("secondary click: five reports", x->tp_rtail - x->tp_rhead, 5);
+    x->tp_rhead = x->tp_rtail;
+
+    /* The absolute pointer: a click's press and release each reach the guest, where they happened. */
+    x->ptr_rhead = x->ptr_rtail;
+    hv_xhci_pointer(x, 100, 200);
+    hv_xhci_pointer_buttons(x, 1);
+    hv_xhci_pointer_buttons(x, 0);
+    hv_xhci_pointer(x, 300, 400);
+    hv_xhci_pointer(x, 500, 600);
+    check("pointer: moves merge, buttons queue", x->ptr_rtail - x->ptr_rhead, 4);
+    const uint8_t *p = x->ptr_reports[(x->ptr_rhead + 1) % HV_PTR_REPORTS];
+    check("pointer: pressed at the first place", p[0] == 1 && (p[1] | p[2] << 8) == 100, 1);
+    p = x->ptr_reports[(x->ptr_rhead + 2) % HV_PTR_REPORTS];
+    check("pointer: released there too", p[0] == 0 && (p[1] | p[2] << 8) == 100, 1);
+    p = x->ptr_reports[(x->ptr_rhead + 3) % HV_PTR_REPORTS];
+    check("pointer: then the newest place", p[0] == 0 && (p[1] | p[2] << 8) == 500 && (p[3] | p[4] << 8) == 600, 1);
+    x->ptr_rhead = x->ptr_rtail;
+
+    /* The ISO key beside the left Shift (Linux KEY_102ND) is HID usage 0x64. */
+    hv_xhci_key_linux(x, 86, 1);
+    check("keyboard: the ISO key", x->state[2], 0x64);
+    hv_xhci_key_linux(x, 86, 0);
+    /* Forward delete (KEY_DELETE), for the on-screen key row. */
+    hv_xhci_key_linux(x, 111, 1);
+    check("keyboard: forward delete", x->state[2], 0x4c);
+    hv_xhci_key_linux(x, 111, 0);
+    x->rhead = x->rtail;
+}
+
 static void test_guest_programs(void) {
     static HvCpu init;
     hv_machine_add_ram(&m, (uint64_t)(uintptr_t)devices_programs_begin, devices_programs_finish - devices_programs_begin,
@@ -938,6 +1155,8 @@ int main(void) {
     test_virtio_blk_root(&root);
     test_virtio_net();
     test_virtio_snd_drain();
+    test_virtio_snd_forward();
+    test_audio_lone_began();
     test_virtio_balloon();
     puts("devices done; aes, msi, gpio"); /* where a trap under SAN=1 is, without a debugger */
     test_aes();
@@ -947,6 +1166,7 @@ int main(void) {
     check("xhci MaxPorts", usb->bar_read(usb, 0, 4, 4) >> 24, HV_XHCI_PORTS);
     check("xhci USB 2 protocol covers every port, from port 1",
           usb->bar_read(usb, 0, 0x800 + 8, 4) & 0xffff, 1u | (uint32_t)HV_XHCI_PORTS << 8);
+    test_xhci_input(board.usb);
     /* MSI frame: valid type register, doorbell pends the INTID */
     check("msi type valid", rd32(VMAPPLE_GIC_MSI + 8) >> 31, 1);
     check("msi base", (rd32(VMAPPLE_GIC_MSI + 8) >> 16) & 0x1fff, VMAPPLE_MSI_BASE);
@@ -974,6 +1194,7 @@ int main(void) {
     puts("guest programs");
     test_guest_programs();
 #endif
+    test_unsignalled_poll();
 
     hv_disk_close(&root);
     hv_disk_close(&aux);

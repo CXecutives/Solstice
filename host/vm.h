@@ -94,6 +94,10 @@ void hv_vm_link_flap(void);
 void hv_vm_flush_disks(void);
 /* The disk and auxiliary storage files as they are now (inode, size, last change): a saved machine resumes only onto these. */
 int hv_vm_disk_identity(char *out, size_t n);
+/* Writes to the disk and auxiliary storage since the machine was made: once it moves, a saved machine is out of date. */
+uint64_t hv_vm_disk_writes(void);
+/* The power button (the PL061's pin 3, as Virtualization.framework wires it): macOS shuts down properly, or asks. */
+int hv_vm_power_button(void);
 const char *hv_vm_reason_name(int reason);
 
 /* Input from the host UI, any thread. Keys are Linux input codes (KEY_A = 30). */
@@ -111,6 +115,10 @@ void hv_vm_touch_frame(uint32_t ts_ms); /* commit one frame with every finger th
 void hv_vm_touch_button(int down); /* the pad's full press (a click) */
 /* The absolute pointer on the USB bus: put the guest's pointer at x, y, each 0..1 across its screen. */
 void hv_vm_pointer_at(double x, double y);
+/* Its buttons, pressed where it is now: bit 0 left, 1 right, 2 middle. */
+void hv_vm_pointer_buttons(int buttons);
+/* Before a machine starts: its USB keyboard is an ISO one (a European layout's extra key). */
+void hv_vm_set_keyboard_iso(int iso);
 /* Where the guest has its pointer, in display pixels. 0, or -1 before it has one. */
 int hv_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */

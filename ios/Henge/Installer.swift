@@ -8,6 +8,8 @@ struct MacOSRelease {
     let url: URL
     let bytes: Int64
     let note: String
+    /// The image's SHA-256, checked as it downloads (each download logs the hash it computed). nil: not checked.
+    var sha256: String? = nil
     /// Room the new Mac takes once installed and set up, with a margin for its first updates and caches
     /// (installed and set up on the Mac in phone mode: Sonoma 21 GB, Ventura 19 GB).
     var macBytes: Int64 = 24 << 30
@@ -19,7 +21,9 @@ struct MacOSRelease {
     static let current = MacOSRelease(
         id: "24G90", name: "macOS Sequoia 15.6.1",
         url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
-        bytes: 16_035 << 20, note: "The version Solstice is built and tuned for.")
+        bytes: 16_035 << 20, note: "The version Solstice is built and tuned for.",
+        // Hashed from Apple's CDN (16,814,137,790 bytes) and the same in the public IPSW catalogue.
+        sha256: "3d87686b691ac765eb6a6b3082b2334e2af9710096a00432dd519af89ff2ea78")
 }
 
 /// Downloads a restore image and installs it on a new virtual Mac, on the
@@ -123,7 +127,7 @@ final class Installer: NSObject, ObservableObject {
                 }
                 phase = .installing
                 try await install(mac, ipsw: ipsw, cpus: cpus)
-                if !keepImage { try? FileManager.default.removeItem(at: ipsw) }
+                if !keepImage { Self.deleteAfterInstall(ipsw) }
                 HengeLog.log("install", "\(name): installed \(release.name)")
                 phase = .done("\(release.name) is installed on \(name). Starting it now.")
                 justInstalled = Machines.shared.all.first { $0.id == mac.id } ?? mac
@@ -135,6 +139,17 @@ final class Installer: NSObject, ObservableObject {
                 if let made { try? FileManager.default.removeItem(at: made.directory) }
                 phase = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    /// The restore image once the Mac is installed, and what that gave back (said in the log either way).
+    private static func deleteAfterInstall(_ ipsw: URL) {
+        let size = RangedDownload.size(of: ipsw)
+        do {
+            try FileManager.default.removeItem(at: ipsw)
+            HengeLog.log("install", "deleted the restore image: \(ByteText.string(UInt64(max(size, 0)))) freed")
+        } catch {
+            HengeLog.log("install", "the restore image (\(ByteText.string(UInt64(max(size, 0))))) was not deleted: \(error.localizedDescription)")
         }
     }
 
@@ -165,23 +180,37 @@ final class Installer: NSObject, ObservableObject {
         expected = r.bytes
         if received > 0 { HengeLog.log("install", "going on with \(r.name)'s download from \(ByteText.string(UInt64(received)))") }
         HengeLog.log("install", "downloading \(r.url.absoluteString)")
+        let hash = DownloadHash()
         for attempt in 1...20 {
-            let d = RangedDownload(url: r.url, part: part) { have, total in
+            let d = RangedDownload(url: r.url, part: part, hash: hash) { have, total in
                 Task { @MainActor in
-                    Installer.shared.received = have
-                    if total > 0 { Installer.shared.expected = total }
+                    let installer = Installer.shared
+                    installer.received = have
+                    if total > 0 && installer.expected != total { installer.expected = total }
                 }
             }
             do {
                 try await d.run()
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: part, to: dest)
-                return dest
             } catch {
                 if Task.isCancelled || attempt == 20 { throw error }
                 HengeLog.log("install", "download interrupted (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part)))); going on")
                 try await Task.sleep(nanoseconds: 3_000_000_000)
+                continue
             }
+            let digest = hash.hex
+            if let want = r.sha256 {
+                guard digest == want.lowercased() else {
+                    HengeLog.log("install", "the download's SHA-256 is \(digest), not \(want): deleting it")
+                    try? FileManager.default.removeItem(at: part)
+                    throw message("The download was damaged. Try again to download it afresh.")
+                }
+                HengeLog.log("install", "the download's SHA-256 matches (\(digest))")
+            } else {
+                HengeLog.log("install", "the download's SHA-256 is \(digest) (none pinned for \(r.id) yet)")
+            }
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: part, to: dest)
+            return dest
         }
         throw message("The download kept failing.")
     }

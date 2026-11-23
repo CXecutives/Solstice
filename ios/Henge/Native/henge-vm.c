@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "dispatch.h"
+#include "stats.h"
 #include "henge-ios-jit.h"
 #include "net_slirp.h"
 #include "dns_proxy.h"
@@ -24,6 +25,7 @@
 
 #include <fcntl.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <mach/vm_page_size.h>
 #include <unistd.h>
 
@@ -57,9 +59,72 @@ static void release_machine(void) {
     hv_vm_destroy();
 }
 
+/* The saved Mac this machine came from, or was last saved to (instant resume). It stays valid while the disk is
+   exactly as it was saved (hv_snapshot_restore checks the disk's identity), so it is kept until the running Mac writes
+   its disk -- a kill before that resumes the same Mac again -- or a new save replaces it. armed: the Mac runs on from
+   it, and save_writes is the disk's write count at that moment. Under save_mu, held only briefly (a save runs for
+   seconds while the UI asks henge_vm_drop_spent_save), with api_lock held and a machine there. */
+static pthread_mutex_t save_mu = PTHREAD_MUTEX_INITIALIZER;
+static char save_path[1024];
+static uint64_t save_writes;
+static int save_armed;
+
+static void set_save(const char *path) {
+    pthread_mutex_lock(&save_mu);
+    snprintf(save_path, sizeof save_path, "%s", path ? path : "");
+    save_armed = 0;
+    pthread_mutex_unlock(&save_mu);
+}
+
+static void arm_save(void) {
+    pthread_mutex_lock(&save_mu);
+    if (save_path[0]) {
+        save_writes = hv_vm_disk_writes();
+        save_armed = 1;
+    }
+    pthread_mutex_unlock(&save_mu);
+}
+
+/* The armed save, once the disk has moved past it. */
+static int drop_spent_save(void) {
+    pthread_mutex_lock(&save_mu);
+    int spent = save_armed && hv_vm_disk_writes() != save_writes;
+    if (spent) {
+        int gone = unlink(save_path) == 0;
+        fprintf(stderr, "henge: the Mac wrote its disk: the saved Mac is out of date%s\n", gone ? " and deleted" : "");
+        save_path[0] = 0;
+        save_armed = 0;
+    }
+    pthread_mutex_unlock(&save_mu);
+    return spent;
+}
+
+int henge_vm_drop_spent_save(void) {
+    pthread_rwlock_rdlock(&api_lock);
+    int r = (state == 1 || state == 4) ? drop_spent_save() : 0;
+    pthread_rwlock_unlock(&api_lock);
+    return r;
+}
+
+int henge_vm_saved_unchanged(void) {
+    pthread_mutex_lock(&save_mu);
+    int r = state == 4 && save_path[0] && !save_armed && access(save_path, F_OK) == 0;
+    pthread_mutex_unlock(&save_mu);
+    return r;
+}
+
+int henge_vm_power_button(void) {
+    if (!lock_running()) return -1;
+    int r = installer_session ? -1 : hv_vm_power_button();
+    pthread_rwlock_unlock(&api_lock);
+    return r;
+}
+
 static void on_exit(int reason) {
     pthread_rwlock_wrlock(&api_lock);
     state = 3;
+    drop_spent_save();
+    set_save(NULL);
     exit_reason = reason;
     int halt = hv_vm_cpu(0)->halted;
     exit_outcome = HENGE_VM_OUTCOME_ERROR;
@@ -105,7 +170,7 @@ static int failed_start(void) {
 /* The power profile (henge_vm_set_power_profile). Read where a machine starts or runs on, after state is 1, and set
    before state is read there: either that sees the new level or the setter sees a running Mac and applies it. */
 static _Atomic int power_level;
-static int started_wfi_spin; /* HV_WFI_SPIN as the running machine started with it (knobs_init) */
+static int started_wfi_spin; /* HV_WFI_SPIN as the running machine started with it (hv_knobs_load) */
 /* With api_lock held and a machine there, or none running (the present cap is the display's, not a machine's). */
 static void apply_power_profile(int running) {
     int level = atomic_load(&power_level);
@@ -202,7 +267,9 @@ int henge_vm_save(const char *path, const char *ident, char *err, size_t errlen)
         snprintf(err, errlen, "The Mac is not paused.");
         return -1;
     }
+    set_save(NULL); /* the file is being replaced: nothing deletes it meanwhile */
     int r = hv_snapshot_save(path, ident, err, errlen);
+    if (r == 0) set_save(path); /* the Mac as it is now; spent once it runs on and writes its disk */
     pthread_rwlock_unlock(&api_lock);
     fprintf(stderr, "henge: %s\n", r ? err : "the paused Mac is saved");
     return r;
@@ -223,6 +290,7 @@ int henge_vm_continue(void) {
     }
     state = 1;
     apply_power_profile(1); /* the level may have changed while it was paused */
+    arm_save();
     int r = hv_vm_continue();
     if (r != 0) {
         /* No threads for its CPUs: it cannot run on. Release it, as a stop would. */
@@ -235,11 +303,28 @@ int henge_vm_continue(void) {
     return r;
 }
 
+/* HV_STATS: the disk's line too, as often (its worker reads HV_BLK_STATS as it starts: before hv_vm_create). */
+static void stats_env(void) {
+    hv_knobs_load();
+    if (hv_knob.stats > 0) {
+        char s[16];
+        snprintf(s, sizeof s, "%d", hv_knob.stats);
+        setenv("HV_BLK_STATS", s, 0);
+    }
+}
+
+/* The engine's stats lines, for a boot and an install alike (a restore's engine and disk time are measured too). */
+static void stats_on(void) {
+    hv_vm_machine()->stats_interval = hv_knob.stats;
+    hv_vm_machine()->stats_deep = hv_knob.stats_deep;
+}
+
 static int boot_or_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
                           int cpus, const char *resume, const char *ident, char *err, size_t errlen) {
     { extern void hv_prof_ios_start(void); hv_prof_ios_start(); }
     if (begin_start(err, errlen)) return -1;
     booted_ram_mb = ram_mb;
+    set_save(NULL);
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
         snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
@@ -252,18 +337,21 @@ static int boot_or_resume(const char *rom, const char *disk, const char *aux, ui
                     .jit_rx = jit->rx_addr, .jit_rw = jit->rw_addr, .jit_bytes = jit->size};
     fprintf(stderr, "henge: booting with %d CPUs, %llu MB RAM, a %zu MB JIT region\n", cpus, (unsigned long long)ram_mb,
             jit->size >> 20);
+    stats_env();
     if (hv_vm_create(&c, err, errlen) != 0) return failed_start();
     if (resume) {
         int restored = hv_snapshot_restore(resume, ident, err, errlen);
-        /* Used once: from here the Mac runs on and its disk moves past what the file holds. */
-        unlink(resume);
         if (restored != 0) {
+            /* Refused or unreadable: the Mac starts from cold instead, and its disk then moves past the file. */
+            unlink(resume);
             fprintf(stderr, "henge: resume failed: %s\n", err);
             return failed_start();
         }
+        /* Kept until the Mac writes its disk (drop_spent_save): a kill before that resumes it again. */
+        set_save(resume);
+        arm_save();
     }
-    hv_vm_machine()->stats_interval = hv_knob.stats;
-    hv_vm_machine()->stats_deep = hv_knob.stats_deep;
+    stats_on();
     return started(err, errlen);
 }
 
@@ -294,10 +382,12 @@ int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_
     HvVmConfig c = {.rom = rom, .disk = disk, .aux = aux, .ecid = ecid, .ram_mb = ram_mb, .ncpus = cpus, .log = 1,
                     .installer = 1, .no_sound = 1, .jit_rx = jit->rx_addr, .jit_rw = jit->rw_addr, .jit_bytes = jit->size};
     fprintf(stderr, "henge: installing %s with %d CPUs, %llu MB RAM\n", ipsw, cpus, (unsigned long long)ram_mb);
+    stats_env();
     if (hv_vm_create(&c, err, errlen) != 0) return failed_start();
     install_step = 0;
     install_progress = 0;
     installer_session = 1;
+    stats_on();
     if (hv_install_start(hv_vm_board()->vusb, ipsw, workdir, ecid, on_install_progress, NULL) != 0) {
         snprintf(err, errlen, "The installer could not start.");
         return failed_start();
@@ -369,6 +459,8 @@ void henge_vm_stop(void) {
     if (state == 4) { /* paused: its CPU threads have ended already, so nothing calls on_exit */
         pthread_rwlock_wrlock(&api_lock);
         if (state == 4) {
+            drop_spent_save();
+            set_save(NULL);
             hv_vm_destroy();
             exit_reason = HV_EXIT_HALT;
             exit_outcome = HENGE_VM_OUTCOME_HOST_STOP;
@@ -416,6 +508,13 @@ uint64_t henge_vm_blocks(void) {
     pthread_rwlock_unlock(&api_lock);
     return result;
 }
+double henge_vm_blocks_per_second(void) {
+    static HvRateMark mark; /* one reader: the session's perf line */
+    pthread_rwlock_rdlock(&api_lock);
+    double result = state == 1 ? hv_stats_blocks_rate(hv_vm_machine(), &mark, mach_absolute_time()) : 0;
+    pthread_rwlock_unlock(&api_lock);
+    return result;
+}
 uint64_t henge_vm_net_frames(int sent) {
     pthread_rwlock_rdlock(&api_lock);
     uint64_t result = state == 1 ? (sent ? hv_net_tx_frames : hv_net_rx_frames) : (sent ? stopped_tx : stopped_rx);
@@ -451,6 +550,7 @@ void henge_vm_share(const char *folder, const char *socket_path, const char *age
 void henge_share_set_clipboard(const char *text) { hv_share_set_clipboard(text); }
 char *henge_share_take_clipboard(void) { return hv_share_take_clipboard(); }
 long henge_share_agent_seen(void) { return hv_share_agent_seen(); }
+int henge_share_clipboard_taken(void) { return hv_share_clipboard_taken(); }
 
 void henge_vm_set_display(uint32_t width, uint32_t height) { hv_pvg_lite_set_mode(width, height); }
 void henge_vm_set_display_mm(uint32_t width_mm, uint32_t height_mm) { hv_pvg_lite_set_size_mm(width_mm, height_mm); }
@@ -513,6 +613,12 @@ void henge_vm_pointer_at(double x, double y) {
     hv_vm_pointer_at(x, y);
     pthread_rwlock_unlock(&api_lock);
 }
+void henge_vm_pointer_buttons(int buttons) {
+    if (!lock_running()) return;
+    hv_vm_pointer_buttons(buttons);
+    pthread_rwlock_unlock(&api_lock);
+}
+void henge_vm_set_keyboard_iso(int iso) { hv_vm_set_keyboard_iso(iso); }
 void henge_vm_set_display_layer(void *layer) {
     /* vm.c serializes this with unpublishing the old display before free.
        Main-thread layer detachment need not wait for disk/GPU teardown. */
@@ -544,6 +650,24 @@ int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *
     return result;
 }
 void henge_vm_free_display(const uint8_t *pixels) { free((void *)pixels); }
+
+int henge_vm_boot_display_copy(uint8_t *dst, size_t cap, int *width, int *height, int *stride) {
+    if (!lock_running()) return -1;
+    HvBootDisplay d;
+    int result = -1;
+    if (hv_vm_boot_display(&d) == 0) {
+        size_t bytes = (size_t)d.stride * d.height;
+        *width = (int)d.width;
+        *height = (int)d.height;
+        *stride = (int)d.stride;
+        if (dst && bytes <= cap) {
+            memcpy(dst, d.pixels, bytes);
+            result = 0;
+        }
+    }
+    pthread_rwlock_unlock(&api_lock);
+    return result;
+}
 
 #if TARGET_OS_IPHONE
 size_t henge_available_memory(void) { return os_proc_available_memory(); }

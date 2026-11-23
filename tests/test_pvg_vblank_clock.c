@@ -129,17 +129,19 @@ static void present_pacing(void) {
            capped, hot, cooled);
 }
 
-/* The refreshes as pvg_lite.c makes them, over 10 s: CPU 0 polls at its refresh deadline (hv_vblank_deadline: none
-   while the guest masks event 8) and at least every 20 ms (HV_DEV_SAFETY); stalled (no poll) over [stall_at, +1 s) when
-   stall_at >= 0. The cap is cap_before until switch_at, then cap_after; the guest masks event 8 over [mask_from,
-   mask_to). Checks what the guest gets: an event only while it listens, the refresh times (+0x68) never after the poll
-   and at least the shorter of the two periods apart, and no burst after a stall or an unmask. Returns the events. */
+/* The refreshes as pvg_lite.c makes them, over 10 s: CPU 0 polls at its refresh deadline (hv_vblank_next, masked or
+   not) and at least every 20 ms (HV_DEV_SAFETY); stalled (no poll) over [stall_at, +1 s) when stall_at >= 0. The cap
+   is cap_before until switch_at, then cap_after; the guest masks event 8 over [mask_from, mask_to). Checks what the
+   guest gets: an event only while it listens, the first after an unmask on the grid (within a period), the refresh
+   times (+0x68) never after the poll, at least the shorter of the two periods apart and, but for the stall, never
+   older than the longer one (masked too), and no burst after a stall or an unmask. Returns the events. */
 struct Run { unsigned mode_hz; int cap_before, cap_after; double switch_at, mask_from, mask_to, stall_at; };
 static unsigned refreshes(struct Run r, unsigned *masked_polls) {
     const uint64_t safety = TICKS_PER_SECOND / 50, mode = TICKS_PER_SECOND / r.mode_hz;
     HvVblankClock clock = {0};
     uint64_t now = 0, last_poll = 0, last_at = 0, last_event = 0, end = 10 * TICKS_PER_SECOND;
     uint64_t shortest = hv_vblank_period(mode, r.cap_before, TICKS_PER_SECOND), other = hv_vblank_period(mode, r.cap_after, TICKS_PER_SECOND);
+    uint64_t longest = other > shortest ? other : shortest, unmask = (uint64_t)(r.mask_to * TICKS_PER_SECOND);
     if (other < shortest) shortest = other;
     unsigned events = 0, stamps = 0;
     *masked_polls = 0;
@@ -148,6 +150,7 @@ static unsigned refreshes(struct Run r, unsigned *masked_polls) {
         int listening = !(t >= r.mask_from && t < r.mask_to);
         if (!listening) ++*masked_polls;
         uint64_t period = hv_vblank_period(mode, t < r.switch_at ? r.cap_before : r.cap_after, TICKS_PER_SECOND);
+        assert(r.stall_at >= 0 || !stamps || now - last_at <= longest); /* +0x68 current, whether the guest listens */
         if (hv_vblank_due(&clock, now, period)) {
             uint64_t at = hv_vblank_at(&clock, period);
             assert(at <= now);
@@ -158,12 +161,13 @@ static unsigned refreshes(struct Run r, unsigned *masked_polls) {
                 /* No burst: one event per refresh time, never two inside the shorter period (after a stall or an unmask
                    the late one comes at once, the next on the grid: still a period after the late one's time). */
                 assert(!events || now > last_event);
+                if (r.mask_to < 10 && now >= unmask && last_event < unmask) assert(now - unmask <= period);
                 events++;
                 last_event = now;
             }
         }
         last_poll = now;
-        uint64_t next = last_poll + safety, due = hv_vblank_deadline(&clock, listening);
+        uint64_t next = last_poll + safety, due = hv_vblank_next(&clock);
         if (due && due < next) next = due;
         if (r.stall_at >= 0 && t < r.stall_at && (double)next / TICKS_PER_SECOND >= r.stall_at)
             next = (uint64_t)((r.stall_at + 1) * TICKS_PER_SECOND); /* the CPU was away for a second */
@@ -179,7 +183,7 @@ static void cap_and_mask(void) {
     assert(hv_vblank_period(TICKS_PER_SECOND / 60, 30, TICKS_PER_SECOND) == TICKS_PER_SECOND / 30);
     assert(hv_vblank_period(TICKS_PER_SECOND / 30, 60, TICKS_PER_SECOND) == TICKS_PER_SECOND / 30); /* a faster cap: the mode */
     HvVblankClock c = {0};
-    assert(hv_vblank_due(&c, 100, 1000) && hv_vblank_deadline(&c, 1) == 1100 && hv_vblank_deadline(&c, 0) == 0);
+    assert(hv_vblank_due(&c, 100, 1000) && hv_vblank_next(&c) == 1100);
     unsigned n60 = refreshes((struct Run){60, 0, 0, 99, 99, 99, -1}, &mp);
     unsigned n30 = refreshes((struct Run){60, 30, 30, 99, 99, 99, -1}, &mp);
     unsigned n120 = refreshes((struct Run){120, 30, 30, 99, 99, 99, -1}, &mp);
@@ -189,7 +193,7 @@ static void cap_and_mask(void) {
     assert(hot >= 448 && hot <= 452 && cooled >= 448 && cooled <= 452); /* the cap switched live */
     unsigned masked = refreshes((struct Run){60, 0, 0, 99, 2, 4, -1}, &mpm);
     assert(masked >= 478 && masked <= 482); /* 8 s listening */
-    assert(mpm <= 2 * 50 + 2);             /* while masked: the 20 ms polls only, no 60 Hz deadline */
+    assert(mpm >= 2 * 60 - 2 && mpm <= 2 * 60 + 2); /* while masked: still polled on the 60 Hz grid, no event */
     unsigned stalled = refreshes((struct Run){60, 0, 0, 99, 99, 99, 3.5}, &mp);
     assert(stalled >= 539 && stalled <= 542); /* a second missing, one late refresh after it, then the grid */
     printf("cap and mask: 60 Hz %u, capped to 30 %u (120 Hz mode %u), cap on and off halfway %u and %u, masked 2 s %u "

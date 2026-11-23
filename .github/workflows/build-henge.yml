@@ -59,6 +59,8 @@ jobs:
         run: |
           xcrun clang --version | head -1
           [ "$TESTS" = all ] && TESTS=""
+          # The app's engine bridge (henge-vm.c) with its network needs libslirp on the host, only for this test.
+          case " $TESTS " in *" test_vm_lifecycle "*) brew install libslirp pkg-config ;; esac
           make -j4 core-test T="$TESTS"
 
   # Only in full and final checks (all tests, or with UB traps): a run for what a change touched stays at one job.

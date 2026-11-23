@@ -156,6 +156,9 @@ static inline void print_code_size(const char *what) {
     printf("%s: code per guest instruction: hot %.2f cold %.2f pool %.2f total %.2f words (%llu blocks, %llu insns)\n", what,
            (double)c->hot / n, (double)c->cold / n, (double)c->pool / n, (double)(c->hot + c->cold + c->pool) / n,
            (unsigned long long)c->blocks, (unsigned long long)c->insns);
+    printf("%s: cold code per guest instruction: exits %.2f slow paths %.2f group copies %.2f branch-cache misses %.2f "
+           "other %.2f\n", what, (double)c->cold_kind[HV_COLD_EXIT] / n, (double)c->cold_kind[HV_COLD_SLOW] / n,
+           (double)c->cold_kind[HV_COLD_GROUP] / n, (double)c->cold_kind[HV_COLD_IJC] / n, (double)c->cold_kind[HV_COLD_OTHER] / n);
 }
 
 typedef struct TestProgram {

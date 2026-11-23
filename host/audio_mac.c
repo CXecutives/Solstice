@@ -122,6 +122,8 @@ static void apply(void) {
     }
     UInt32 running = 0, size = sizeof running;
     if (AudioUnitGetProperty(unit, kAudioOutputUnitProperty_IsRunning, kAudioUnitScope_Global, 0, &running, &size) != noErr) running = 0;
+    /* Off the clock before the first render callback, so no poll drains by the clock while the player plays. */
+    if (!running) set_off(0);
     if (!running && AudioOutputUnitStart(unit) != noErr) {
         set_off(1);
         if (retries++ < RETRIES)
@@ -145,6 +147,9 @@ static void run(void *ctx) {
         dev = q->d;
         want = 1, want_channels = q->channels, want_format = q->format, want_rate = q->rate;
         retries = 0;
+        /* iOS does not send an "ended" for every "began": a new stream tries the player whatever the last one said.
+           If the session is still taken the start fails, and the stream drains by the clock while it retries. */
+        atomic_store(&interrupted, 0);
         break;
     case 1:
         want = 0;

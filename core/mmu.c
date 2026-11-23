@@ -1386,6 +1386,10 @@ static int entry_still_true(HvCpu *cpu, const HvTlbEntry *e, uint16_t code, Twig
     return (e->read_tag == HV_TLB_INVALID || w.r) && (e->write_tag == HV_TLB_INVALID || w.w) && (e->exec_tag == HV_TLB_INVALID || w.x);
 }
 
+/* user_fills a switch leaves to the timeslice's own fills (a device's: 31-94 refills a switch). */
+#define HV_SWITCH_ROOM 512
+_Static_assert(HV_USER_FILLS >= HV_SWITCH_ROOM + HV_STASH_CAP, "kept entries need room beside a whole stash");
+
 /* TTBR0 went from old to now (a process switch): keep old's user entries
    aside, drop them from the TLB, and bring back now's if they were kept and no
    TLBI touched them since. A stash brought back stays valid: TLBIs reach it as
@@ -1442,7 +1446,14 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
     }
     p->live_stash = 0;
     if (n <= HV_USER_FILLS) {
-        /* What the new tables map the same stays (entry_still_true), listed first in user_fills; the rest goes. */
+        /* What the new tables map the same stays (entry_still_true), listed first in user_fills; the rest goes. Kept
+           and brought-back entries (now's stash, up to HV_STASH_CAP) together leave at least HV_SWITCH_ROOM of
+           user_fills to the timeslice's own fills: past HV_USER_FILLS the next switch away loses the stash. */
+        uint32_t back = 0;
+        for (int i = 0; i < HV_STASHES; i++)
+            if (p->stash[i].ttbr0 == now) back = __atomic_load_n(&p->stash[i].n, __ATOMIC_RELAXED);
+        if (back > HV_STASH_CAP) back = HV_STASH_CAP;
+        const uint32_t keep_cap = HV_USER_FILLS - HV_SWITCH_ROOM - back;
         TwigEnt twigs[TWIG_CACHE];
         for (int i = 0; i < TWIG_CACHE; i++) twigs[i].twig = ~0ull;
         int may_keep = (cpu->sctlr_el1 & 1) != 0;
@@ -1451,8 +1462,7 @@ void hv_tlb_switch_user(HvCpu *cpu, uint64_t old, uint64_t now) {
             uint16_t code = cpu->user_fills[i];
             HvTlbEntry *e = &cpu->tlb[0] + code;
             if (!user_entry(e)) continue;
-            /* (leaving user_fills room for a whole stash to come back) */
-            if (may_keep && nk < HV_USER_FILLS - HV_STASH_CAP && entry_still_true(cpu, e, code, twigs)) cpu->user_fills[nk++] = code;
+            if (may_keep && nk < keep_cap && entry_still_true(cpu, e, code, twigs)) cpu->user_fills[nk++] = code;
             else memset(e, 0x80, sizeof *e);
         }
         cpu->nuser_fills = nk;

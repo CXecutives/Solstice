@@ -62,6 +62,7 @@ enum JITBootstrap {
             prewarmed = true
             lastFailure = nil
             detachIfDone()
+            NotificationCenter.default.post(name: readyNotification, object: nil)
         } else {
             lastFailure = "The debugger is attached but is not answering trap "
                         + "requests, so no executable memory could be claimed. "
@@ -74,6 +75,27 @@ enum JITBootstrap {
     /// Whether Henge has JIT now: the region is held. CS_DEBUGGED alone is not enough: the debugger must also answer
     /// the brk that claims the region, or an install stops at "Henge has no JIT region" (#23). Cheap, and logs nothing.
     static var ready: Bool { prewarmed || isLive }
+
+    /// Posted on the main thread once the region is held (prewarm).
+    static let readyNotification = Notification.Name("solstice.jitReady")
+
+    /// Waits until JIT is ready (readyNotification), at most timeout seconds; whether it is.
+    @MainActor static func waitUntilReady(timeout: TimeInterval) async -> Bool {
+        if ready { return true }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            var observer: NSObjectProtocol?
+            var finished = false
+            let finish = {
+                guard !finished else { return }
+                finished = true
+                if let observer { NotificationCenter.default.removeObserver(observer) }
+                done.resume()
+            }
+            observer = NotificationCenter.default.addObserver(forName: readyNotification, object: nil, queue: .main) { _ in finish() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { finish() }
+        }
+        return ready
+    }
 
     /// True once this process has told the debugger to let go.
     nonisolated(unsafe) static private(set) var detached = false

@@ -86,11 +86,6 @@ Environment variables the engine reads, all from `core/knobs.def`. The app sets 
 | `HV_PVG_SHOT` | str | unset |  | Mac tool: a file for screenshots of the drawable. |
 | `HV_PVG_SHOT_SECS` | double | 5 | 0.01..86400 | Mac tool: seconds between HV_PVG_SHOT screenshots. |
 | `HV_SHOT_SECS` | double | 5 | 0.01..86400 | Mac tool: seconds between named screenshots (for timing a boot). |
-| `HV_COLOR_PROBE` | flag | 0 |  | Measuring: what the display is told and shown, for colour problems. |
-| `HV_COLOR_PROBE_DIR` | str | unset |  | Measuring: HV_COLOR_PROBE's folder (default Documents/colorprobe). |
-| `HV_COLOR_PROBE_SECS` | double | 0 | 0..86400 | Measuring: seconds between HV_COLOR_PROBE captures (0: on trigger only). |
-| `HV_COLOR_PROBE_METRICS_SECS` | double | 15 | 0..86400 | Measuring: seconds between HV_COLOR_PROBE metrics lines. |
-| `HV_COLOR_PROBE_MAX` | int | 8 | 0..max | Measuring: HV_COLOR_PROBE captures at most. |
 
 ## Devices
 

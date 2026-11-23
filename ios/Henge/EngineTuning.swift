@@ -1,8 +1,8 @@
 import Foundation
 
 /// Engine settings, without a rebuild. The engine's own defaults are in core/knobs.def (KNOBS.md); the app ships these
-/// over them, then the Performance settings, then Documents/henge-env.txt (KEY=VALUE per line, # comments; {Documents} in
-/// a value is that folder) overrides them all. Applied at launch and again before each Mac starts, so changes need no relaunch.
+/// over them, then the Performance settings, then Documents/henge-env.txt (HV_ variables only, EnvOverrides) overrides
+/// them all. Applied at launch and again before each Mac starts, so changes need no relaunch.
 enum EngineTuning {
     static let refreshKey = "henge.perf.hz"
     static let superblocksKey = "henge.perf.superblocks"
@@ -48,13 +48,10 @@ enum EngineTuning {
         var overrides: [String: String] = [:]
         let url = docs.appendingPathComponent("henge-env.txt")
         if let text = try? String(contentsOf: url, encoding: .utf8) {
-            for raw in text.split(whereSeparator: \.isNewline) {
-                let line = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)?
-                    .trimmingCharacters(in: .whitespaces) ?? ""
-                guard let eq = line.firstIndex(of: "="), eq != line.startIndex else { continue }
-                // {Documents} stands for this folder: its absolute path changes when Henge is reinstalled.
-                overrides[String(line[..<eq]).trimmingCharacters(in: .whitespaces)] = String(line[line.index(after: eq)...])
-                    .trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "{Documents}", with: docs.path)
+            let parsed = EnvOverrides.parse(text, documents: docs.path)
+            overrides = parsed.accepted
+            if !parsed.refused.isEmpty {
+                HengeLog.log("engine", "henge-env.txt: ignored \(parsed.refused.joined(separator: ", ")) (only HV_ variables are taken)")
             }
         }
         // HV_SAFE=1 or 0 in henge-env.txt decides it by hand.

@@ -30,8 +30,6 @@ struct SettingsView: View {
         }
     }
     @AppStorage(DeskAppearance.key) private var appearance = DeskAppearance.system
-    @AppStorage(InstantResume.key) private var instantResume = false
-    @AppStorage(KeepAlive.key) private var keepAlive = true
 
     var body: some View {
         NavigationStack {
@@ -83,6 +81,9 @@ struct SettingsView: View {
                     }
                     .listRowBackground(Desk.card)
                 }
+                TouchSettings()
+                KeyboardSettings()
+                ClipboardSettings()
                 Section("Performance") {
                     if safeMode {
                         LabeledContent("Safe mode", value: "On")
@@ -110,18 +111,9 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)
-                Section("In the Background") {
-                    Toggle("Keep Henge awake", isOn: $keepAlive)
-                    Text("While a Mac is open or macOS is installing, Henge stays awake when you leave it or the screen locks, so iOS is much less likely to close it and an install goes on. A running Mac waits, paused, until you are back. Henge plays silence to do this; other apps' audio is not interrupted.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .listRowBackground(Desk.card)
-                Section("Instant Resume") {
-                    Toggle("Resume where you left off", isOn: $instantResume)
-                    Text("When you leave Henge, the running Mac is saved to storage, and opening it again picks up where it was in a few seconds, even after iOS closes Henge. The save is about the size of the Mac's memory in use, compressed. The Mac pauses while Henge is in the background, so its sound stops. Experimental.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .listRowBackground(Desk.card)
+                KeepAwakeSettingsSection()
+                ResumeSettingsSection()
+                AutoStartSettingsSection()
                 Section("Appearance") {
                     Picker("Appearance", selection: $appearance) {
                         ForEach(DeskAppearance.allCases) { Text($0.title).tag($0) }

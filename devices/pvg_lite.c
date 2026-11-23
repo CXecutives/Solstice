@@ -397,7 +397,10 @@ void hv_pvg_lite_complete(HvPvgLite *p, uint32_t ch, uint32_t stamp) {
        the guest waits for this between the many batches of work in a frame. */
     __atomic_fetch_or(&p->status, 1u << ch, __ATOMIC_ACQ_REL);
     hv_gicv3_pend(p->gic, p->gfx_irq);
-    if (p->m->ncpus == 1) hv_machine_wake(p->m);
+    /* A channel waiting for another one's stamp (HV_UNSIG_PVG_CHAN) runs at CPU 0's next poll: ask for it now (the
+       interrupt alone wakes CPU 0 without one when there are more CPUs). */
+    if (p->m->ncpus == 1 || (__atomic_load_n(&p->m->dev_unsignalled, __ATOMIC_ACQUIRE) & HV_UNSIG_PVG_CHAN))
+        hv_machine_wake(p->m);
 }
 
 void hv_pvg_lite_set_layer(HvPvgLite *p, void *layer) {
@@ -751,13 +754,12 @@ static void note_chans(HvPvgLite *p) {
 }
 
 /* The next refresh (host time), for CPU 0's deadline: the kicker and WFI wake it then, so the refreshes keep their
-   grid whatever else polls the devices. 0 before the guest named its display page, and while it masks event 8
-   (hv_vblank_deadline: looked at at every tick of CPU 0, so the refreshes resume as soon as it unmasks). */
+   grid whatever else polls the devices. 0 before the guest named its display page. Also while the guest masks event
+   8: it unmasks with a plain write, so the first refresh after that comes on the grid, and +0x68 is never older than
+   a period (a stale refresh time is what brought the interrupt storms, see vblank). */
 uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
     if (!p || !p->display_pa || !p->vblank_period) return 0;
-    const uint8_t *d = hv_pvg_lite_display_page(p);
-    if (!d) return 0;
-    return hv_vblank_deadline(&p->vclock, (__atomic_load_n((const uint32_t *)(d + 0x104), __ATOMIC_ACQUIRE) & 8) != 0);
+    return hv_vblank_next(&p->vclock);
 }
 
 /* The display's refresh: event 8 while the guest asks for it in its mask (+104), and the refresh's time at +68.
@@ -767,8 +769,8 @@ uint64_t hv_pvg_lite_next_vblank(HvPvgLite *p) {
    (on an iPhone, 20-48K interrupts and 40-80K process switches a second where a calm Mac has 3-7K). Without event 8
    a video wallpaper stops when nothing else draws. Sent at the mode's rate (HV_HZ), or the present cap's while the app
    caps presents below it (hv_vblank_period: the guest then draws only frames that are shown). HV_PVG_VBLANK=0:
-   neither, as before. While the guest masks event 8 the refreshes are no deadline of CPU 0's, and their times are
-   written at the polls that come anyway (on the grid; the guest is not listening then). */
+   neither, as before. While the guest masks event 8 only the event is left out: the refreshes stay CPU 0's deadline
+   and their times at +68 stay current. */
 static void vblank(HvPvgLite *p) {
     uint64_t period = hv_vblank_period(p->vblank_period, hv_pvg_present_hz(), 24000000);
     if (!period || !p->display_pa) return;

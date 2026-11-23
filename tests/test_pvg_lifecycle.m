@@ -204,12 +204,22 @@ static void test_refresh_rate_per_start(void) {
             memcpy(blob + at, &pa, 8);
             hv_pvg_lite_set_state(board.pvg, blob, size);
             hv_pvg_lite_poll(board.pvg);
-            /* The refreshes are CPU 0's deadline only while the guest listens (event 8 in its mask at +0x104). */
-            uint32_t *mask = (uint32_t *)(hv_pvg_lite_display_page(board.pvg) + 0x104);
+            /* While the guest masks event 8 (its mask at +0x104) the refreshes stay CPU 0's deadline on the grid: a
+               refresh due then sends no event but writes its time at +0x68, so it is never older than a period. */
+            uint8_t *page = hv_pvg_lite_display_page(board.pvg);
+            uint32_t *mask = (uint32_t *)(page + 0x104), *events = (uint32_t *)(page + 0x100);
             *mask &= ~8u;
-            check("masked: no refresh deadline", hv_pvg_lite_next_vblank(board.pvg) == 0, 1);
-            *mask |= 8;
             uint64_t period = 24000000ull / rates[i], next = hv_pvg_lite_next_vblank(board.pvg);
+            check("masked: the refresh is still a deadline", next != 0, 1);
+            while (mach_absolute_time() < next) {
+            }
+            *events &= ~8u;
+            hv_pvg_lite_poll(board.pvg);
+            check("masked: no refresh event", *events & 8, 0);
+            uint64_t at = *(uint64_t *)(page + 0x68) + machine.cntvoff; /* the host was not away: one period on */
+            check("masked: the refresh time written on the grid", at >= next && (at - next) % period == 0, 1);
+            *mask |= 8;
+            next = hv_pvg_lite_next_vblank(board.pvg);
             uint64_t away = next - mach_absolute_time();
             check("refreshed at this start's rate", away <= period && away > period * 3 / 4, 1);
             if (!(away <= period && away > period * 3 / 4))

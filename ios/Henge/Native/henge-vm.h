@@ -40,6 +40,12 @@ int henge_vm_continue(void);
 int henge_vm_resume(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
                     int cpus, const char *path, const char *ident, char *err, size_t errlen);
 int henge_vm_saved_ok(const char *path, const char *ident, uint64_t *bytes, int64_t *saved_at);
+/* A saved Mac is kept while the disk is as it was saved: after a resume (or running on after a save) the file goes
+   once the Mac writes its disk, or a new save replaces it. Call now and then while it runs; 1 if the file was deleted
+   now. A stop deletes it too if the disk moved. */
+int henge_vm_drop_spent_save(void);
+/* 1 if the Mac is paused and has not run since its last save, which is still there: saving again would only rewrite it. */
+int henge_vm_saved_unchanged(void);
 
 /* The machine's state. Normal guests are fully released before HENGE_VM_STOPPED; installer sessions retain
    their restore stack and can_start stays false. */
@@ -64,6 +70,8 @@ enum HengeVmOutcome {
 };
 int henge_vm_exit_outcome(void);
 void henge_vm_stop(void);
+/* Presses the Mac's power button: macOS shuts down properly (or asks first). 0, or -1 if no Mac runs. */
+int henge_vm_power_button(void);
 /* Testing: sets a whole-number engine setting (core/knobs.def) in the running machine; nonzero if it exists. */
 int henge_vm_knob(const char *name, int value);
 /* The engine settings read again from the environment (EngineTuning.apply, after it sets them). */
@@ -80,6 +88,7 @@ uint64_t henge_vm_ram_mb(void);
 
 /* Progress, for the session screen. */
 uint64_t henge_vm_blocks(void);            /* blocks the CPUs entered */
+double henge_vm_blocks_per_second(void);   /* their average rate since the last call (0 the first time, or not running) */
 uint64_t henge_vm_net_frames(int sent);    /* Ethernet frames out (sent = 1) and in */
 uint64_t henge_vm_dns(int which);          /* guest DNS queries answered through iOS's resolver (0), handed to libslirp (1), unanswered in time (2) */
 int henge_vm_cpus_on(void);                /* CPUs the guest has started */
@@ -96,6 +105,8 @@ void henge_vm_share(const char *folder, const char *socket_path, const char *age
 void henge_share_set_clipboard(const char *text);
 char *henge_share_take_clipboard(void);
 long henge_share_agent_seen(void);
+/* 1 once the helper in macOS has the clipboard henge_share_set_clipboard gave it. */
+int henge_share_clipboard_taken(void);
 
 /* The size macOS is told its screen is. Before henge_vm_boot. */
 void henge_vm_set_display(uint32_t width, uint32_t height);
@@ -120,6 +131,10 @@ void henge_vm_touch_frame(uint32_t ts_ms); /* commit one frame with every finger
 void henge_vm_touch_button(int down); /* the pad's full press (a click) */
 /* Put the Mac's pointer at x, y, each 0..1 across its screen: for an iPad pointer iPadOS won't lock. */
 void henge_vm_pointer_at(double x, double y);
+/* Its buttons, pressed where it is now: bit 0 left, 1 right, 2 middle. */
+void henge_vm_pointer_buttons(int buttons);
+/* Before boot: the Mac's USB keyboard is an ISO one (1) or ANSI (0), to match its keyboard layout. */
+void henge_vm_set_keyboard_iso(int iso);
 /* Where the guest has its pointer, in display pixels. 0, or -1 before it has one. */
 int henge_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */
@@ -134,6 +149,9 @@ void henge_vm_set_display_layer(void *layer);
 uint64_t henge_vm_gpu_frames(void);
 int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *stride);
 void henge_vm_free_display(const uint8_t *pixels);
+/* The same, copied once into the caller's buffer of cap bytes: 0, or -1 (nothing to show, or too small: then width,
+   height and stride say what it needs). */
+int henge_vm_boot_display_copy(uint8_t *dst, size_t cap, int *width, int *height, int *stride);
 
 /* The largest single mapping the address space takes right now, in MB (the
    increased virtual addressing entitlement raises it). */

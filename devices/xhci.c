@@ -63,6 +63,17 @@ static const uint8_t kbd_device_desc[18] = {
     0x00, 0x01, 1, 2, 3, 1,         /* bcdDevice 1.00, strings 1-3, one configuration */
 };
 
+/* The same keyboard as an ISO one (product 0x0221): macOS then reads the key beside the left Shift
+   (usage 0x64) and the one left of 1 (0x35) as on a European Mac keyboard. */
+static const uint8_t kbd_iso_device_desc[18] = {
+    18, 1, 0x00, 0x02, 0, 0, 0, 64,
+    0xac, 0x05, 0x21, 0x02,
+    0x00, 0x01, 1, 2, 3, 1,
+};
+static _Atomic int kbd_iso;
+
+void hv_xhci_set_keyboard_iso(int iso) { kbd_iso = iso != 0; }
+
 static const uint8_t kbd_config_desc[34] = {
     9, 2, 34, 0, 1, 1, 0, 0xa0, 50,           /* one interface, remote wakeup, 100 mA */
     9, 4, 0, 0, 1, 3, 1, 1, 0,                /* interface 0: HID, boot, keyboard */
@@ -367,7 +378,7 @@ static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, in
     uint8_t tmp[HV_TP_REPORT_LEN + 8];
     if (type == 0x80 && req == 6) { /* GET_DESCRIPTOR (device) */
         uint8_t dt = value >> 8, idx = value & 0xff;
-        if (dt == 1) src = d->device_desc, len = 18;
+        if (dt == 1) src = x->slots[slot].dev == 0 && kbd_iso ? kbd_iso_device_desc : d->device_desc, len = 18;
         else if (dt == 2) src = d->config_desc, len = 34;
         else if (dt == 3) {
             if (idx == 0) {
@@ -406,7 +417,7 @@ static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, in
         if (x->slots[slot].dev == 0) src = x->state, len = 8;
         else if (x->slots[slot].dev == 2) {
             pthread_mutex_lock(&x->mu);
-            memcpy(tmp, x->ptr_report, sizeof x->ptr_report);
+            memcpy(tmp, x->ptr_report, sizeof x->ptr_report); /* the current state */
             pthread_mutex_unlock(&x->mu);
             src = tmp, len = (int)sizeof x->ptr_report;
         } else {
@@ -544,15 +555,14 @@ static void run_ep_in(HvXhci *x, int slot) {
             transfer_event(x, at, n < want ? CC_SHORT_PACKET : CC_SUCCESS, want - n, slot, dci);
         }
     } else if (s->dev == 2) {
-        while (x->ptr_pending && ring_peek(x, r, trb, &at)) {
+        while (x->ptr_rhead != x->ptr_rtail && ring_peek(x, r, trb, &at)) {
             int type = (trb[3] >> 10) & 0x3f;
             ring_advance(r);
             if (type != TRB_NORMAL) continue;
             uint64_t buf = (uint64_t)trb[1] << 32 | trb[0];
             uint32_t want = trb[2] & 0x1ffff;
             uint32_t n = want < sizeof x->ptr_report ? want : (uint32_t)sizeof x->ptr_report;
-            wr(x, buf, x->ptr_report, n);
-            x->ptr_pending = 0;
+            wr(x, buf, x->ptr_reports[x->ptr_rhead++ % HV_PTR_REPORTS], n);
             transfer_event(x, at, n < want ? CC_SHORT_PACKET : CC_SUCCESS, want - n, slot, dci);
         }
     } else {
@@ -809,7 +819,8 @@ static void reset(HvXhci *x) {
     x->tp_multi_logs = 0;
     x->tp_f1_len = 0;
     memset(x->ptr_report, 0, sizeof x->ptr_report);
-    x->ptr_pending = 0;
+    x->ptr_rhead = x->ptr_rtail = 0;
+    x->ptr_last_move = 0;
     for (int p = 0; p < HV_XHCI_PORTS; p++)
         x->portsc[p] = PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)(p == 1 ? SPEED_HIGH : SPEED_FULL) << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT;
     update_irq(x);
@@ -1014,8 +1025,8 @@ static const uint8_t linux_to_hid[256] = {
     0x07, 0x09, 0x0a, 0x0b, 0x0d, 0x0e, 0x0f, 0x33, 0x34, 0x35, 0xe1, 0x31, 0x1d, 0x1b, 0x06, 0x19,
     0x05, 0x11, 0x10, 0x36, 0x37, 0x38, 0xe5, 0x55, 0xe2, 0x2c, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e,
     0x3f, 0x40, 0x41, 0x42, 0x43, 0x53, 0x47, 0x5f, 0x60, 0x61, 0x56, 0x5c, 0x5d, 0x5e, 0x57, 0x59,
-    0x5a, 0x5b, 0x62, 0x63, 0x00, 0x00, 0x00, 0x44, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x58, 0xe4, 0x54, 0x00, 0xe6, 0x00, 0x4a, 0x52, 0x4b, 0x50, 0x4f, 0x4d, 0x51, 0x4e, 0x49, 0x00,
+    0x5a, 0x5b, 0x62, 0x63, 0x00, 0x00, 0x64, 0x44, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* 86: KEY_102ND, the ISO key */
+    0x58, 0xe4, 0x54, 0x00, 0xe6, 0x00, 0x4a, 0x52, 0x4b, 0x50, 0x4f, 0x4d, 0x51, 0x4e, 0x49, 0x4c, /* 111: forward delete */
     0x00, 0x7f, 0x81, 0x80, 0x66, 0x67, 0x00, 0x48, 0x00, 0x85, 0x00, 0x00, 0x00, 0xe3, 0xe7, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1078,25 +1089,53 @@ static int tp_build_report(HvXhci *x, uint8_t *out) {
    for the physical button, which has no sample clock. */
 static uint32_t tp_now_ms(void) {
     struct timespec ts;
+#ifdef CLOCK_UPTIME_RAW
+    clock_gettime(CLOCK_UPTIME_RAW, &ts); /* the clock UIKit stamps touches with (it stops while the device sleeps) */
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (uint32_t)((uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000);
 }
 
+/* The ring is full: make room for one more. Every report carries every finger, so a waiting move
+   followed by a later report is only a lost sample; the oldest such goes. With nothing but touches
+   and lifts waiting (a guest that has stopped reading), the oldest goes: the newest state counts. */
+static void tp_make_room(HvXhci *x) {
+    for (uint32_t i = x->tp_rhead; i + 1 != x->tp_rtail; i++) {
+        if (!x->tp_rmove[i % HV_TP_REPORTS]) continue;
+        for (uint32_t j = i; j + 1 != x->tp_rtail; j++) {
+            unsigned to = j % HV_TP_REPORTS, from = (j + 1) % HV_TP_REPORTS;
+            memcpy(x->tp_reports[to], x->tp_reports[from], HV_TP_REPORT_LEN);
+            x->tp_rlen[to] = x->tp_rlen[from];
+            x->tp_rmove[to] = x->tp_rmove[from];
+        }
+        x->tp_rtail--;
+        return;
+    }
+    x->tp_rhead++;
+}
+
 /* Queue the current state as a report, stamped with the touch sample's clock (ms);
-   ts_ms 0 falls back to the current time (the physical button). */
-static void tp_queue(HvXhci *x, uint32_t ts_ms) {
+   ts_ms 0 falls back to the current time (the physical button). move: the report only
+   moves fingers already down. A touch, a lift, a press and the final "no fingers" report
+   are never lost: moves give way to them (tp_make_room), and while the guest is behind,
+   a move replaces the move still waiting before it. */
+static void tp_queue(HvXhci *x, uint32_t ts_ms, int move) {
     uint8_t r[HV_TP_REPORT_LEN];
     /* Strictly increasing: two frames with the same timestamp would give the guest a
        zero time delta (speed = distance / 0) and it can throw the frame away. */
     uint32_t now = ts_ms ? ts_ms : tp_now_ms();
     x->tp_ts = now > x->tp_ts ? now : x->tp_ts + 1;
     int len = tp_build_report(x, r);
-    if (x->tp_rtail - x->tp_rhead < HV_TP_REPORTS) {
-        unsigned at = x->tp_rtail % HV_TP_REPORTS;
-        memcpy(x->tp_reports[at], r, (size_t)len);
-        x->tp_rlen[at] = (uint8_t)len;
-        x->tp_rtail++;
+    uint32_t waiting = x->tp_rtail - x->tp_rhead;
+    unsigned at = (x->tp_rtail - 1) % HV_TP_REPORTS;
+    if (!(move && waiting >= HV_TP_COALESCE_AT && x->tp_rmove[at])) {
+        if (waiting >= HV_TP_REPORTS) tp_make_room(x);
+        at = x->tp_rtail++ % HV_TP_REPORTS;
     }
+    memcpy(x->tp_reports[at], r, (size_t)len);
+    x->tp_rlen[at] = (uint8_t)len;
+    x->tp_rmove[at] = (uint8_t)(move != 0);
 }
 
 static struct HvTpFinger *tp_new_finger(HvXhci *x) {
@@ -1115,7 +1154,7 @@ void hv_xhci_touch(HvXhci *x, int id, int phase, int px, int py, uint32_t ts_ms)
             f->x = px;
             f->y = py;
             f->state = 4; /* contact: a touch, not a hover, so the guest tracks it at once */
-            tp_queue(x, ts_ms);
+            tp_queue(x, ts_ms, 0);
         }
     } else {
         for (int i = 0; i < HV_TP_FINGERS; i++) {
@@ -1129,10 +1168,10 @@ void hv_xhci_touch(HvXhci *x, int id, int phase, int px, int py, uint32_t ts_ms)
                    moved, so the guest sees them move together instead of one at a time */
             } else {
                 f->state = 7; /* stop */
-                tp_queue(x, ts_ms);
+                tp_queue(x, ts_ms, 0);
                 f->in = 0;
                 f->state = 0; /* none */
-                tp_queue(x, ts_ms);
+                tp_queue(x, ts_ms, 0);
             }
             break;
         }
@@ -1146,7 +1185,7 @@ void hv_xhci_touch(HvXhci *x, int id, int phase, int px, int py, uint32_t ts_ms)
 void hv_xhci_touch_frame(HvXhci *x, uint32_t ts_ms) {
     if (!x) return;
     pthread_mutex_lock(&x->mu);
-    tp_queue(x, ts_ms);
+    tp_queue(x, ts_ms, 1);
     pthread_mutex_unlock(&x->mu);
     hv_machine_wake(x->m);
 }
@@ -1156,10 +1195,69 @@ void hv_xhci_touch_button(HvXhci *x, int down) {
     pthread_mutex_lock(&x->mu);
     if (x->tp_button != (down & 1)) {
         x->tp_button = down & 1;
-        tp_queue(x, 0);
+        tp_queue(x, 0, 0);
     }
     pthread_mutex_unlock(&x->mu);
     hv_machine_wake(x->m);
+}
+
+/* A Mac's secondary click on its trackpad: two fingers resting, then a press. The fingers come
+   down a frame before the press (a real pad reports them every ~11 ms), and lift after the release. */
+void hv_xhci_secondary_click(HvXhci *x, int down) {
+    if (!x) return;
+    pthread_mutex_lock(&x->mu);
+    uint32_t t = tp_now_ms();
+    if (t <= x->tp_ts) t = x->tp_ts + 1;
+    struct HvTpFinger *two[2] = {NULL, NULL};
+    for (int i = 0; i < HV_TP_FINGERS; i++) {
+        struct HvTpFinger *f = &x->tp_fingers[i];
+        if (f->in && (f->id == HV_TP_CLICK_ID || f->id == HV_TP_CLICK_ID + 1)) two[f->id - HV_TP_CLICK_ID] = f;
+    }
+    if (down && !x->tp_button) {
+        for (int k = 0; k < 2; k++) {
+            if (!two[k] && (two[k] = tp_new_finger(x)) != NULL) {
+                two[k]->in = 1;
+                two[k]->id = HV_TP_CLICK_ID + k;
+                two[k]->x = HV_TP_SENSOR_X / 2 + (k ? 550 : -550); /* about two centimetres apart */
+                two[k]->y = HV_TP_SENSOR_Y * 2 / 5;
+            }
+            if (two[k]) two[k]->state = 4;
+        }
+        tp_queue(x, t, 0);
+        x->tp_button = 1;
+        tp_queue(x, t + 11, 0);
+    } else if (!down && x->tp_button) {
+        x->tp_button = 0;
+        tp_queue(x, t, 0);
+        for (int k = 0; k < 2; k++) if (two[k]) two[k]->state = 7; /* stop */
+        tp_queue(x, t + 11, 0);
+        for (int k = 0; k < 2; k++) if (two[k]) two[k]->in = 0, two[k]->state = 0;
+        tp_queue(x, t + 12, 0);
+    }
+    pthread_mutex_unlock(&x->mu);
+    hv_machine_wake(x->m);
+}
+
+int hv_xhci_multitouch(HvXhci *x) {
+    if (!x) return 0;
+    pthread_mutex_lock(&x->mu);
+    int on = x->tp_mt;
+    pthread_mutex_unlock(&x->mu);
+    return on;
+}
+
+/* Queue the pointer's current state. A move replaces a move still waiting (only the latest place
+   matters); a button change always queues, so a click's press and release both reach the guest, each
+   where it happened. Full (a guest that has stopped reading): the oldest goes. */
+static void ptr_queue(HvXhci *x, int move) {
+    uint32_t waiting = x->ptr_rtail - x->ptr_rhead;
+    if (move && waiting && x->ptr_last_move) {
+        memcpy(x->ptr_reports[(x->ptr_rtail - 1) % HV_PTR_REPORTS], x->ptr_report, sizeof x->ptr_report);
+        return;
+    }
+    if (waiting >= HV_PTR_REPORTS) x->ptr_rhead++;
+    memcpy(x->ptr_reports[x->ptr_rtail++ % HV_PTR_REPORTS], x->ptr_report, sizeof x->ptr_report);
+    x->ptr_last_move = move;
 }
 
 void hv_xhci_pointer(HvXhci *x, int px, int py) {
@@ -1167,10 +1265,20 @@ void hv_xhci_pointer(HvXhci *x, int px, int py) {
     px = px < 0 ? 0 : px > HV_PTR_MAX ? HV_PTR_MAX : px;
     py = py < 0 ? 0 : py > HV_PTR_MAX ? HV_PTR_MAX : py;
     pthread_mutex_lock(&x->mu);
-    x->ptr_report[0] = 0;
     x->ptr_report[1] = (uint8_t)px, x->ptr_report[2] = (uint8_t)(px >> 8);
     x->ptr_report[3] = (uint8_t)py, x->ptr_report[4] = (uint8_t)(py >> 8);
-    x->ptr_pending = 1;
+    ptr_queue(x, 1);
+    pthread_mutex_unlock(&x->mu);
+    hv_machine_wake(x->m);
+}
+
+void hv_xhci_pointer_buttons(HvXhci *x, int buttons) {
+    if (!x) return;
+    pthread_mutex_lock(&x->mu);
+    if (x->ptr_report[0] != (uint8_t)(buttons & 7)) {
+        x->ptr_report[0] = (uint8_t)(buttons & 7);
+        ptr_queue(x, 0);
+    }
     pthread_mutex_unlock(&x->mu);
     hv_machine_wake(x->m);
 }

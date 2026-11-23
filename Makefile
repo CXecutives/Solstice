@@ -14,7 +14,7 @@ endif
 B ?= build
 
 CORE = $(B)/classify.o $(B)/operands.o $(B)/translate.o $(B)/dispatch.o $(B)/mmu.o $(B)/memop.o \
-       $(B)/exception.o $(B)/sysreg.o $(B)/machine.o $(B)/codecache.o $(B)/light.o $(B)/knobs.o
+       $(B)/exception.o $(B)/sysreg.o $(B)/machine.o $(B)/codecache.o $(B)/light.o $(B)/stats.o $(B)/knobs.o
 HOST = $(B)/jit_region.o $(B)/enter.o $(B)/disk.o
 DEV = $(B)/pvg_lite.o $(B)/pvg_metal.o $(B)/gicv3.o $(B)/timer.o $(B)/pl011.o $(B)/pl031.o $(B)/cfg.o $(B)/bdif.o $(B)/pcie.o \
       $(B)/virtio.o $(B)/virtio_blk.o $(B)/virtio_net.o $(B)/virtio_input.o $(B)/virtio_snd.o $(B)/virtio_usb.o $(B)/virtio_balloon.o $(B)/xhci.o $(B)/vmapple.o $(B)/aes.o $(B)/pl061.o $(B)/metallib.o
@@ -23,7 +23,7 @@ METAL_LIBS = -framework Foundation -framework QuartzCore -framework Metal -frame
 
 TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit $(B)/test_mem \
         $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
-        $(B)/test_pvg_lifecycle $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue $(B)/test_knobs
+        $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue $(B)/test_knobs
 
 all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
 
@@ -35,7 +35,7 @@ $(B)/hengevm-ref: host/hvf_ref.c host/hvf_ref.entitlements $(ENGINE) $(DEV)
 # Mac-only graphics device (ParavirtualizedGraphics.framework, as QEMU uses it).
 # Built for an older deployment target: the framework's memory callbacks are
 # marked obsolete in macOS 27 without a documented replacement.
-$(B)/pvg_metal.o: devices/pvg_metal.m devices/*.h core/*.h host/*.h | $(B)
+$(B)/pvg_metal.o: devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h core/*.h host/*.h | $(B)
 	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
 $(B)/pvg_mac.o: devices/pvg_mac.m devices/*.h core/*.h host/*.h | $(B)
 	$(CC) -fobjc-arc -O2 -g -Wall -mmacosx-version-min=15.2 -Icore -Ihost -Idevices -c $< -o $@
@@ -127,12 +127,17 @@ test-vm-lifecycle: $(B)/test_vm_lifecycle
 $(B)/test_pvg_lifecycle: tests/test_pvg_lifecycle.m $(ENGINE) $(DEV)
 	$(CC) $(CFLAGS) -fobjc-arc $^ $(METAL_LIBS) -o $@
 
+# The Metal replay's parts called directly: devices/pvg_metal.m is compiled into the test instead of linked.
+DEV_NO_METAL = $(filter-out $(B)/pvg_metal.o,$(DEV))
+$(B)/test_pvg_metal: tests/test_pvg_metal.m devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h $(ENGINE) $(DEV_NO_METAL)
+	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations tests/test_pvg_metal.m $(ENGINE) $(DEV_NO_METAL) $(METAL_LIBS) -o $@
+
 $(B)/hvsparse: tools/hvsparse_main.c host/hvsparse.c host/hvsparse.h | $(B)
 	$(CC) $(CFLAGS) tools/hvsparse_main.c host/hvsparse.c -o $@
 
 # Block-level tests: test_X.c plus X_programs.S, run natively and through the JIT.
-$(B)/test_devices: tests/test_devices.c tests/devices_programs.S tests/harness.S tests/harness.h $(ENGINE) $(DEV)
-	$(CC) $(CFLAGS) -Itests tests/test_devices.c tests/devices_programs.S tests/harness.S $(ENGINE) $(DEV) $(METAL_LIBS) -o $@
+$(B)/test_devices: tests/test_devices.c host/audio_mac.c tests/devices_programs.S tests/harness.S tests/harness.h $(ENGINE) $(DEV)
+	$(CC) $(CFLAGS) -Itests tests/test_devices.c tests/devices_programs.S tests/harness.S $(ENGINE) $(DEV) $(METAL_LIBS) -framework AudioToolbox -o $@
 # The engine's host memory: the code-cache stress program on machines of 1-4 CPUs, its tables trimmed and refilled.
 $(B)/test_memory: tests/test_memory.c tests/codecache_programs.S tests/harness.S tests/harness.h $(ENGINE)
 	$(CC) $(CFLAGS) -Itests tests/test_memory.c tests/codecache_programs.S tests/harness.S $(ENGINE) -o $@
@@ -188,7 +193,7 @@ $(patsubst %,$(IB)/core/%.o,$(NOSIMD)): $(IB)/core/%.o: core/%.c core/*.h host/*
 $(IB)/%.o: %.c core/*.h host/*.h devices/*.h
 	@mkdir -p $(dir $@)
 	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -c $< -o $@
-$(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/*.h core/*.h host/*.h
+$(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h core/*.h host/*.h
 	@mkdir -p $(dir $@)
 	$(IOS_CC) $(IOS_CFLAGS) $(IOS_LTO) -fobjc-arc -Wno-unused-parameter -Wno-deprecated-declarations -c $< -o $@
 $(IB)/host/enter.o: host/enter.S
@@ -293,7 +298,32 @@ test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
 	$(B)/test_physical_mouse_buttons
 .PHONY: test-physical-mouse-buttons
 
+# The lifecycle watchdog's limits, the log stream's redaction and local-address check, henge-env.txt's HV_ filter.
+$(B)/test_lifecycle: ios/Henge/LifecycleWatchdog.swift ios/Henge/LogPrivacy.swift ios/Henge/EnvOverrides.swift tests/test_lifecycle.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-lifecycle: $(B)/test_lifecycle
+	$(B)/test_lifecycle
+.PHONY: test-lifecycle
+
+# Which keys type a character on the Mac's keyboard layout (U.S., German).
+$(B)/test_key_layout: ios/Henge/KeyLayout.swift tests/test_key_layout.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-key-layout: $(B)/test_key_layout
+	$(B)/test_key_layout
+.PHONY: test-key-layout
+
+# The touch surface's gestures: taps, holds and drags into clicks.
+$(B)/test_touch_gestures: ios/Henge/TouchGestures.swift tests/test_touch_gestures.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-touch-gestures: $(B)/test_touch_gestures
+	$(B)/test_touch_gestures
+.PHONY: test-touch-gestures
+
 # Every Swift test: the list CI runs (the workflow's Swift job). Add new Swift test targets here.
-SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons
+SWIFT_TESTS = test-display-routing test-jit-advice test-identity test-device-profile test-mac-screen test-physical-mouse-buttons \
+	test-lifecycle test-key-layout test-touch-gestures
 swift-test: $(SWIFT_TESTS)
 .PHONY: swift-test

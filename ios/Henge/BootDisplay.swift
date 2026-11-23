@@ -67,21 +67,38 @@ struct BootDisplay: View {
                     }
                     if !gpuLive { image = Self.snapshot() ?? image }
                 }
-                try? await Task.sleep(nanoseconds: gpuLive ? 250_000_000 : 100_000_000)
+                // The boot screen is a progress bar: 4 a second is plenty. Once the GPU draws (or the Mac is off) only
+                // the lifecycle is watched, once a second.
+                try? await Task.sleep(nanoseconds: gpuLive || stopped ? 1_000_000_000 : 250_000_000)
             }
         }
     }
 
+    /// The boot framebuffer's size last time: the engine copies it once, straight into the buffer the image keeps.
+    private static var frameBytes = 0
+
     static func snapshot() -> CGImage? {
-        var px: UnsafePointer<UInt8>?
         var w: Int32 = 0, h: Int32 = 0, stride: Int32 = 0
-        guard henge_vm_boot_display(&px, &w, &h, &stride) == 0, let px else { return nil }
-        defer { henge_vm_free_display(px) }
-        let bytes = Int(stride) * Int(h)
-        let data = Data(bytes: px, count: bytes) // a copy: the guest keeps drawing
+        for _ in 0..<2 { // the second time with the size the first one said it needs
+            let cap = max(frameBytes, 1)
+            guard let buffer = malloc(cap) else { return nil }
+            guard henge_vm_boot_display_copy(buffer.assumingMemoryBound(to: UInt8.self), cap, &w, &h, &stride) == 0 else {
+                free(buffer)
+                let need = Int(stride) * Int(h)
+                guard need > cap else { return nil } // nothing to show yet
+                frameBytes = need
+                continue
+            }
+            let data = Data(bytesNoCopy: buffer, count: Int(stride) * Int(h), deallocator: .free) // the image's own: the guest keeps drawing
+            return image(data, width: Int(w), height: Int(h), stride: Int(stride))
+        }
+        return nil
+    }
+
+    private static func image(_ data: Data, width w: Int, height h: Int, stride: Int) -> CGImage? {
         guard let provider = CGDataProvider(data: data as CFData) else { return nil }
         let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        return CGImage(width: Int(w), height: Int(h), bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: Int(stride),
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: stride,
                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider, decode: nil,
                        shouldInterpolate: true, intent: .defaultIntent)
     }
@@ -175,14 +192,6 @@ private struct GPUScreen: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> Screen {
-        if ProcessInfo.processInfo.environment["HV_COLOR_PROBE"] != nil {
-            // What the screen itself is, for the colour probe (the engine logs the layer and the frames).
-            let s = UIScreen.main
-            let gamut = s.traitCollection.displayGamut == .P3 ? "P3" : s.traitCollection.displayGamut == .SRGB ? "sRGB" : "unspecified"
-            HengeLog.log("colorprobe", "colorprobe: v=1 src=swift event=screen gamut=\(gamut) scale=\(s.scale) nativeScale=\(s.nativeScale) "
-                       + "bounds=\(Int(s.bounds.width))x\(Int(s.bounds.height)) maxEDR=\(s.potentialEDRHeadroom) currentEDR=\(s.currentEDRHeadroom) "
-                       + "brightness=\(String(format: "%.2f", s.brightness)) refreshHz=\(s.maximumFramesPerSecond)")
-        }
         let view = Screen(display: display, role: role, surface: surface)
         setColorSpace(view)
         setCorners(view)

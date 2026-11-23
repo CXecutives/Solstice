@@ -248,28 +248,36 @@ static void poll_locked(HvVmapple *b) {
 /* Each CPU's timers (the GIC's lock only; every GIC state change already updated the CPU's lines). CPU 0 also polls the
    devices, under the device lock (they are shared by the CPUs: one at a time), but only when something woke it for
    them (hv_machine_wake: a device thread with work; the kicker's poll while a device has work it does not signal) or
-   a device deadline is due: the display's refresh, on its own grid (pvg_lite.c), or poll_period since the last poll.
-   Not for interrupts raised for it, timer register writes, WFE timeouts or TLBI kicks. Returns the earliest of its
+   a device deadline is due: the display's refresh, on its own grid (pvg_lite.c), or poll_period since the last poll
+   (poll_due). Not for interrupts raised for it, timer register writes, WFE timeouts or TLBI kicks. Returns the earliest of its
    deadlines; the guest timer's alone goes to guest_due (hv_resume). */
 static uint64_t guest_due(HvCpu *cpu, uint64_t deadline) {
     if (cpu->pc_state) __atomic_store_n(&cpu->pc_state->guest_due, deadline, __ATOMIC_RELAXED);
     return deadline;
 }
 
+/* CPU 0's next device poll: poll_period after the last one, or HV_POLL_BUSY after it while a device has work it does
+   not signal (hv_machine_unsignalled): the kicker polls only a running CPU 0, so asleep it keeps that cadence itself. */
+static uint64_t poll_due(HvMachine *m, const HvVmapple *b, uint64_t period) {
+    if (b->poll_due && period > HV_POLL_BUSY && __atomic_load_n(&m->dev_unsignalled, __ATOMIC_SEQ_CST)) return b->poll_due - period + HV_POLL_BUSY;
+    return b->poll_due;
+}
+
 static uint64_t tick(HvMachine *m, HvCpu *cpu) {
     HvVmapple *b = m->tick_opaque;
     if (cpu->index != 0) return guest_due(cpu, hv_timer_update(b->gic, cpu));
-    uint64_t now = mach_absolute_time();
-    uint64_t vb = hv_pvg_lite_next_vblank(b->pvg);
-    if (__atomic_exchange_n(&m->percpu[0].poll_req, 0, __ATOMIC_ACQ_REL) || now >= b->poll_due || (vb && now >= vb)) {
+    uint64_t now = mach_absolute_time(), period = b->poll_period ? b->poll_period : HV_DEV_SAFETY;
+    uint64_t vb = hv_pvg_lite_next_vblank(b->pvg), due = poll_due(m, b, period);
+    if (__atomic_exchange_n(&m->percpu[0].poll_req, 0, __ATOMIC_ACQ_REL) || now >= due || (vb && now >= vb)) {
         hv_dev_lock(m);
         poll_locked(b);
         hv_dev_unlock(m);
-        b->poll_due = now + (b->poll_period ? b->poll_period : HV_DEV_SAFETY);
+        b->poll_due = now + period;
         vb = hv_pvg_lite_next_vblank(b->pvg);
+        due = poll_due(m, b, period);
         HV_ST(cpu).dev_polls++;
     }
-    uint64_t deadline = guest_due(cpu, hv_timer_update(b->gic, cpu)), dev = vb && vb < b->poll_due ? vb : b->poll_due;
+    uint64_t deadline = guest_due(cpu, hv_timer_update(b->gic, cpu)), dev = vb && vb < due ? vb : due;
     return deadline && deadline < dev ? deadline : dev;
 }
 

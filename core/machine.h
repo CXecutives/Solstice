@@ -91,6 +91,7 @@ typedef struct HvStats {
     uint64_t dev_waits, dev_wait_ticks; /* device lock taken while another CPU held it */
     uint64_t tr_waits, tr_wait_ticks;   /* translation lock likewise */
     uint64_t words_inline, words_ool, words_pool; /* translated code size by part */
+    uint64_t words_cold[5];   /* the out-of-line part by what it is for (HV_COLD_*, translate.h) */
     uint64_t refills;
     uint64_t ijc_light;       /* branch-cache misses resolved without the dispatcher (hv_ijc_resolve) */         /* TLB misses filled by the light path (hv_tlb_refill) */
     uint64_t stash_saves, stash_hits, stash_entries; /* user TLB entries kept across process switches */
@@ -162,11 +163,20 @@ typedef struct HvStormSlot { uint32_t id, n; } HvStormSlot;
 typedef struct HvStorm {
     uint64_t t0, wfi0;           /* the window's start: host time, and the CPU's WFI count then */
     uint32_t acks;               /* interrupts acknowledged in the window */
-    uint8_t armed, logged;       /* the last window was hot (record now); this episode was logged */
+    uint8_t armed, logged;       /* recording (a hot window came; until the episode ends); this episode was logged */
+    uint8_t cool;                /* windows that were not hot in a row, this episode */
+    uint8_t report;              /* HV_STORM_BEGAN / HV_STORM_OVER: for hv_storm_report to print */
     uint32_t episodes;           /* storms logged */
-    uint64_t began;              /* host time the episode's first hot window ended */
+    uint64_t began, lasted;      /* host time the episode's first hot window ended; how long the last one lasted */
     HvStormSlot irq[HV_STORM_SLOTS], msr[HV_STORM_SLOTS]; /* while armed: interrupt ids, MSRs written */
+    struct {                     /* the window that was logged, as hv_storm_report prints it */
+        uint64_t ticks, wfis, pc, cntv_ctl, cntp_ctl;
+        int64_t cntv_left, cntp_left; /* ticks to the timers' compare values */
+        uint32_t acks, el;
+        HvStormSlot irq[HV_STORM_SLOTS], msr[HV_STORM_SLOTS];
+    } seen;
 } HvStorm;
+enum { HV_STORM_BEGAN = 1, HV_STORM_OVER = 2 };
 
 #define HV_MAX_CPUS 8
 #define HV_WHINT_MANY (1ull << 63) /* whint: more than three; else up to three TLB codes + 1, 16 bits each */
@@ -532,18 +542,26 @@ void hv_cpu_kick(HvCpu *cpu);
 void hv_machine_wake(HvMachine *m);
 
 /* Device work no thread signals, which only a poll finds (HV_UNSIG_* bits, set and cleared by the device): while any
-   is set, the kicker has CPU 0 poll every HV_POLL_BUSY while it runs. With none, CPU 0 polls when a device signals
+   is set, CPU 0 polls every HV_POLL_BUSY (asked by the kicker while it runs, by its own tick while it sleeps). With none, CPU 0 polls when a device signals
    (hv_machine_wake), at its device deadlines (the display's refresh) and every HV_DEV_SAFETY. */
 enum { HV_UNSIG_PVG_CHAN = 1u << 0 /* a display channel waits for another channel's stamp (pvg_lite.c) */ };
+enum { HV_UNSIG_SND_CLOCK = 1u << 1 /* sound drains by the wall clock with buffers waiting (virtio_snd.c) */ };
 void hv_machine_unsignalled(HvMachine *m, uint32_t bit, int on);
 
 /* Interrupt storms (an idle CPU taken out of WFI by an interrupt tens of thousands of times a second): each CPU counts
    its acknowledged interrupts in windows of HV_STORM_WINDOW; a window faster than HV_STORM_RATE a second in which
    WFI came as often as 3 in 4 interrupts is hot. After one hot window the next records which interrupts and which
-   system register writes, and logs them once; the episode ends with the first window that is not hot. */
+   system register writes, and logs them once; the episode ends after HV_STORM_COOL windows in a row that are not hot
+   (a rate near the threshold is one episode, not one every few seconds). hv_storm_irq runs in the GIC's register
+   path and only notes what to print; hv_storm_flush prints it from the dispatcher. */
 #define HV_STORM_WINDOW 8192u
 #define HV_STORM_RATE 10000u
+#define HV_STORM_COOL 2
 void hv_storm_irq(HvCpu *cpu, uint32_t intid);
+void hv_storm_report(HvCpu *cpu);
+static inline void hv_storm_flush(HvCpu *cpu) {
+    if (cpu->pc_state && __builtin_expect(cpu->pc_state->storm.report, 0)) hv_storm_report(cpu);
+}
 /* Counts id in a storm table; once it is full, the rest count in the last slot as id ~0. */
 static inline void hv_storm_count(HvStormSlot *t, uint32_t id) {
     unsigned i = 0;
