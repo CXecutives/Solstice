@@ -120,7 +120,7 @@ enum InstantResume {
         guard !StorageGuard.holding else { return }
         let hot = PowerPolicy.shared.keepsPaused()
         queue.async {
-            guard henge_vm_state() == 4 else { return }
+            guard henge_vm_state() == 4, PowerPolicy.inFront else { return } // away again before this ran: stays paused, its save good
             discard(for: mac)
             if hot {
                 HengeLog.log("resume", "back: the Mac stays paused until the device cools")

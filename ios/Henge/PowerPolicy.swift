@@ -16,6 +16,9 @@ final class PowerPolicy: ObservableObject {
     @Published private(set) var holding = false
     private var level = 0 // 0 normal, 1 Low Power Mode, 2 hot, 3 too hot to run
     private var started = false, logged = false // the state at launch is logged too
+    /// Solstice is in front (active). Read on InstantResume.queue: a Mac paused for heat, or paused while away, runs on
+    /// only in front (in the background the GPU is not Solstice's and the Mac would heat the device up again).
+    nonisolated(unsafe) static var inFront = true
 
     /// What the levels do, for the log.
     private static let meaning = ["normal", "saving power (no WFI spin)",
@@ -41,6 +44,13 @@ final class PowerPolicy: ObservableObject {
                 MainActor.assumeIsolated { PowerPolicy.shared.update() }
             }
         }
+        Self.inFront = UIApplication.shared.applicationState == .active
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            PowerPolicy.inFront = true
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+            PowerPolicy.inFront = false
+        }
         update()
     }
 
@@ -64,10 +74,12 @@ final class PowerPolicy: ObservableObject {
         let state = henge_vm_state()
         if holding && state != 1 && state != 4 { holding = false } // stopped meanwhile
         if holding && level < 3 {
+            // Cooler while away: it stays paused (and its save stays good) until Solstice is in front again.
+            guard UIApplication.shared.applicationState == .active else { return }
             holding = false
             guard !StorageGuard.holding else { return }
             InstantResume.queue.async {
-                guard henge_vm_state() == 4 else { return }
+                guard henge_vm_state() == 4, PowerPolicy.inFront else { return }
                 HengeLog.log("power", henge_vm_continue() == 0 ? "cooler: the Mac runs on" : "cooler, but the Mac could not run on")
             }
             return

@@ -215,6 +215,12 @@ enum MemoryRelief {
         let state = henge_vm_state()
         guard state == 1 || state == 4 else { targetMB = 0; return } // that Mac is gone
         guard state == 1, !askedForBackground else { return }
+        // A Mac brought back by Instant Resume keeps what its balloon held when saved: take that over, or it would
+        // never get it back (easing only gives back what was asked for in this launch).
+        if targetMB == 0 {
+            let held = Int(henge_vm_balloon(-1))
+            if held > 0 { targetMB = held }
+        }
         let room = henge_system_headroom_mb(), marks = Device.profile.headroomMB, now = Date()
         if room >= 0 && room < marks.lowerBound {
             guard now.timeIntervalSince(lastGrow) >= 2, henge_vm_balloon(-1) + 64 >= targetMB else { return }
