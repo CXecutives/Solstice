@@ -5,13 +5,13 @@ enum Device {
     static let isPad = UIDevice.current.userInterfaceIdiom == .pad
     static let name = isPad ? "iPad" : "iPhone"
 
-    /// The panel, its density and its landscape insets, as MacScreen sizes a Mac's screen for them.
+    /// The screen in render pixels (as the layout and the presenter see it), its density and its landscape insets, as
+    /// MacScreen sizes a Mac's screen for them.
     static var screenFacts: ScreenFacts {
-        let screen = UIScreen.main, n = screen.nativeBounds.size
-        return ScreenFacts(panel: PixelSize(width: Int(max(n.width, n.height)), height: Int(min(n.width, n.height))),
-                           scale: Double(screen.nativeScale), sideInset: landscapeSideInset,
-                           ppi: DeviceProfile.ppi(isPad: isPad, scale: Double(screen.scale), mini: marketingName.contains("mini")),
-                           kind: profile.screenClass)
+        let screen = UIScreen.main
+        return ScreenFacts.landscape(points: screen.bounds.size, scale: Double(screen.scale), sideInset: landscapeSideInset,
+                                     ppi: DeviceProfile.ppi(isPad: isPad, scale: Double(screen.scale), mini: marketingName.contains("mini")),
+                                     kind: profile.screenClass)
     }
 
     /// What a Mac keeps clear of at each side on its side (the Dynamic Island or notch), the same at both so a turn by

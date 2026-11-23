@@ -83,6 +83,20 @@ struct MacScreenTests {
         for v in [soft.minX, soft.minY, soft.width, soft.height] { check((v * 3).rounded() == v * 3, "edges on device pixels (\(soft))") }
         check(soft.height == 402 && soft.midX == 49 + 388, "a soft fit fills the height, centred in the safe area (\(soft))")
 
+        // iPhone 13 mini: 375 × 812 points at scale 3, 1125 × 2436 render pixels (the panel itself is 1080 × 2340, at
+        // 2.88). Sized in render pixels, a Mac's screen is laid out at the factor MacScreen gives it: a whole one stays whole.
+        let mini = ScreenFacts.landscape(points: CGSize(width: 375, height: 812), scale: 3, sideInset: 50,
+                                         ppi: DeviceProfile.ppi(isPad: false, scale: 3, mini: true), kind: .leanPhone)
+        check(mini.panel == px(2436, 1125) && mini.scale == 3, "mini: render pixels, not the panel's (\(mini.panel))")
+        for choice in MacScreen.offered(mini) {
+            let s = choice.screen
+            let shown = PixelFit.fit(CGSize(width: s.pixels.width, height: s.pixels.height),
+                                     in: CGRect(x: 50, y: 0, width: 812 - 2 * 50, height: 375), scale: 3)
+            let factor = Double(shown.width) * 3 / Double(s.pixels.width)
+            check(abs(factor - s.factor) * Double(s.pixels.width) < 1, "mini \(choice.preset): laid out at MacScreen's factor (\(factor), \(s.factor))")
+            if s.crisp { check(abs(factor - s.factor) < 1e-9, "mini \(choice.preset): a whole factor is whole on screen (\(factor))") }
+        }
+
         // Refresh rates the panel can show.
         check(DeviceProfile.refreshChoices(panelMax: 60) == [30, 60], "a 60 Hz panel: no 120")
         check(DeviceProfile.refreshChoices(panelMax: 120) == [30, 60, 120], "ProMotion: up to 120")

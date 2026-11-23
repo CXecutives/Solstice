@@ -153,6 +153,10 @@ private struct GPUScreen: UIViewRepresentable {
         private func attachIfReady() {
             guard window != nil, bounds.width > 0, bounds.height > 0,
                   let metal = layer as? CAMetalLayer else { return }
+            // The presenter sizes its drawables from bounds × contentsScale: the render pixels the layout counts in,
+            // set here rather than left to UIKit for a layer it did not make.
+            let scale = traitCollection.displayScale
+            if scale > 0, metal.contentsScale != scale { metal.contentsScale = scale }
             if !attached {
                 attached = true
                 lastSize = bounds.size
