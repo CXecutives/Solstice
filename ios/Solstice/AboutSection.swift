@@ -16,7 +16,7 @@ struct AboutSection: View {
         Section {
             LabeledContent("Version", value: version)
             Link(destination: Self.source) {
-                LabeledContent("Source Code") { Image(systemName: "arrow.up.right").foregroundStyle(.secondary) }
+                LabeledContent("Source code") { Image(systemName: "arrow.up.right").foregroundStyle(.secondary) }
             }
             .foregroundStyle(Desk.text)
         } header: {

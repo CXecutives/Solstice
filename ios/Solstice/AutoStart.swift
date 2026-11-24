@@ -19,6 +19,6 @@ enum AutoStart {
     static func succeeded() { UserDefaults.standard.set(0, forKey: SettingKey.autoStartFailures.rawValue) }
     /// What the Home screen says when auto-start held off.
     static func heldOffNotice(_ name: String) -> String {
-        "\(name) did not start by itself: the last two starts did not get going. Start it once by hand to turn this back on."
+        "\(name) was not started for you because its last two starts failed. Start it yourself once to turn this back on."
     }
 }

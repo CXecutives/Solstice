@@ -29,7 +29,7 @@ enum LifecycleWatchdog {
         var text: String {
             switch self {
             case .stopping, .busy:
-                return "Solstice could not finish with this Mac. Quit Solstice and open it again; the Mac's disk is safe."
+                return "Solstice could not stop this Mac. Quit Solstice and open it again. The Mac's disk is safe."
             case .shutdownIgnored:
                 return "It may be asking about unsaved documents on its screen. Force Off turns it off at once; anything not saved is lost."
             }

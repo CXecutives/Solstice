@@ -21,7 +21,7 @@ struct MacOSRelease {
     static let current = MacOSRelease(
         id: "24G90", name: "macOS Sequoia 15.6.1",
         url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
-        bytes: 16_035 << 20, note: "The version Solstice is built and tuned for.",
+        bytes: 16_035 << 20, note: "The version Solstice is tested with.",
         // Hashed from Apple's CDN (16,814,137,790 bytes) and the same in the public IPSW catalogue.
         sha256: "3d87686b691ac765eb6a6b3082b2334e2af9710096a00432dd519af89ff2ea78")
 }
@@ -194,7 +194,7 @@ final class Installer: NSObject, ObservableObject {
             } catch {
                 if RangedDownload.storageFull(error) {
                     SolsticeLog.log("install", "download stopped: storage is full (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part))))")
-                    throw message("Storage is full. Make room in Settings, General, Storage, then install again: the download goes on where it stopped.")
+                    throw message("Storage is full. Make room in Settings, General, \(Device.name) Storage, then install again. The download goes on where it stopped.")
                 }
                 if Task.isCancelled || attempt == 20 || !RangedDownload.retryable(error) { throw error }
                 SolsticeLog.log("install", "download interrupted (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part)))); going on")
@@ -206,7 +206,7 @@ final class Installer: NSObject, ObservableObject {
                 guard digest == want.lowercased() else {
                     SolsticeLog.log("install", "the download's SHA-256 is \(digest), not \(want): deleting it")
                     try? FileManager.default.removeItem(at: part)
-                    throw message("The download was damaged. Try again to download it afresh.")
+                    throw message("The download was damaged. Try again and it downloads from the start.")
                 }
                 SolsticeLog.log("install", "the download's SHA-256 matches (\(digest))")
             } else {

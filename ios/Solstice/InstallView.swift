@@ -121,7 +121,7 @@ struct InstallView: View {
         .padding(.top, 20)
         Text(Device.chipTooOld ? Device.chipTooOldText
              : "Keep Solstice open and the \(Device.name) plugged in. Needs about \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) free."
-               + (jitReady ? "" : " The download starts now; the install goes on once JIT is on."))
+               + (jitReady ? "" : " The download starts now. The install goes on once JIT is on."))
             .font(.system(size: 13))
             .foregroundStyle(Desk.dim)
             .multilineTextAlignment(.center)

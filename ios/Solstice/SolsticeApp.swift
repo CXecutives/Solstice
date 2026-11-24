@@ -82,9 +82,9 @@ struct RootView: View {
         .background(WindowStyle(style: running != nil ? .dark : appearance.style))
         .alert("Safe mode", isPresented: $safeModeNotice) {
             Button("OK", role: .cancel) {}
-            Button("Use Solstice's Settings") { SafeMode.turnOff() }
+            Button("Use Solstice's settings") { SafeMode.turnOff() }
         } message: {
-            Text("The last two times, Solstice ended while a Mac was running. Until the next update it starts Macs with the original engine settings. Settings > Advanced turns this off.")
+            Text("The last two times, Solstice ended while a Mac was running. Until the next update it starts Macs with the original engine settings. Settings, Performance turns this off.")
         }
         .sheet(isPresented: $jit.showSetup) { JITSetupFlow() }
         // Swiped away in the app switcher while a Mac ran: a quit, not a crash, for SafeMode.
