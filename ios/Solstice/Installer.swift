@@ -194,7 +194,7 @@ final class Installer: NSObject, ObservableObject {
             } catch {
                 if RangedDownload.storageFull(error) {
                     SolsticeLog.log("install", "download stopped: storage is full (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part))))")
-                    throw message("Storage is full. Make room in Settings, General, \(Device.name) Storage, then install again. The download goes on where it stopped.")
+                    throw message("Storage is full. Make room under Settings > General > \(Device.name) Storage, then install again. The download continues where it stopped.")
                 }
                 if Task.isCancelled || attempt == 20 || !RangedDownload.retryable(error) { throw error }
                 SolsticeLog.log("install", "download interrupted (\(error.localizedDescription)) at \(ByteText.string(UInt64(RangedDownload.size(of: part)))); going on")

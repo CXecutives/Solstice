@@ -106,7 +106,7 @@ struct HeatNotice: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("This \(Device.name) is too hot").font(.system(size: 17, weight: .semibold))
-            Text("The Mac is paused so the \(Device.name) can cool down. It goes on by itself once it has.")
+            Text("The Mac is paused so the \(Device.name) can cool down. It continues by itself once it has.")
                 .font(.system(size: 14)).foregroundStyle(Desk.dim)
         }
         .padding(18)

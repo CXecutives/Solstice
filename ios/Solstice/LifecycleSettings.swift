@@ -9,11 +9,11 @@ struct LifecycleSettings: View {
 
     var body: some View {
         Section {
-            Toggle("Keep Solstice awake", isOn: $keepAlive)
-            Toggle("Resume where you left off", isOn: $instantResume)
-            Toggle("Start the last Mac when Solstice opens", isOn: $autoStart)
+            Toggle("Keep Solstice Awake", isOn: $keepAlive)
+            Toggle("Resume Where You Left Off", isOn: $instantResume)
+            Toggle("Start the Last Mac at Launch", isOn: $autoStart)
         } header: {
-            Text("Instant Resume")
+            Text("Start & Resume")
         } footer: {
             Text("When you leave Solstice, the Mac pauses, so its sound stops. After \(Int(InstantResume.saveAfter)) seconds it is saved to storage, and opening it again picks up where it was in a few seconds, even after iOS closes Solstice. Keeping Solstice awake makes it much less likely that iOS closes it.")
         }

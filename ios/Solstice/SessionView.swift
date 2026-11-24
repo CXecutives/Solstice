@@ -398,7 +398,7 @@ struct SessionView: View {
     private func storageCard(_ layout: Layout) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Storage is almost full").font(.system(size: 17, weight: .semibold))
-            Text("\(ByteText.string(UInt64(max(storageFree, 0)))) free. The Mac is paused so its disk cannot fill this \(Device.name). It needs \(ByteText.string(UInt64(StorageGuard.minimumFree))) free. Make room in Settings, General, \(Device.name) Storage, then resume it.")
+            Text("\(ByteText.string(UInt64(max(storageFree, 0)))) free. The Mac is paused so its disk cannot fill this \(Device.name). It needs \(ByteText.string(UInt64(StorageGuard.minimumFree))) free. Make room under Settings > General > \(Device.name) Storage, then resume it.")
                 .font(.system(size: 14)).foregroundStyle(Desk.dim)
             Button(storageRoom ? "Resume the Mac" : "Waiting for free storage…") { session.resumeAfterStorage() }
             .disabled(!storageRoom)
@@ -458,7 +458,7 @@ struct SessionView: View {
                         }
                     }
                     Text(helperRunning
-                         ? "Put files in Files, On My \(Device.name), \(Brand.name), Shared to see them in the \(Brand.shareName) folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
+                         ? "Put files in Files > On My \(Device.name) > \(Brand.name) > Shared to see them in the \(Brand.shareName) folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
                          : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about solstice-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) for the Mac keyboard layout chosen in Settings (\(KeyLayout.current.title)).")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

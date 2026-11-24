@@ -21,7 +21,7 @@ struct MacSettingsView: View {
 
     /// When what a Mac starts with takes effect: a Mac Instant Resume saved goes back into what it had (Restart Now
     /// starts it afresh at once).
-    private static let appliesAt = "Changes apply the next time this Mac starts from cold, not when it picks up where it left off."
+    private static let appliesAt = "Changes apply the next time this Mac starts fresh, not when it resumes."
 
     /// Settings the Mac only takes when it starts.
     private var startChanged: Bool {
@@ -88,14 +88,14 @@ struct MacSettingsView: View {
                 start(mac)
             }
         } message: {
-            Text("The Mac starts from cold. Anything not saved on it is lost.")
+            Text("The Mac starts fresh. Anything not saved on it is lost.")
         }
     }
 
     private var memory: some View {
         let choices = Device.memoryChoices
         let gb = min(max(mac.ramMB / 1024, choices.lowerBound), choices.upperBound)
-        let cap = Device.profile.guestCapMB == nil ? nil : "A Mac starts with up to \(choices.upperBound) GB on this \(Device.name)."
+        let cap = Device.profile.guestCapMB == nil ? nil : "This \(Device.name) can give a Mac up to \(choices.upperBound) GB."
         let note = [cap, Device.memoryNote(gb), Self.appliesAt].compactMap { $0 }.joined(separator: " ")
         return Section {
             Stepper(value: Binding(get: { gb }, set: { mac.ramMB = $0 * 1024; save() }), in: choices) {
@@ -110,13 +110,13 @@ struct MacSettingsView: View {
 
     private var about: some View {
         Section {
-            Toggle("Report this \(Device.name)", isOn: Binding(get: { mac.reportHostIdentity ?? false }, set: {
+            Toggle("Report This \(Device.name)", isOn: Binding(get: { mac.reportHostIdentity ?? false }, set: {
                 mac.reportHostIdentity = $0
                 if !$0 { mac.reportHostModelID = false }
                 save()
             }))
             if mac.reportHostIdentity == true {
-                Toggle("Also report a model identifier", isOn: Binding(get: { mac.reportHostModelID ?? false }, set: { mac.reportHostModelID = $0; save() }))
+                Toggle("Also Report a Model Identifier", isOn: Binding(get: { mac.reportHostModelID ?? false }, set: { mac.reportHostModelID = $0; save() }))
             }
         } header: {
             Text("About This Mac")
@@ -153,12 +153,12 @@ struct MacSettingsView: View {
             }
             if let folder = machines.lastExport {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Saved in Files, On My \(Device.name), Solstice, Exports, \(folder.lastPathComponent). Deleting Solstice deletes it too, so move it somewhere else first.")
+                    Text("Saved in Files > On My \(Device.name) > Solstice > Exports > \(folder.lastPathComponent). Deleting Solstice deletes it too, so move it somewhere else first.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Button("Move Out of Solstice…") { movingExport = true }
                 }
             }
-            Button("Delete this Mac", role: .destructive) { confirmDelete = true }
+            Button("Delete This Mac", role: .destructive) { confirmDelete = true }
         } header: {
             Text("Manage")
         }

@@ -350,7 +350,7 @@ final class SessionController: ObservableObject {
     static func saveDoesNotFit(saved: StartShape.Shape, fitsMB: UInt64) -> String {
         "This Mac was saved with \(ByteText.string(saved.ramMB << 20)) of memory, but only \(ByteText.string(fitsMB << 20)) fits "
             + "on this \(Device.name) right now. The saved Mac is kept. Free some storage or close "
-            + "other apps, then open it again. To start it from cold instead, lower its Memory "
+            + "other apps, then open it again. To start it fresh instead, lower its Memory "
             + "in its settings and tap Restart Now. Anything not saved on it is lost."
     }
 }

@@ -7,7 +7,7 @@ enum PointerMode: String, CaseIterable, Identifiable {
     case direct   // the finger is the pointer: it goes where you touch, and a tap clicks there
 
     var id: String { rawValue }
-    var title: String { self == .trackpad ? "Trackpad" : "Direct touch" }
+    var title: String { self == .trackpad ? "Trackpad" : "Direct Touch" }
 }
 
 /// The touch surface's timing, as the person set it.
@@ -52,27 +52,27 @@ struct PointerSettings: View {
             }
             .pickerStyle(.segmented)
             VStack(alignment: .leading, spacing: 4) {
-                LabeledContent("Hold to drag", value: String(format: "%.2f s", hold))
+                LabeledContent("Hold to Drag", value: String(format: "%.2f s", hold))
                 Slider(value: $hold, in: 0.2...1, step: 0.05)
             }
             VStack(alignment: .leading, spacing: 4) {
-                LabeledContent("Tap then drag", value: tapDrag < 0.01 ? "Off" : String(format: "%.2f s", tapDrag))
+                LabeledContent("Double-Tap to Drag", value: tapDrag < 0.01 ? "Off" : String(format: "%.2f s", tapDrag))
                 Slider(value: $tapDrag, in: 0...0.5, step: 0.05)
             }
             ScrollSpeedRow()
             if Device.isPad {
                 VStack(alignment: .leading, spacing: 4) {
-                    LabeledContent("Pointer speed", value: String(format: "%.1f×", mouseSpeed))
+                    LabeledContent("Pointer Speed", value: String(format: "%.1f×", mouseSpeed))
                     Slider(value: $mouseSpeed, in: HardwareMouse.speeds)
                 }
-                Toggle("Reverse scrolling", isOn: $reverseScrolling)
-                Toggle("Swap right and middle buttons", isOn: $swapButtons)
+                Toggle("Reverse Scrolling", isOn: $reverseScrolling)
+                Toggle("Swap Right and Middle Buttons", isOn: $swapButtons)
             }
         } header: {
-            Text("Mouse and Trackpad")
+            Text("Trackpad & Mouse")
         } footer: {
             Text((mode == .trackpad
-                  ? "Tap to click. Tap with two fingers to right-click. Hold, or tap and then touch again, to drag. With Tap then drag off, a click is sent at once."
+                  ? "Tap to click. Tap with two fingers to right-click. To drag, hold, or double-tap and keep your finger down. With Double-Tap to Drag off, a click is sent at once."
                   : "The pointer goes where you touch. Tap to click, hold to drag. Two fingers still scroll, pinch, swipe and right-click.")
                  + (Device.isPad ? " Pointer speed and swapped buttons apply the next time a Mac starts." : ""))
         }
@@ -86,7 +86,7 @@ struct ScrollSpeedRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            LabeledContent("Scroll speed", value: String(format: "%.1f×", speed / SettingDefault.scrollSpeed))
+            LabeledContent("Scroll Speed", value: String(format: "%.1f×", speed / SettingDefault.scrollSpeed))
             Slider(value: $speed, in: HardwareMouse.scrollSpeeds)
         }
     }
@@ -99,14 +99,14 @@ struct KeyboardSettings: View {
 
     var body: some View {
         Section {
-            Picker("Layout", selection: $layout) {
+            Picker("Mac Keyboard Layout", selection: $layout) {
                 ForEach(KeyLayout.allCases) { Text($0.title).tag($0) }
             }
-            Toggle("Send copied text to the Mac", isOn: $sync)
+            Toggle("Send Copied Text to the Mac", isOn: $sync)
         } header: {
             Text("Keyboard")
         } footer: {
-            Text("Choose the layout that is set in the Mac's System Settings, Keyboard. Copied text reaches the Mac while Solstice is in front. iOS asks each time unless Paste from Other Apps is set to Allow in Settings, Apps, Solstice. Both need Solstice's helper on the Mac.")
+            Text("Choose the layout that is set on the Mac under System Settings > Keyboard. Copied text reaches the Mac while Solstice is in front. iOS asks each time unless you set Paste from Other Apps to Allow under Settings > Apps > Solstice. Both need Solstice's helper on the Mac.")
         }
     }
 }

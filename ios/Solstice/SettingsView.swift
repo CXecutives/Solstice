@@ -12,8 +12,8 @@ struct SettingsView: View {
                 Group {
                     Section {
                         LabeledContent("Status", value: JITBootstrap.ready ? "On" : "Off")
-                        Button("Set up JIT") { jit.showSetup = true }
-                        Toggle("Turn on JIT when Solstice opens", isOn: $jitAtLaunch)
+                        Button("Set Up JIT") { jit.showSetup = true }
+                        Toggle("Turn On JIT at Launch", isOn: $jitAtLaunch)
                     } header: {
                         Text("JIT")
                     } footer: {
@@ -57,22 +57,22 @@ private struct AdvancedSettings: View {
     var body: some View {
         Section {
             if safeMode {
-                LabeledContent("Safe mode", value: "On")
-                Button("Use Solstice's settings") { SafeMode.turnOff(); safeMode = false }
+                LabeledContent("Safe Mode", value: "On")
+                Button("Turn Off Safe Mode") { SafeMode.turnOff(); safeMode = false }
             }
-            Picker("Mac refresh rate", selection: Binding(
+            Picker("Refresh Rate", selection: Binding(
                 get: { refreshRate.flatMap { Device.refreshChoices.contains($0) ? $0 : nil } },
                 set: { refreshRate = $0 })) {
                 Text("Automatic (\(Device.defaultRefresh) Hz)").tag(Int?.none)
                 ForEach(Device.refreshChoices, id: \.self) { Text("\($0) Hz").tag(Int?.some($0)) }
             }
-            Picker("Code cache", selection: Binding(
+            Picker("Code Cache", selection: Binding(
                 get: { codeCacheMB.flatMap { cacheChoices.contains($0) ? $0 : nil } },
                 set: { codeCacheMB = $0 })) {
                 Text("Automatic (\(Self.size(Device.profile.codeCacheMB)))").tag(Int?.none)
                 ForEach(cacheChoices, id: \.self) { Text(Self.size($0)).tag(Int?.some($0)) }
             }
-            Toggle("Faster disk writes", isOn: $fastFlush)
+            Toggle("Faster Disk Writes", isOn: $fastFlush)
         } header: {
             Text("Performance")
         } footer: {
@@ -93,12 +93,12 @@ private struct DiagnosticsSettings: View {
 
     var body: some View {
         Section {
-            LabeledContent("Extra memory", value: Entitlements.increasedMemory ? "On" : "Off")
-            LabeledContent("Memory limit", value: ByteText.string(UInt64(Entitlements.memoryLimitAtLaunch)))
-            LabeledContent("Free for Solstice", value: ByteText.string(UInt64(solstice_available_memory())))
-            LabeledContent("Code region", value: "\(JITBootstrap.regionBytes >> 20) MB")
-            ShareLink(item: SolsticeLog.logFileURL) { Label("Share solstice.log", systemImage: "square.and.arrow.up") }
-            Toggle("Stream the log to a computer", isOn: $streamOn)
+            LabeledContent("Increased Memory Limit", value: Entitlements.increasedMemory ? "On" : "Off")
+            LabeledContent("Memory Limit", value: ByteText.string(UInt64(Entitlements.memoryLimitAtLaunch)))
+            LabeledContent("Available Memory", value: ByteText.string(UInt64(solstice_available_memory())))
+            LabeledContent("Code Region", value: "\(JITBootstrap.regionBytes >> 20) MB")
+            ShareLink(item: SolsticeLog.logFileURL) { Label("Share Log", systemImage: "square.and.arrow.up") }
+            Toggle("Stream Log to a Computer", isOn: $streamOn)
             if streamOn {
                 TextField("Computer's Address", text: $streamHost)
                     .keyboardType(.numbersAndPunctuation)
@@ -110,10 +110,10 @@ private struct DiagnosticsSettings: View {
                         .multilineTextAlignment(.trailing)
                 }
                 LabeledContent("State", value: stream.statusText)
-                if stream.dropped > 0 { LabeledContent("Lines dropped", value: "\(stream.dropped)") }
+                if stream.dropped > 0 { LabeledContent("Lines Dropped", value: "\(stream.dropped)") }
             }
         } header: {
-            Text("Memory and Log")
+            Text("Diagnostics")
         } footer: {
             let note = (Entitlements.increasedMemory ? "" : "This install isn't signed with the increased memory limit entitlement. Reinstall Solstice with a certificate that has it. Export your Macs first if the reinstall replaces the app's data. ")
                 + (streamOn ? "tools/solstice-log-listen.py on the computer shows the address to type here. iOS asks for local network access the first time." : "")

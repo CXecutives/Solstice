@@ -121,7 +121,7 @@ struct InstallView: View {
         .padding(.top, 20)
         Text(Device.chipTooOld ? Device.chipTooOldText
              : "Keep Solstice open and the \(Device.name) plugged in. Needs about \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) free."
-               + (jitReady ? "" : " The download starts now. The install goes on once JIT is on."))
+               + (jitReady ? "" : " The download starts now. The install continues once JIT is on."))
             .font(.system(size: 13))
             .foregroundStyle(Desk.dim)
             .multilineTextAlignment(.center)
@@ -141,7 +141,7 @@ struct InstallView: View {
                 if let size = Installer.imageSize(release) {
                     Text("Downloaded, \(ByteText.string(UInt64(size)))").font(.system(size: 13)).foregroundStyle(Desk.good)
                 } else if let part = Installer.partSize(release) {
-                    Text("\(ByteText.string(UInt64(part))) of \(ByteText.string(UInt64(release.bytes))) downloaded: goes on from there")
+                    Text("\(ByteText.string(UInt64(part))) of \(ByteText.string(UInt64(release.bytes))) downloaded. The download continues from there.")
                         .font(.system(size: 13)).foregroundStyle(Desk.dim)
                 } else {
                     Text("\(ByteText.string(UInt64(release.bytes))) download").font(.system(size: 13)).foregroundStyle(Desk.dim)
@@ -191,7 +191,7 @@ struct InstallView: View {
     @ViewBuilder private var progress: some View {
         if case .waitingForJIT = installer.phase {
             VStack(spacing: 10) {
-                Text("Downloaded. Turn on JIT and the install goes on by itself.")
+                Text("Downloaded. Turn on JIT and the install continues by itself.")
                     .font(.system(size: 15, weight: .semibold))
                     .multilineTextAlignment(.center)
                 Button("Turn On JIT") { jit.enable() }.buttonStyle(DeskButtonStyle())
