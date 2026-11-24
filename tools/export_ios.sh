@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Makes a folder Henge on iOS can bring in: drop it on Henge in Finder (the
+# Makes a folder Solstice on iOS can bring in: drop it on Solstice in Finder (the
 # iPhone's Files section) or pick it in the Files app.
 #   tools/export_ios.sh DISK AUX ECID [NAME] [RAM_MB] [OUTDIR]
 # The disk goes in packed (disk.img.hvsparse: holes left out) so that 64 GB of

@@ -30,10 +30,10 @@ static void cursor_settings_refresh(void) {
     if (now < atomic_load_explicit(&cursor_settings_next, memory_order_relaxed)) return;
     atomic_store_explicit(&cursor_settings_next, now + 24000000, memory_order_relaxed); /* 1 s of 24 MHz ticks */
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    atomic_store(&cursor_saved_scale, (int)[d integerForKey:@"henge.cursor.scale"]);
-    NSNumber *sharp = [d objectForKey:@"henge.cursor.sharp"];
+    atomic_store(&cursor_saved_scale, (int)[d integerForKey:@"solstice.cursor.scale"]);
+    NSNumber *sharp = [d objectForKey:@"solstice.cursor.sharp"];
     atomic_store(&cursor_sharp, !sharp || sharp.boolValue);
-    id bright = [d objectForKey:@"henge.display.brightness"];
+    id bright = [d objectForKey:@"solstice.display.brightness"];
     double b = [bright isKindOfClass:[NSNumber class]] ? [bright doubleValue] : 1;
     b = b >= 0.4 ? (b <= 1 ? b : 1) : 0.4; /* the range the app's slider has */
     atomic_store(&screen_brightness, (int)(b * 1000 + 0.5));

@@ -1,5 +1,5 @@
-#ifndef HENGEVM_CODECACHE_H
-#define HENGEVM_CODECACHE_H
+#ifndef SOLSTICEVM_CODECACHE_H
+#define SOLSTICEVM_CODECACHE_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -14,7 +14,7 @@
    can reach its code any more, and it is freed for new code. No CPU stops for it. A full flush (every CPU stopped) is
    left for what this cannot do: a region too small for segments, or nothing that could be taken back.
 
-   Based on oliverames' Henge PR #186 (the region as a ring of segments, block records kept per segment, exits listed
+   Based on oliverames' upstream PR #186 (the region as a ring of segments, block records kept per segment, exits listed
    both ways so one can leave a list, freed exits reused, one cache maintenance pass for many rewritten words). */
 
 struct HvMachine;

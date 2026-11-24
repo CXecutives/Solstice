@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- The app's entitlements. A free (personal) Apple team cannot sign extended virtual addressing or
+     dynamic-codesigning, so these are the keys it can. -->
+<dict>
+	<!-- Lets Solstice's built-in StikJIT helper attach. On iOS 26 and later only an attached debugger can give an
+	     app executable memory. -->
+	<key>get-task-allow</key>
+	<true/>
+	<!-- Recommended, not required: the guest's RAM and the JIT region on top of the app itself. Without it the
+	     guest is sized to what is left. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>

@@ -16,12 +16,12 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->completions = dispatch_group_create();
         r->device = dev;
         r->queue = [dev newCommandQueueWithMaxCommandBufferCount:64];
-        r->worker = dispatch_queue_create("hengevm.pvg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
-        r->compiler = dispatch_queue_create("hengevm.pipelines", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0));
-        r->archiver = dispatch_queue_create("hengevm.archive", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+        r->worker = dispatch_queue_create("solsticevm.pvg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+        r->compiler = dispatch_queue_create("solsticevm.pipelines", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0));
+        r->archiver = dispatch_queue_create("solsticevm.archive", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
         r->pipe_lock = OS_UNFAIR_LOCK_INIT;
-        r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
-        r->cursor_queue = dispatch_queue_create("hengevm.cursor", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+        r->presenter = dispatch_queue_create("solsticevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+        r->cursor_queue = dispatch_queue_create("solsticevm.cursor", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->present_every = 1.0 / hv_knob.hz;
         r->overlay_matched = -1;
         /* Screenshots of the drawable (the GPU test) want the pointer in it. */
@@ -215,7 +215,7 @@ void hv_pvg_metal_unmap(HvPvgMetal *m, uint32_t mapping) {
     HvReplay *r = (__bridge HvReplay *)m;
     dispatch_async(r->worker, ^{
         /* The last mapping of a shared multi-plane surface takes its table entry along: the entry holds the host
-           IOSurface (4K video frames are 27-65 MB of Henge's own memory), and the guest reuses its memory for others. */
+           IOSurface (4K video frames are 27-65 MB of Solstice's own memory), and the guest reuses its memory for others. */
         HvObject *s = r->surfaces[@(mapping)];
         NSString *pk = s ? s->planar_key : nil;
         if (pk) {

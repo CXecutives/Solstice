@@ -1,7 +1,7 @@
 // Shared by the block-level tests: assembler macros for test programs (when
 // included from a .s file) and the C side of the native-vs-JIT comparison.
-#ifndef HENGEVM_TEST_HARNESS_H
-#define HENGEVM_TEST_HARNESS_H
+#ifndef SOLSTICEVM_TEST_HARNESS_H
+#define SOLSTICEVM_TEST_HARNESS_H
 
 #ifdef __ASSEMBLER__
 

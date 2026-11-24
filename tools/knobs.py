@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write what is generated from the engine's settings table (core/knobs.def), or check that nothing goes around it.
 
-    python3 tools/knobs.py           writes ios/Henge/EngineKnobs.generated.swift and KNOBS.md
+    python3 tools/knobs.py           writes ios/Solstice/EngineKnobs.generated.swift and KNOBS.md
     python3 tools/knobs.py --check   fails on a getenv("HV_...") outside core/knobs.c, or an HV_ name used in the app,
                                      the tests, tools/, the Makefile or the workflow that is not in the table
 
@@ -13,7 +13,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEF = ROOT / "core" / "knobs.def"
-SWIFT = ROOT / "ios" / "Henge" / "EngineKnobs.generated.swift"
+SWIFT = ROOT / "ios" / "Solstice" / "EngineKnobs.generated.swift"
 DOC = ROOT / "KNOBS.md"
 LINE = re.compile(r'^KNOB\((\w+), "(HV_\w+)", (FLAG|BOOL|INT|DOUBLE|HEX|STR), (.+?), (.+?), (.+?), "(.*)"\)$')
 SECTION = re.compile(r"^/\* ---- (.+?) ---- \*/$")
@@ -98,7 +98,7 @@ def doc(knobs) -> str:
         return default, rng
     out = ["# Engine settings", "", f"<!-- {HEADER} -->", "",
            "Environment variables the engine reads, all from `core/knobs.def`. The app sets them from "
-           "`ios/Henge/EngineTuning.swift` and `Documents/solstice-env.txt`; the Mac tool and the tests take them from "
+           "`ios/Solstice/EngineTuning.swift` and `Documents/solstice-env.txt`; the Mac tool and the tests take them from "
            "the environment. FLAG: on when set at all; BOOL: 0 off, other numbers or empty on; INT and DOUBLE outside "
            "their range fall back to the default."]
     section = None

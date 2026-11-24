@@ -1,5 +1,5 @@
-#ifndef HENGEVM_AES_H
-#define HENGEVM_AES_H
+#ifndef SOLSTICEVM_AES_H
+#define SOLSTICEVM_AES_H
 
 #include <stdint.h>
 

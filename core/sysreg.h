@@ -1,5 +1,5 @@
-#ifndef HENGEVM_SYSREG_H
-#define HENGEVM_SYSREG_H
+#ifndef SOLSTICEVM_SYSREG_H
+#define SOLSTICEVM_SYSREG_H
 
 #include <stdint.h>
 

@@ -179,7 +179,7 @@ int asr_send(asr_client_t asr, plist_t data)
 
 int asr_send_buffer(asr_client_t asr, const void* data, size_t size)
 {
-	/* HengeVM: the restore OS writes to a disk that may be slower than the
+	/* SolsticeVM: the restore OS writes to a disk that may be slower than the
 	   link (an emulated Mac on a phone), so its receive window can stay shut
 	   for a while; a short send is not an error until nothing moves for
 	   10 minutes (upstream gives up on the first one). */

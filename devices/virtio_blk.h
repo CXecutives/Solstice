@@ -1,5 +1,5 @@
-#ifndef HENGEVM_VIRTIO_BLK_H
-#define HENGEVM_VIRTIO_BLK_H
+#ifndef SOLSTICEVM_VIRTIO_BLK_H
+#define SOLSTICEVM_VIRTIO_BLK_H
 
 #include "disk.h"
 #include "virtio.h"

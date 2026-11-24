@@ -1,5 +1,5 @@
-#ifndef HENGEVM_SNAPSHOT_H
-#define HENGEVM_SNAPSHOT_H
+#ifndef SOLSTICEVM_SNAPSHOT_H
+#define SOLSTICEVM_SNAPSHOT_H
 
 #include <stddef.h>
 #include <stdint.h>

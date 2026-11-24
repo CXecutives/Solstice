@@ -1,5 +1,5 @@
-#ifndef HENGEVM_USB_HOST_H
-#define HENGEVM_USB_HOST_H
+#ifndef SOLSTICEVM_USB_HOST_H
+#define SOLSTICEVM_USB_HOST_H
 
 #include <stdint.h>
 

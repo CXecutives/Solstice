@@ -1,4 +1,4 @@
-/* HengeVM: the build settings the vendored restore tools' configure scripts
+/* SolsticeVM: the build settings the vendored restore tools' configure scripts
    would have produced, for macOS and iOS (no IOKit: libusb, which is
    host/libusb_shim.c). */
 #define HAVE_MKSTEMP 1

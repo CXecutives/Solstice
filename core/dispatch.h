@@ -1,5 +1,5 @@
-#ifndef HENGEVM_DISPATCH_H
-#define HENGEVM_DISPATCH_H
+#ifndef SOLSTICEVM_DISPATCH_H
+#define SOLSTICEVM_DISPATCH_H
 
 #include "cpu.h"
 #include "machine.h"

@@ -1,5 +1,5 @@
-#ifndef HENGEVM_LIGHT_H
-#define HENGEVM_LIGHT_H
+#ifndef SOLSTICEVM_LIGHT_H
+#define SOLSTICEVM_LIGHT_H
 
 #include <stdint.h>
 

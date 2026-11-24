@@ -1,5 +1,5 @@
-#ifndef HENGEVM_VIRTIO_INPUT_H
-#define HENGEVM_VIRTIO_INPUT_H
+#ifndef SOLSTICEVM_VIRTIO_INPUT_H
+#define SOLSTICEVM_VIRTIO_INPUT_H
 
 #include <pthread.h>
 

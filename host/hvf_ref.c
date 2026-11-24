@@ -1,9 +1,9 @@
-/* hengevm-ref: a Mac-only test tool. Runs the same machine (HengeVM's RAM,
+/* solsticevm-ref: a Mac-only test tool. Runs the same machine (SolsticeVM's RAM,
    devices, cfg region and disks) with the guest CPU on Hypervisor.framework
    instead of the JIT, so a JIT run can be compared against real hardware at
-   a breakpoint. HengeVM itself never uses a hypervisor.
+   a breakpoint. SolsticeVM itself never uses a hypervisor.
 
-   hengevm-ref --rom FILE --disk FILE --aux FILE --ecid N [--seed N] [--ram MB] [--break PC [--break-hits N]] [--log N] */
+   solsticevm-ref --rom FILE --disk FILE --aux FILE --ecid N [--seed N] [--ram MB] [--break PC [--break-hits N]] [--log N] */
 #include <Hypervisor/Hypervisor.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +22,7 @@ static hv_vcpu_exit_t *vexit;
     do {                                                                                 \
         hv_return_t r_ = (x);                                                            \
         if (r_ != HV_SUCCESS) {                                                          \
-            fprintf(stderr, "hengevm-ref: %s failed: %x\n", #x, r_);                     \
+            fprintf(stderr, "solsticevm-ref: %s failed: %x\n", #x, r_);                     \
             exit(1);                                                                     \
         }                                                                                \
     } while (0)
@@ -60,7 +60,7 @@ static void map_ram(void) {
 }
 
 static void dump(const char *why) {
-    fprintf(stderr, "\nhengevm-ref: %s\n", why);
+    fprintf(stderr, "\nsolsticevm-ref: %s\n", why);
     uint64_t cpsr = reg(HV_REG_CPSR);
     fprintf(stderr, "  pc %016llx el%llu sp %016llx\n", (unsigned long long)reg(HV_REG_PC), (unsigned long long)((cpsr >> 2) & 3),
             (unsigned long long)((cpsr & 0xc) && (cpsr & 1) ? sysreg(HV_SYS_REG_SP_EL1) : sysreg(HV_SYS_REG_SP_EL0)));
@@ -101,12 +101,12 @@ static void mmio(uint64_t esr, uint64_t pa) {
 static void hvc(void) {
     cpu.x[0] = gpr(0);
     cpu.x[1] = gpr(1);
-    hv_exception_insn(&cpu, 0xd4000002, 0); /* HVC #0, handled by HengeVM's PSCI */
+    hv_exception_insn(&cpu, 0xd4000002, 0); /* HVC #0, handled by SolsticeVM's PSCI */
     set_gpr(0, cpu.x[0]);
     /* HVC's preferred return already points past the instruction. */
 }
 
-/* Trapped MRS/MSR: GIC CPU interface registers go to HengeVM's GIC. */
+/* Trapped MRS/MSR: GIC CPU interface registers go to SolsticeVM's GIC. */
 static void sysreg_trap(uint64_t esr) {
     uint32_t iss = esr & 0x1ffffff;
     int read = iss & 1, rt = (iss >> 5) & 31;
@@ -121,7 +121,7 @@ static void sysreg_trap(uint64_t esr) {
 }
 
 static void usage(void) {
-    fprintf(stderr, "usage: hengevm-ref --rom FILE --disk FILE --aux FILE --ecid N [--seed N] [--ram MB] [--break PC [--break-hits N]] [--log N]\n");
+    fprintf(stderr, "usage: solsticevm-ref --rom FILE --disk FILE --aux FILE --ecid N [--seed N] [--ram MB] [--break PC [--break-hits N]] [--log N]\n");
     exit(2);
 }
 
@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
                 CHECK(hv_vcpu_set_vtimer_mask(vcpu, false));
                 continue;
             }
-            fprintf(stderr, "hengevm-ref: exit reason %u\n", vexit->reason);
+            fprintf(stderr, "solsticevm-ref: exit reason %u\n", vexit->reason);
             break;
         }
         uint64_t esr = vexit->exception.syndrome;

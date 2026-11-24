@@ -33,11 +33,13 @@ eingecheckt): `HANDOFF.local.md`.
 - Nur Sequoia 15.6.1 als Gast, bis eine Versions-Weiche gebaut ist (der vBlank-Zeitstempel aus #161 gilt nur für macOS 15).
   Geräte ab A14, iOS/iPadOS ab 26.
 - Engine-Einstellungen (Name, Typ, Vorgabe, Bereich) nur in `core/knobs.def`; daraus erzeugt `tools/regen.sh` die Swift-Namen und
-  `KNOBS.md`. Was die App abweichend ausliefert, steht nur in `ios/Henge/EngineTuning.swift`. Gerätewerte nur in der Gerätetabelle
-  `ios/Henge/DeviceProfile.swift` (reines Foundation, Test `tests/test_device_profile.swift`).
+  `KNOBS.md`. Was die App abweichend ausliefert, steht nur in `ios/Solstice/EngineTuning.swift`. Gerätewerte nur in der Gerätetabelle
+  `ios/Solstice/DeviceProfile.swift` (reines Foundation, Test `tests/test_device_profile.swift`).
 - Die Helper-Thunks in `host/enter.S` sichern q0–q31 nicht: aus `hv_tlb_refill`/`hv_ijc_resolve`/`hv_light` heraus kein
   libc-Aufruf und kein SIMD (Dateien in `NOSIMD` im Makefile; CI-Gate `tools/simd_gate.py`). Resets großer Tabellen nur im
   Dispatcher.
 - Gast-Setup: Set Up ruft nur `tune` (nichts Sichtbares); sichtbare Änderungen nur im optionalen `lighten`.
-- Sichtbar heißt alles „Solstice“; interne Namen (`henge_vm_*`, Ordner `ios/Henge`, Einstellungs-Schlüssel) bleiben.
+- Alles heißt Solstice, sichtbar und intern (Symbole, Dateien, Ordner, Schlüssel, Kennungen). „Henge“ steht nur noch in
+  Herkunft und Lizenz (`README.md`, `NOTICE`, Einstellungen, About) und in der Liste alter Gast-Namen in `host/brand.h`;
+  `tools/brand_gate.py` prüft das. App-Texte sind schlicht: kein Punkt zwischen Wörtern, kein Gedankenstrich als Satzzeichen.
 - Sprache im Repo: Englisch (Code, Kommentare, Commits); mit dem Besitzer: Deutsch.

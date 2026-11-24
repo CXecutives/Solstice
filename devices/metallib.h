@@ -1,5 +1,5 @@
-#ifndef HENGEVM_METALLIB_H
-#define HENGEVM_METALLIB_H
+#ifndef SOLSTICEVM_METALLIB_H
+#define SOLSTICEVM_METALLIB_H
 
 #include <stddef.h>
 #include <stdint.h>

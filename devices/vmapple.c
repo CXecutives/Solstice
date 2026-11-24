@@ -62,7 +62,7 @@ static void pvpanic_write(void *opaque, uint64_t off, uint64_t v, unsigned size)
 
 /* Not in QEMU's vmapple, which targets macOS 12 guests. iBootStage2 (Sequoia)
    reads 0x30240040 and uses its PL031 driver ("pl031-rtc") if the value is
-   0xf001, or an Apple virtual RTC ("avp-rtc") otherwise. HengeVM has a PL031,
+   0xf001, or an Apple virtual RTC ("avp-rtc") otherwise. SolsticeVM has a PL031,
    so it answers 0xf001. The kernel's AppleVirtualPlatformRTC uses the same
    window: +0 is a 64-bit microsecond counter, and wall time is the counter
    plus an offset the driver keeps in NVRAM ("AvpRtc", absent until the guest

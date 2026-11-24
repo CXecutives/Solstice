@@ -25,10 +25,10 @@ TESTS = $(B)/test_classify $(B)/test_jit_region $(B)/test_operands $(B)/test_jit
         $(B)/test_mmu $(B)/test_pvg_vblank_clock $(B)/test_exc $(B)/test_devices $(B)/test_dt_fixup $(B)/test_shutdown \
         $(B)/test_pvg_lifecycle $(B)/test_pvg_metal $(B)/test_fuzz $(B)/test_mp $(B)/test_share_scripts $(B)/test_codecache $(B)/test_memory $(B)/test_net_queue $(B)/test_knobs
 
-all: $(TESTS) $(B)/hengevm $(B)/hengevm-ref $(B)/hvsparse
+all: $(TESTS) $(B)/solsticevm $(B)/solsticevm-ref $(B)/hvsparse
 
 # Mac-only test tool: the same machine with the CPU on Hypervisor.framework, for comparing runs.
-$(B)/hengevm-ref: host/hvf_ref.c host/hvf_ref.entitlements $(ENGINE) $(DEV)
+$(B)/solsticevm-ref: host/hvf_ref.c host/hvf_ref.entitlements $(ENGINE) $(DEV)
 	$(CC) $(CFLAGS) host/hvf_ref.c $(ENGINE) $(DEV) -framework Hypervisor $(METAL_LIBS) -o $@
 	codesign -s - -f --entitlements host/hvf_ref.entitlements $@
 
@@ -59,7 +59,7 @@ IDR_SRC = $(wildcard third_party/idevicerestore/src/*.c)
 RESTORE_OBJ = $(patsubst third_party/%.c,$(RB)/%.o,$(IRECV_SRC) $(MUXD_SRC) $(IDR_SRC))
 
 # The helper that runs inside macOS on a virtual Mac (share.c serves it to the guest).
-$(B)/solstice-agent: tools/henge-agent.m host/brand.h
+$(B)/solstice-agent: tools/solstice-agent.m host/brand.h
 	@mkdir -p $(B)
 	env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=12.0 -fobjc-arc -Wall -Wextra -O2 -Ihost -framework AppKit $< -o $@
 	codesign -f -s - $@
@@ -71,8 +71,8 @@ $(B)/solstice-agent.gz: $(B)/solstice-agent
 $(B)/share.o: host/share.c host/share.h host/brand.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(B)/hengevm: host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libhengerestore.a
-	$(CC) $(CFLAGS) host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libhengerestore.a -lz -lcompression -framework Foundation -framework CFNetwork -framework Security -framework SystemConfiguration -framework IOKit $(SLIRP_LIBS) -framework AudioToolbox -framework ParavirtualizedGraphics -framework Metal -framework IOSurface \
+$(B)/solsticevm: host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libsolsticerestore.a
+	$(CC) $(CFLAGS) host/main.c $(ENGINE) $(DEV) $(B)/pvg_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/audio_mac.o $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/usb_host.o $(B)/mac-restore/libsolsticerestore.a -lz -lcompression -framework Foundation -framework CFNetwork -framework Security -framework SystemConfiguration -framework IOKit $(SLIRP_LIBS) -framework AudioToolbox -framework ParavirtualizedGraphics -framework Metal -framework IOSurface \
 	    -framework Foundation -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -framework CoreFoundation \
 	    -framework AppKit -framework QuartzCore -o $@
 
@@ -117,8 +117,8 @@ $(B)/test_knobs: tests/test_knobs.c core/knobs.def $(ENGINE)
 $(B)/test_dns_lifecycle: tests/test_dns_lifecycle.c $(B)/dns_proxy.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(B)/test_vm_lifecycle: tests/test_vm_lifecycle.c ios/Henge/Native/henge-vm.c $(ENGINE) $(DEV) $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/audio_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/usb_host.o
-	$(CC) $(CFLAGS) -Iios/Henge/Native $^ $(SLIRP_LIBS) $(METAL_LIBS) -framework AudioToolbox -lcompression -o $@
+$(B)/test_vm_lifecycle: tests/test_vm_lifecycle.c ios/Solstice/Native/solstice-vm.c $(ENGINE) $(DEV) $(B)/vm.o $(B)/snapshot.o $(B)/dt_fixup.o $(B)/audio_mac.o $(B)/net_slirp.o $(B)/net_queue.o $(B)/dns_proxy.o $(B)/share.o $(B)/usb_host.o
+	$(CC) $(CFLAGS) -Iios/Solstice/Native $^ $(SLIRP_LIBS) $(METAL_LIBS) -framework AudioToolbox -lcompression -o $@
 
 test-vm-lifecycle: $(B)/test_vm_lifecycle
 	$(B)/test_vm_lifecycle
@@ -169,8 +169,8 @@ clean:
 
 .PHONY: all test clean
 
-# ---- iOS: the engine as a static library for the Henge app (ios/) ----
-# make ios-lib -> build/ios/libhengevm.a. Networking links the arm64 iOS builds
+# ---- iOS: the engine as a static library for the Solstice app (ios/) ----
+# make ios-lib -> build/ios/libsolsticevm.a. Networking links the arm64 iOS builds
 # of libslirp and glib from Husk's sysroot (scripts there make them); see ios/README.md.
 IOS_SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
 # A14 is the oldest supported chip: LSE atomics instead of LL/SC loops in the engine's C (the default target is apple-a7).
@@ -199,14 +199,14 @@ $(IB)/devices/pvg_metal.o: devices/pvg_metal.m devices/pvg_metal/*.m devices/*.h
 $(IB)/host/enter.o: host/enter.S
 	@mkdir -p $(dir $@)
 	$(IOS_CC) -c $< -o $@
-$(IB)/libhengevm.a: $(IOS_OBJ)
+$(IB)/libsolsticevm.a: $(IOS_OBJ)
 	rm -f $@
 	xcrun --sdk iphoneos libtool -static -o $@ $(IOS_OBJ)
-ios-lib: $(IB)/libhengevm.a
+ios-lib: $(IB)/libsolsticevm.a
 .PHONY: ios-lib
 
 # The restore stack, built from the same sources and with the same stand-ins as iOS.
-$(B)/mac-restore/libhengerestore.a: tools/build_ios_restore.sh host/libusb_shim.c host/install.c host/curl_shim.m $(wildcard third_party/*/src/*.c) $(wildcard third_party/libirecovery/src/*.c)
+$(B)/mac-restore/libsolsticerestore.a: tools/build_ios_restore.sh host/libusb_shim.c host/install.c host/curl_shim.m $(wildcard third_party/*/src/*.c) $(wildcard third_party/libirecovery/src/*.c)
 	nice -n 10 tools/build_ios_restore.sh mac
 
 # The installer: libirecovery, usbmuxd and idevicerestore (third_party, vendored
@@ -216,13 +216,13 @@ $(B)/mac-restore/libhengerestore.a: tools/build_ios_restore.sh host/libusb_shim.
 # libtatsu, libplist, libzip).
 $(RB)/libirecovery/%.o: third_party/libirecovery/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(RESTORE_CFLAGS) -DPACKAGE_VERSION='"1.3.1-henge"' -c $< -o $@
+	$(CC) $(RESTORE_CFLAGS) -DPACKAGE_VERSION='"1.3.1-solstice"' -c $< -o $@
 $(RB)/usbmuxd/%.o: third_party/usbmuxd/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(RESTORE_CFLAGS) -DPACKAGE_NAME='"usbmuxd"' -DPACKAGE_VERSION='"1.1.1-henge"' -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level -c $< -o $@
+	$(CC) $(RESTORE_CFLAGS) -DPACKAGE_NAME='"usbmuxd"' -DPACKAGE_VERSION='"1.1.1-solstice"' -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level -c $< -o $@
 $(RB)/idevicerestore/%.o: third_party/idevicerestore/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(RESTORE_CFLAGS) -Ithird_party/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME='"idevicerestore"' -DPACKAGE_VERSION='"1.0.0-henge"' -c $< -o $@
+	$(CC) $(RESTORE_CFLAGS) -Ithird_party/idevicerestore/src -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME='"idevicerestore"' -DPACKAGE_VERSION='"1.0.0-solstice"' -c $< -o $@
 $(B)/libusb_shim.o: host/libusb_shim.c host/*.h devices/*.h | $(B)
 	$(CC) $(CFLAGS) -Ithird_party -c $< -o $@
 $(B)/install.o: host/install.c host/*.h devices/*.h | $(B)
@@ -231,19 +231,19 @@ restore-objs: $(RESTORE_OBJ)
 .PHONY: restore-objs
 
 # Session-owned display routing, independent of JIT, Metal and a connected monitor.
-$(B)/test_display_targets: ios/Henge/DisplayTargetSelection.swift tests/test_display_targets.swift | $(B)
+$(B)/test_display_targets: ios/Solstice/DisplayTargetSelection.swift tests/test_display_targets.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 # The router's hand-off to the engine, with the engine call recorded instead of made.
-$(B)/test_display_router: ios/Henge/DisplayRouter.swift ios/Henge/DisplayTargetSelection.swift tests/test_display_router.swift tests/display_engine_stub.h | $(B)
+$(B)/test_display_router: ios/Solstice/DisplayRouter.swift ios/Solstice/DisplayTargetSelection.swift tests/test_display_router.swift tests/display_engine_stub.h | $(B)
 	xcrun --sdk macosx swiftc -import-objc-header tests/display_engine_stub.h $(filter %.swift,$^) -o $@
 
 # Which external screen shows the Mac before iOS 27, for any order of session and plug events.
-$(B)/test_external_screen_plan: ios/Henge/ExternalScreenPlan.swift tests/test_external_screen_plan.swift | $(B)
+$(B)/test_external_screen_plan: ios/Solstice/ExternalScreenPlan.swift tests/test_external_screen_plan.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 # The glue: fake screens and a real router, to check what each screen is told and what the engine draws.
-$(B)/test_legacy_external_display: ios/Henge/LegacyExternalDisplay.swift ios/Henge/ExternalScreenPlan.swift ios/Henge/MacPresentation.swift ios/Henge/DisplayRouter.swift ios/Henge/DisplayTargetSelection.swift tests/test_legacy_external_display.swift tests/display_engine_stub.h | $(B)
+$(B)/test_legacy_external_display: ios/Solstice/LegacyExternalDisplay.swift ios/Solstice/ExternalScreenPlan.swift ios/Solstice/MacPresentation.swift ios/Solstice/DisplayRouter.swift ios/Solstice/DisplayTargetSelection.swift tests/test_legacy_external_display.swift tests/display_engine_stub.h | $(B)
 	xcrun --sdk macosx swiftc -import-objc-header tests/display_engine_stub.h $(filter %.swift,$^) -o $@
 
 # Info.plist must declare the external display scene role with ExternalDisplaySceneDelegate, or iPadOS 26 never offers the display.
@@ -255,11 +255,11 @@ test-display-routing: $(B)/test_display_targets $(B)/test_display_router $(B)/te
 	$(B)/test_display_router
 	$(B)/test_external_screen_plan
 	$(B)/test_legacy_external_display
-	$(B)/test_scene_manifest ios/Henge/Info.plist ios/Henge/ExternalDisplaySceneDelegate.swift
+	$(B)/test_scene_manifest ios/Solstice/Info.plist ios/Solstice/ExternalDisplaySceneDelegate.swift
 .PHONY: test-display-routing
 
 # What the JIT setup tells the user and when it retries by itself, for each kind of network path and helper error.
-$(B)/test_jit_advice: ios/Henge/JIT/JITNetworkAdvice.swift tests/test_jit_advice.swift | $(B)
+$(B)/test_jit_advice: ios/Solstice/JIT/JITNetworkAdvice.swift tests/test_jit_advice.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-jit-advice: $(B)/test_jit_advice
@@ -267,7 +267,7 @@ test-jit-advice: $(B)/test_jit_advice
 .PHONY: test-jit-advice
 
 # The host identity table and the icon-snapping for the guest's About This Mac.
-$(B)/test_device_identity: ios/Henge/DeviceIdentity.swift tests/test_device_identity.swift | $(B)
+$(B)/test_device_identity: ios/Solstice/DeviceIdentity.swift tests/test_device_identity.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-identity: $(B)/test_device_identity
@@ -275,7 +275,7 @@ test-identity: $(B)/test_device_identity
 .PHONY: test-identity
 
 # The device table: memory classes, CPUs, code cache and guest RAM cap from values passed in.
-$(B)/test_device_profile: ios/Henge/DeviceProfile.swift tests/test_device_profile.swift | $(B)
+$(B)/test_device_profile: ios/Solstice/DeviceProfile.swift tests/test_device_profile.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-device-profile: $(B)/test_device_profile
@@ -283,7 +283,7 @@ test-device-profile: $(B)/test_device_profile
 .PHONY: test-device-profile
 
 # Screen presets: each device's Mac screen sizes, the migration of older Macs, pixel snapping, refresh choices.
-$(B)/test_mac_screen: ios/Henge/MacScreen.swift ios/Henge/DeviceProfile.swift tests/test_mac_screen.swift | $(B)
+$(B)/test_mac_screen: ios/Solstice/MacScreen.swift ios/Solstice/DeviceProfile.swift tests/test_mac_screen.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-mac-screen: $(B)/test_mac_screen
@@ -291,7 +291,7 @@ test-mac-screen: $(B)/test_mac_screen
 .PHONY: test-mac-screen
 
 # A physical mouse's right/middle swap, kept from press to release.
-$(B)/test_physical_mouse_buttons: ios/Henge/PhysicalMouseButtons.swift tests/test_physical_mouse_buttons.swift | $(B)
+$(B)/test_physical_mouse_buttons: ios/Solstice/PhysicalMouseButtons.swift tests/test_physical_mouse_buttons.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
@@ -299,7 +299,7 @@ test-physical-mouse-buttons: $(B)/test_physical_mouse_buttons
 .PHONY: test-physical-mouse-buttons
 
 # The lifecycle watchdog's limits, the log stream's redaction and local-address check, solstice-env.txt's HV_ filter.
-$(B)/test_lifecycle: ios/Henge/LifecycleWatchdog.swift ios/Henge/LogPrivacy.swift ios/Henge/EnvOverrides.swift tests/test_lifecycle.swift | $(B)
+$(B)/test_lifecycle: ios/Solstice/LifecycleWatchdog.swift ios/Solstice/LogPrivacy.swift ios/Solstice/EnvOverrides.swift tests/test_lifecycle.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-lifecycle: $(B)/test_lifecycle
@@ -307,7 +307,7 @@ test-lifecycle: $(B)/test_lifecycle
 .PHONY: test-lifecycle
 
 # Which keys type a character on the Mac's keyboard layout (U.S., German).
-$(B)/test_key_layout: ios/Henge/KeyLayout.swift tests/test_key_layout.swift | $(B)
+$(B)/test_key_layout: ios/Solstice/KeyLayout.swift tests/test_key_layout.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-key-layout: $(B)/test_key_layout
@@ -315,7 +315,7 @@ test-key-layout: $(B)/test_key_layout
 .PHONY: test-key-layout
 
 # The touch surface's gestures: taps, holds and drags into clicks.
-$(B)/test_touch_gestures: ios/Henge/TouchGestures.swift tests/test_touch_gestures.swift | $(B)
+$(B)/test_touch_gestures: ios/Solstice/TouchGestures.swift tests/test_touch_gestures.swift | $(B)
 	xcrun --sdk macosx swiftc $^ -o $@
 
 test-touch-gestures: $(B)/test_touch_gestures
@@ -323,7 +323,7 @@ test-touch-gestures: $(B)/test_touch_gestures
 .PHONY: test-touch-gestures
 
 # Keys go to the Mac in the order they were asked for: a paste that waits holds back what is typed after it.
-$(B)/test_key_queue: ios/Henge/KeyQueue.swift tests/test_key_queue.swift | $(B)
+$(B)/test_key_queue: ios/Solstice/KeyQueue.swift tests/test_key_queue.swift | $(B)
 	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
 
 test-key-queue: $(B)/test_key_queue
@@ -331,7 +331,7 @@ test-key-queue: $(B)/test_key_queue
 .PHONY: test-key-queue
 
 # The installer's download: which failures another attempt can cure, and the hash catching up with a part file.
-$(B)/test_ranged_download: ios/Henge/RangedDownload.swift tests/test_ranged_download.swift | $(B)
+$(B)/test_ranged_download: ios/Solstice/RangedDownload.swift tests/test_ranged_download.swift | $(B)
 	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
 
 test-ranged-download: $(B)/test_ranged_download
@@ -339,7 +339,7 @@ test-ranged-download: $(B)/test_ranged_download
 .PHONY: test-ranged-download
 
 # What a start gets: a saved Mac's own RAM and CPUs, or the settings within what fits.
-$(B)/test_start_shape: ios/Henge/StartShape.swift tests/test_start_shape.swift | $(B)
+$(B)/test_start_shape: ios/Solstice/StartShape.swift tests/test_start_shape.swift | $(B)
 	xcrun --sdk macosx swiftc -parse-as-library $^ -o $@
 
 test-start-shape: $(B)/test_start_shape

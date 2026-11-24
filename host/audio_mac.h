@@ -1,5 +1,5 @@
-#ifndef HENGEVM_AUDIO_MAC_H
-#define HENGEVM_AUDIO_MAC_H
+#ifndef SOLSTICEVM_AUDIO_MAC_H
+#define SOLSTICEVM_AUDIO_MAC_H
 
 #include "virtio_snd.h"
 

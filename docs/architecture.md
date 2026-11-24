@@ -1,9 +1,9 @@
-# How Henge works
+# How Solstice works
 
 A virtual Mac without a hypervisor: arm64 guest code runs through an arm64-to-arm64
 JIT instead of hardware virtualization, so the same engine can run on iOS, where
 apps have no hypervisor access. The engine is built and tested on the Mac
-(`build/hengevm`) and linked into the iPhone app (`make ios-lib`).
+(`build/solsticevm`) and linked into the iPhone app (`make ios-lib`).
 
 The guest's terminal power requests and iOS session cleanup are described in
 [Guest shutdown](guest-shutdown.md).
@@ -77,7 +77,7 @@ The format follows the Linux kernel's
 The first code a virtual Mac runs is Apple's AVPBooter, which starts macOS or, for an
 install, waits in DFU mode. It lives in macOS's system image, and since macOS 15 those are
 encrypted, but the one in Apple's macOS 14.6.1 restore image is not, and its ROM runs later
-versions. `ios/Henge/BootROM.swift` fetches it from Apple: the file is part of one
+versions. `ios/Solstice/BootROM.swift` fetches it from Apple: the file is part of one
 compressed block of that image, so one request of under a megabyte gets all of it. It then
 checks the result against a SHA-256 hash. Nothing is decrypted.
 
@@ -109,14 +109,14 @@ macOS keys some hardware decisions off `hw.model`.
 `host/share.c` is a small WebDAV server, because macOS has a WebDAV client built in. The
 guest reaches it at 10.0.2.4, which the user-mode network hands to a Unix socket in the
 app's storage: no TCP port is open, so other apps on the device can't reach it. Under
-`/.solstice/` it also has the clipboard and what it takes to install `tools/henge-agent.m`, a
+`/.solstice/` it also has the clipboard and what it takes to install `tools/solstice-agent.m`, a
 small helper that runs inside macOS as a LaunchAgent, mounts the folder at `~/Solstice` and
 follows the clipboard. The app types the set up command but never presses Return: it can't
 see what has the keyboard on the Mac.
 
 ## Installing macOS (no Mac needed)
 
-`hengevm --install IPSW` (and the iOS app's Install macOS) install macOS on a
+`solsticevm --install IPSW` (and the iOS app's Install macOS) install macOS on a
 blank machine the way Virtualization.framework's installer does: the boot ROM
 starts in DFU mode (cfg `run_installer`) and shows up as a USB device, and a
 standard restore runs over that link. Apple's signing server personalizes the

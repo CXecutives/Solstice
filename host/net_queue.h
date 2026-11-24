@@ -1,5 +1,5 @@
-#ifndef HENGEVM_NET_QUEUE_H
-#define HENGEVM_NET_QUEUE_H
+#ifndef SOLSTICEVM_NET_QUEUE_H
+#define SOLSTICEVM_NET_QUEUE_H
 
 #include <pthread.h>
 #include <stdint.h>

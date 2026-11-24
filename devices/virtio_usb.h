@@ -1,5 +1,5 @@
-#ifndef HENGEVM_VIRTIO_USB_H
-#define HENGEVM_VIRTIO_USB_H
+#ifndef SOLSTICEVM_VIRTIO_USB_H
+#define SOLSTICEVM_VIRTIO_USB_H
 
 #include <pthread.h>
 #include <stdint.h>

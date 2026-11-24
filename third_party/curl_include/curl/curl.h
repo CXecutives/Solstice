@@ -1,8 +1,8 @@
-/* HengeVM: the slice of libcurl's easy API the restore tools use, for iOS,
+/* SolsticeVM: the slice of libcurl's easy API the restore tools use, for iOS,
    where host/curl_shim.m implements it on NSURLSession. Option and info
    numbers follow libcurl's so the calls read the same. */
-#ifndef HENGE_CURL_H
-#define HENGE_CURL_H
+#ifndef SOLSTICE_CURL_H
+#define SOLSTICE_CURL_H
 
 #include <stddef.h>
 #include <stdint.h>

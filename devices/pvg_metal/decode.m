@@ -116,7 +116,7 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
                         (unsigned long)a.texture.usage, (unsigned long)a.texture.storageMode, (unsigned long)a.level, (unsigned long)a.slice,
                         (unsigned long)a.loadAction, (unsigned long)a.storeAction, (unsigned long)a.storeActionOptions, a.resolveTexture ? "yes" : "no");
             }
-            for (int i = -2; i < 8; i++) { /* a named attachment Henge has no texture for: its object table entry */
+            for (int i = -2; i < 8; i++) { /* a named attachment Solstice has no texture for: its object table entry */
                 uint32_t o = i == -2 ? 0 : i == -1 ? 0x28 : 0x4c + (uint32_t)i * 0x3c, ref = o + 4 <= r.size ? U32(o) : 0;
                 if (!ref || [self get:ref task:task]) continue;
                 uint64_t list = hv_pvg_lite_task_objects(lite, task);
@@ -136,7 +136,7 @@ static BOOL fits_at(uint64_t length, uint64_t off, uint64_t n) { return off <= l
         }
     }
     pre_raster_samples = pre_imageblock = pre_threadgroup = pre_tile_w = pre_tile_h = 0;
-    /* An attachment the guest names but Henge never made (a texture from a record it doesn't know) leaves a pass with
+    /* An attachment the guest names but Solstice never made (a texture from a record it doesn't know) leaves a pass with
        no attachments; with a render size and no sample count, the GPU driver aborts the whole app building it. Skip it. */
     int named = 0, made = 0;
     for (int i = -2; i < 8; i++) {

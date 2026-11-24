@@ -12,7 +12,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DIRS = ["core", "host", "devices", "ios/Henge", "ios/HengeJITHelper", "ios/scripts", "tools", "tests"]
+DIRS = ["core", "host", "devices", "ios/Solstice", "ios/SolsticeJITHelper", "ios/scripts", "tools", "tests"]
 EXTS = {".c", ".h", ".m", ".S", ".swift", ".py", ".sh", ".zsh", ".ps1", ".def"}
 SKIP = re.compile(r"^(#!|#\s*(include|import|pragma|if|ifndef|ifdef|define|endif)\b|SPDX|@|import\b|\"\"\"\s*$)")
 MARK = re.compile(r"^\s*(///?|/\*+|\*+/?|#+|;+|<#|\"\"\")\s?")

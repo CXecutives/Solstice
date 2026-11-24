@@ -1,5 +1,5 @@
-#ifndef HENGEVM_VIRTIO_SND_H
-#define HENGEVM_VIRTIO_SND_H
+#ifndef SOLSTICEVM_VIRTIO_SND_H
+#define SOLSTICEVM_VIRTIO_SND_H
 
 #include <pthread.h>
 #include <stdatomic.h>

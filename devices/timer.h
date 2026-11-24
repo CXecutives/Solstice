@@ -1,5 +1,5 @@
-#ifndef HENGEVM_TIMER_H
-#define HENGEVM_TIMER_H
+#ifndef SOLSTICEVM_TIMER_H
+#define SOLSTICEVM_TIMER_H
 
 #include <stdint.h>
 

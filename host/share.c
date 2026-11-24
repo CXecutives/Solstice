@@ -4,7 +4,7 @@
    network drive with nothing to install for that part. The network hands each connection the guest makes to
    10.0.2.4:80 to a Unix socket in the app's own storage: no TCP port is open, so other apps can't reach this.
 
-   /.solstice/ is not part of the folder. It has the clipboard, where the helper inside macOS (tools/henge-agent.m)
+   /.solstice/ is not part of the folder. It has the clipboard, where the helper inside macOS (tools/solstice-agent.m)
    waits for the device's clipboard and sends the guest's, and what it takes to install that helper.
 
    Locks are accepted but not enforced: macOS only writes to a server that offers them, and there is one client. */
@@ -917,7 +917,7 @@ static void hold_keyless(void) {
     pthread_mutex_unlock(&clip_mu);
 }
 
-static int serve_henge(Conn *c, Request *r) {
+static int serve_solstice(Conn *c, Request *r) {
     const char *what = r->path + strlen(SOLSTICE_URL_PREFIX);
     if (!strcmp(what, "token") && !strcmp(r->method, "GET")) {
         if (body_discard(c, r) != 0) return -1;
@@ -1036,7 +1036,7 @@ static int read_request(Conn *c, Request *r) {
 }
 
 static int handle(Conn *c, Request *r) {
-    if (!strncmp(r->path, SOLSTICE_URL_PREFIX, strlen(SOLSTICE_URL_PREFIX))) return serve_henge(c, r);
+    if (!strncmp(r->path, SOLSTICE_URL_PREFIX, strlen(SOLSTICE_URL_PREFIX))) return serve_solstice(c, r);
     if (!strncmp(r->path, SOLSTICE_OLD_URL_PREFIX, strlen(SOLSTICE_OLD_URL_PREFIX))) { /* a helper from before the rename */
         if (body_discard(c, r) != 0) return -1;
         hold_keyless();

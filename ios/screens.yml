@@ -1,5 +1,5 @@
 # The app for the simulator, only to photograph its screens with sample data (ios/scripts/screens.sh, tools/screens.sh).
-# The same Swift and resources as the device app (project.yml), with the engine replaced by ios/Screens/henge-vm-stub.c
+# The same Swift and resources as the device app (project.yml), with the engine replaced by ios/Screens/solstice-vm-stub.c
 # and the preview entry (ios/Screens, SOLSTICE_SCREENS) added. No engine, restore stack, pairing library or JIT helper.
 # The device build never reads this file.
 name: Screens
@@ -13,29 +13,29 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: Henge
+      - path: Solstice
         excludes:
           - "Resources/**"
           - "Info.plist"
-          - "Henge.personal.entitlements"
+          - "Solstice.personal.entitlements"
           - "AppIcon.icon/**"
           - "AppIcon.icon"
           - "Native/*.c"
           - "Native/*.S"
-      - path: Henge/Resources
+      - path: Solstice/Resources
         buildPhase: resources
-      - path: Henge/AppIcon.icon
+      - path: Solstice/AppIcon.icon
         type: file
         buildPhase: resources
-      - path: HengeJITHelper/HengeJITMessages.swift
+      - path: SolsticeJITHelper/SolsticeJITMessages.swift
       - path: Screens
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.solstice.screens
         PRODUCT_NAME: Solstice
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_FILE: Henge/Info.plist
-        SWIFT_OBJC_BRIDGING_HEADER: Henge/HengeBridge.h
+        INFOPLIST_FILE: Solstice/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: Solstice/SolsticeBridge.h
         SWIFT_VERSION: "5.0"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) SOLSTICE_SCREENS"
         SWIFT_OPTIMIZATION_LEVEL: "-Onone"
@@ -47,7 +47,7 @@ targets:
           - "$(SRCROOT)/../core"
           - "$(SRCROOT)/../host"
           - "$(SRCROOT)/../devices"
-          - "$(SRCROOT)/Henge/Native"
+          - "$(SRCROOT)/Solstice/Native"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-lcompression"

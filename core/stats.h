@@ -1,5 +1,5 @@
-#ifndef HENGEVM_STATS_H
-#define HENGEVM_STATS_H
+#ifndef SOLSTICEVM_STATS_H
+#define SOLSTICEVM_STATS_H
 
 #include <stdint.h>
 

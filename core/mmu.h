@@ -1,5 +1,5 @@
-#ifndef HENGEVM_MMU_H
-#define HENGEVM_MMU_H
+#ifndef SOLSTICEVM_MMU_H
+#define SOLSTICEVM_MMU_H
 
 #include <stdint.h>
 #include <stdio.h>

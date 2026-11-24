@@ -1,0 +1,5 @@
+#include "Native/solstice-ios-jit.h"
+#include "Native/solstice-vm.h"
+#include "Native/HuskRPPairing.h"
+#include "hvsparse.h"
+#include "brand.h"

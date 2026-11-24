@@ -157,7 +157,7 @@ static NSUInteger archive_evict(const unsigned long long *bytes, NSUInteger file
         return;
     }
     NSURL *dir = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject
-        URLByAppendingPathComponent:@"Henge/Pipelines" isDirectory:YES];
+        URLByAppendingPathComponent:@"Solstice/Pipelines" isDirectory:YES];
     [self openArchiveIn:dir reset:opt && !strcmp(opt, "reset")];
 }
 

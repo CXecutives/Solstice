@@ -1,5 +1,5 @@
-#ifndef HENGEVM_CFG_H
-#define HENGEVM_CFG_H
+#ifndef SOLSTICEVM_CFG_H
+#define SOLSTICEVM_CFG_H
 
 #include <stdint.h>
 

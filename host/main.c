@@ -2,8 +2,8 @@
 #include "knobs.h"
 #include "net_slirp.h"
 #include <time.h>
-/* hengevm: boots the virtual Mac on the macOS host.
-   hengevm --rom AVPBooter.vmapple2.bin --disk disk.img --aux auxiliary.bin --ecid N [--seed N] [--ram MB] [--log N] */
+/* solsticevm: boots the virtual Mac on the macOS host.
+   solsticevm --rom AVPBooter.vmapple2.bin --disk disk.img --aux auxiliary.bin --ecid N [--seed N] [--ram MB] [--log N] */
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach.h>
 #include <pthread.h>
@@ -52,7 +52,7 @@ static RunArgs run_args;
 static dispatch_semaphore_t resume_go;
 static const char *snapshot_ident(void) {
     static char id[256];
-    snprintf(id, sizeof id, "hengevm-mac-test %d cpus", hv_vm_ncpus());
+    snprintf(id, sizeof id, "solsticevm-mac-test %d cpus", hv_vm_ncpus());
     return id;
 }
 static void save_now(const char *path, int then_exit) {
@@ -653,7 +653,7 @@ static void *input_thread(void *unused) {
                 fprintf(stderr, " kbd reports %u..%u tp reports %u..%u tp_mt %d\n", x->rtail, x->rhead, x->tp_rtail, x->tp_rhead, x->tp_mt);
             }
         }
-        else if (sscanf(line, "pause %d", &x) == 1) { /* paused for x seconds, then on (as Henge in the background, not killed) */
+        else if (sscanf(line, "pause %d", &x) == 1) { /* paused for x seconds, then on (as Solstice in the background, not killed) */
             if (hv_vm_pause() == 0) {
                 fprintf(stderr, "solstice: paused for %d s\n", x);
                 sleep((unsigned)x);
@@ -1039,7 +1039,7 @@ static void *cpu_thread(void *unused) {
 }
 
 static void usage(void) {
-    fprintf(stderr, "usage: hengevm --rom FILE --disk FILE --aux FILE --ecid N [--seed N] [--ram MB] [--log N] [--trace 1] [--screenshot PNG] [--watch VA] [--stats SECONDS [--profile 1]] [--cpus N] [--window] [--no-pvg] [--no-chain] [--break PC [--break-hits N]] [--dump PA LEN FILE] [--aux-offset BYTES] [--install IPSW] [--serial S] [--model S] [--soc-name S] [--product-name S] [--model-id S]\n");
+    fprintf(stderr, "usage: solsticevm --rom FILE --disk FILE --aux FILE --ecid N [--seed N] [--ram MB] [--log N] [--trace 1] [--screenshot PNG] [--watch VA] [--stats SECONDS [--profile 1]] [--cpus N] [--window] [--no-pvg] [--no-chain] [--break PC [--break-hits N]] [--dump PA LEN FILE] [--aux-offset BYTES] [--install IPSW] [--serial S] [--model S] [--soc-name S] [--product-name S] [--model-id S]\n");
     exit(2);
 }
 

@@ -1,5 +1,5 @@
 /* Every engine setting read from the environment (HV_*), one line each: the single source for core/knobs.{h,c},
-   ios/Henge/EngineKnobs.generated.swift, KNOBS.md and the CI gates (tools/knobs.py).
+   ios/Solstice/EngineKnobs.generated.swift, KNOBS.md and the CI gates (tools/knobs.py).
 
    KNOB(field, "HV_NAME", TYPE, default, low, high, "purpose")
      field     hv_knob.field in C, EngineKnob.field (camel case) in Swift; HV_NAME is "HV_" + its upper case.

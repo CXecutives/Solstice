@@ -91,7 +91,7 @@ static void grid_times_and_deadline(void) {
 
 /* The presenter (pvg_metal.m, presentLoop) over 10 s of a guest drawing at every refresh of its mode: woken by a new
    frame, it waits as hv_present_wait says and then shows the newest frame there is; the cap can change at switch_at
-   (henge_vm_set_power_profile, live). Returns the presents; *stale is the oldest a shown frame was when it went out. */
+   (solstice_vm_set_power_profile, live). Returns the presents; *stale is the oldest a shown frame was when it went out. */
 static unsigned paced(unsigned mode_hz, int cap_before, int cap_after, double switch_at, double *stale) {
     const double mode_every = 1.0 / mode_hz;
     double last = -1e9, worst = 0;

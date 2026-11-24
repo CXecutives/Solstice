@@ -1,5 +1,5 @@
-#ifndef HENGE_PVG_VBLANK_CLOCK_H
-#define HENGE_PVG_VBLANK_CLOCK_H
+#ifndef SOLSTICE_PVG_VBLANK_CLOCK_H
+#define SOLSTICE_PVG_VBLANK_CLOCK_H
 
 #include <stdint.h>
 

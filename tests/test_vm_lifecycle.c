@@ -1,5 +1,5 @@
-#include "henge-vm.h"
-#include "henge-ios-jit.h"
+#include "solstice-vm.h"
+#include "solstice-ios-jit.h"
 #include "install.h"
 #include "jit_region.h"
 #include "vm.h"
@@ -17,11 +17,11 @@
 /* Real native bridge and device workers; only the debugger allocation and
    unused installer entry point are replaced. No Apple ROM or disk needed. */
 static HvJitRegion jit;
-static HengeDualMapping mapping;
+static SolsticeDualMapping mapping;
 static int failures;
 static _Atomic int reader_done;
 static int installer_started;
-HengeDualMapping *henge_ios_jit_get_mapping(void) {
+SolsticeDualMapping *solstice_ios_jit_get_mapping(void) {
     return &mapping;
 }
 void hv_prof_ios_start(void) {}
@@ -72,13 +72,13 @@ static void *read_ui(void *unused) {
         uint8_t image[16];
         int x, y, width, height, stride;
         const uint8_t *pixels;
-        henge_vm_snapshot(image, 2, 2);
-        henge_vm_pointer(&x, &y);
-        henge_vm_cpus_on();
-        henge_vm_gpu_frames();
-        henge_vm_balloon(-1);
-        henge_vm_set_display_layer(NULL);
-        if (!henge_vm_boot_display(&pixels, &width, &height, &stride)) henge_vm_free_display(pixels);
+        solstice_vm_snapshot(image, 2, 2);
+        solstice_vm_pointer(&x, &y);
+        solstice_vm_cpus_on();
+        solstice_vm_gpu_frames();
+        solstice_vm_balloon(-1);
+        solstice_vm_set_display_layer(NULL);
+        if (!solstice_vm_boot_display(&pixels, &width, &height, &stride)) solstice_vm_free_display(pixels);
         usleep(500);
     }
     return NULL;
@@ -96,7 +96,7 @@ int main(void) {
     setenv("HV_BALLOON", "0", 1);
     write_file(disk, NULL, 1 << 20);
     write_file(aux, NULL, 1 << 20);
-    mapping = (HengeDualMapping){.rx_addr = (uint8_t *)jit.base,
+    mapping = (SolsticeDualMapping){.rx_addr = (uint8_t *)jit.base,
         .rw_addr = (uint8_t *)jit.base + jit.rw_diff, .size = jit.capacity * 4};
     pthread_t reader;
     if (pthread_create(&reader, NULL, read_ui, NULL)) return 1;
@@ -108,33 +108,33 @@ int main(void) {
     unsigned initial_dead_ports = dead_ports();
     /* Missing ROM fails after disks, RAM and device workers were created. */
     for (int i = 0; i < 3; i++) {
-        check("failed boot reports an error", henge_vm_boot(rom, disk, aux, 1, 0, 64, 4, error, sizeof error) != 0);
-        check("failed boot allows retry", henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
+        check("failed boot reports an error", solstice_vm_boot(rom, disk, aux, 1, 0, 64, 4, error, sizeof error) != 0);
+        check("failed boot allows retry", solstice_vm_state() == SOLSTICE_VM_IDLE && solstice_vm_can_start());
         check("failed boot closes files", fds() == initial_fds);
         check("failed boot joins workers", threads() == initial_threads);
     }
     for (int i = 0; i < 12; i++) {
-        int outcome = i % 3 == 2 ? HENGE_VM_OUTCOME_HOST_STOP : i % 3 == 1 ? HENGE_VM_OUTCOME_RESTART : HENGE_VM_OUTCOME_SHUTDOWN;
-        uint32_t code[] = {outcome == HENGE_VM_OUTCOME_RESTART ? 0xd2800120 : 0xd2800100, 0xf2b08000, 0xd4000002};
-        if (outcome == HENGE_VM_OUTCOME_HOST_STOP) code[0] = 0x14000000;
+        int outcome = i % 3 == 2 ? SOLSTICE_VM_OUTCOME_HOST_STOP : i % 3 == 1 ? SOLSTICE_VM_OUTCOME_RESTART : SOLSTICE_VM_OUTCOME_SHUTDOWN;
+        uint32_t code[] = {outcome == SOLSTICE_VM_OUTCOME_RESTART ? 0xd2800120 : 0xd2800100, 0xf2b08000, 0xd4000002};
+        if (outcome == SOLSTICE_VM_OUTCOME_HOST_STOP) code[0] = 0x14000000;
         write_file(rom, code, sizeof code);
-        int rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 4, error, sizeof error);
+        int rc = solstice_vm_boot(rom, disk, aux, 1, 0, 64, 4, error, sizeof error);
         if (rc) fprintf(stderr, "boot %d: %s\n", i, error);
         check("boot succeeds without restarting app", rc == 0);
         if (rc) break;
-        if (outcome == HENGE_VM_OUTCOME_HOST_STOP) {
-            henge_vm_mouse_button(0, 1);
-            henge_vm_mouse_button(1, 1);
-            henge_vm_mouse_move(5, 7);
-            henge_vm_mouse_button(1, 0);
-            henge_vm_stop();
+        if (outcome == SOLSTICE_VM_OUTCOME_HOST_STOP) {
+            solstice_vm_mouse_button(0, 1);
+            solstice_vm_mouse_button(1, 1);
+            solstice_vm_mouse_move(5, 7);
+            solstice_vm_mouse_button(1, 0);
+            solstice_vm_stop();
         }
-        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
-        check("terminal state is published after cleanup", henge_vm_state() == HENGE_VM_STOPPED);
-        if (henge_vm_state() != HENGE_VM_STOPPED) exit(1);
-        check("power outcome preserved", henge_vm_exit_outcome() == outcome);
-        check("start is available again", henge_vm_can_start());
-        check("new generation", henge_vm_generation() == (uint64_t)i + 1);
+        for (int n = 0; n < 3000 && solstice_vm_state() != SOLSTICE_VM_STOPPED; n++) usleep(1000);
+        check("terminal state is published after cleanup", solstice_vm_state() == SOLSTICE_VM_STOPPED);
+        if (solstice_vm_state() != SOLSTICE_VM_STOPPED) exit(1);
+        check("power outcome preserved", solstice_vm_exit_outcome() == outcome);
+        check("start is available again", solstice_vm_can_start());
+        check("new generation", solstice_vm_generation() == (uint64_t)i + 1);
         check("RAM released", hv_vm_board()->ram == NULL);
         check("RAM file closed", hv_vm_board()->ram_fd == -1);
         check("balloon released", hv_vm_board()->balloon == NULL);
@@ -154,155 +154,155 @@ int main(void) {
         /* movz x1, #0x7000, lsl 16; loop: ldr x2, [x1]; add x2, x2, #1; str x2, [x1]; b loop */
         uint32_t code[] = {0xd2ae0001, 0xf9400022, 0x91000442, 0xf9000022, 0x17fffffd};
         write_file(rom, code, sizeof code);
-        int rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
+        int rc = solstice_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         check("resume test boots", rc == 0);
         usleep(50000);
-        rc = henge_vm_suspend(snap, "test", error, sizeof error);
+        rc = solstice_vm_suspend(snap, "test", error, sizeof error);
         if (rc) fprintf(stderr, "suspend: %s\n", error);
-        check("suspend saves", rc == 0 && henge_vm_state() == HENGE_VM_PAUSED && access(snap, F_OK) == 0);
+        check("suspend saves", rc == 0 && solstice_vm_state() == SOLSTICE_VM_PAUSED && access(snap, F_OK) == 0);
         volatile uint64_t *count = (volatile uint64_t *)hv_vm_board()->ram;
         uint64_t c1 = *count;
         usleep(20000);
         check("paused: the counter stands still", c1 > 0 && *count == c1);
-        check("continue runs it on", henge_vm_continue() == 0 && henge_vm_state() == HENGE_VM_RUNNING);
+        check("continue runs it on", solstice_vm_continue() == 0 && solstice_vm_state() == SOLSTICE_VM_RUNNING);
         for (int n = 0; n < 1000 && *count == c1; n++) usleep(1000);
         check("continued: the counter moves", *count > c1);
-        rc = henge_vm_suspend(snap, "test", error, sizeof error);
+        rc = solstice_vm_suspend(snap, "test", error, sizeof error);
         uint64_t c2 = *count;
         check("second suspend saves", rc == 0 && c2 > c1);
-        henge_vm_stop();
-        check("a paused Mac stops", henge_vm_state() == HENGE_VM_STOPPED && hv_vm_board()->ram == NULL);
+        solstice_vm_stop();
+        check("a paused Mac stops", solstice_vm_state() == SOLSTICE_VM_STOPPED && hv_vm_board()->ram == NULL);
         uint64_t bytes = 0;
-        check("the save is whole", henge_vm_saved_ok(snap, "test", &bytes, NULL) == 0 && bytes > 0);
-        check("another ident is refused", henge_vm_saved_ok(snap, "other", NULL, NULL) != 0);
-        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "other", error, sizeof error);
-        check("resume with another ident is refused and leaves it startable", rc == HENGE_VM_RESUME_REFUSED && henge_vm_can_start());
+        check("the save is whole", solstice_vm_saved_ok(snap, "test", &bytes, NULL) == 0 && bytes > 0);
+        check("another ident is refused", solstice_vm_saved_ok(snap, "other", NULL, NULL) != 0);
+        rc = solstice_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "other", error, sizeof error);
+        check("resume with another ident is refused and leaves it startable", rc == SOLSTICE_VM_RESUME_REFUSED && solstice_vm_can_start());
         check("a failed resume uses the file up too", access(snap, F_OK) != 0);
         /* Save again (the failed resume took the file), then resume it properly. */
-        rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
+        rc = solstice_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         usleep(30000);
-        rc |= henge_vm_suspend(snap, "test", error, sizeof error);
+        rc |= solstice_vm_suspend(snap, "test", error, sizeof error);
         c2 = *(volatile uint64_t *)hv_vm_board()->ram;
-        henge_vm_stop();
-        rc |= henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        solstice_vm_stop();
+        rc |= solstice_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
         if (rc) fprintf(stderr, "resume: %s\n", error);
-        check("resume starts the saved Mac", rc == 0 && henge_vm_state() == HENGE_VM_RUNNING);
+        check("resume starts the saved Mac", rc == 0 && solstice_vm_state() == SOLSTICE_VM_RUNNING);
         count = (volatile uint64_t *)hv_vm_board()->ram;
         check("resumed: the counter is where it was", *count >= c2);
         for (int n = 0; n < 1000 && *count == c2; n++) usleep(1000);
         check("resumed: the counter moves on", *count > c2);
         /* The save stays valid while the disk is as it was: a kill now must find it again. */
         check("the save is kept while the resumed Mac has not written its disk",
-              henge_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
+              solstice_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
         check("a disk write", hv_disk_write(hv_vm_board()->root_blk->disk, 8192, "w", 1) == 0);
-        check("the first disk write deletes the save", henge_vm_drop_spent_save() == 1 && access(snap, F_OK) != 0);
+        check("the first disk write deletes the save", solstice_vm_drop_spent_save() == 1 && access(snap, F_OK) != 0);
         /* Saved, run on, saved again: the new save is never taken for the spent one. */
-        rc = henge_vm_suspend(snap, "test", error, sizeof error);
-        check("a paused, saved Mac keeps its save", rc == 0 && henge_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
-        check("paused since the save: nothing new to save", henge_vm_saved_unchanged() == 1);
-        check("it runs on", henge_vm_continue() == 0);
-        check("run on: the save is behind", henge_vm_saved_unchanged() == 0);
-        check("running on without a disk write keeps the save", henge_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
+        rc = solstice_vm_suspend(snap, "test", error, sizeof error);
+        check("a paused, saved Mac keeps its save", rc == 0 && solstice_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
+        check("paused since the save: nothing new to save", solstice_vm_saved_unchanged() == 1);
+        check("it runs on", solstice_vm_continue() == 0);
+        check("run on: the save is behind", solstice_vm_saved_unchanged() == 0);
+        check("running on without a disk write keeps the save", solstice_vm_drop_spent_save() == 0 && access(snap, F_OK) == 0);
         hv_disk_write(hv_vm_board()->aux_blk->disk, 8192, "a", 1);
-        check("an auxiliary storage write spends it too", henge_vm_drop_spent_save() == 1 && access(snap, F_OK) != 0);
+        check("an auxiliary storage write spends it too", solstice_vm_drop_spent_save() == 1 && access(snap, F_OK) != 0);
         /* The power button: pin 3 of the PL061 goes high, as Virtualization.framework presses it. */
-        check("the power button is pressed", henge_vm_power_button() == 0 && (hv_vm_board()->gpio->input & (1u << 3)));
-        check("pressed again, it is still a press", henge_vm_power_button() == 0 && (hv_vm_board()->gpio->input & (1u << 3)));
-        henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
-        check("resumed Mac stops", henge_vm_state() == HENGE_VM_STOPPED);
-        check("no power button without a Mac", henge_vm_power_button() != 0);
+        check("the power button is pressed", solstice_vm_power_button() == 0 && (hv_vm_board()->gpio->input & (1u << 3)));
+        check("pressed again, it is still a press", solstice_vm_power_button() == 0 && (hv_vm_board()->gpio->input & (1u << 3)));
+        solstice_vm_stop();
+        for (int n = 0; n < 3000 && solstice_vm_state() != SOLSTICE_VM_STOPPED; n++) usleep(1000);
+        check("resumed Mac stops", solstice_vm_state() == SOLSTICE_VM_STOPPED);
+        check("no power button without a Mac", solstice_vm_power_button() != 0);
         /* A disk written after the save: the saved Mac must not come back over it. */
-        rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
+        rc = solstice_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         usleep(30000);
-        rc |= henge_vm_suspend(snap, "test", error, sizeof error);
-        henge_vm_stop();
+        rc |= solstice_vm_suspend(snap, "test", error, sizeof error);
+        solstice_vm_stop();
         int dfd = open(disk, O_WRONLY);
         check("disk changed", dfd >= 0 && pwrite(dfd, "x", 1, 4096) == 1);
         if (dfd >= 0) close(dfd);
         check("save before the disk changes", rc == 0);
-        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
-        check("a changed disk refuses the saved Mac", rc == HENGE_VM_RESUME_REFUSED && strstr(error, "disk has changed") != NULL);
-        check("refused, it can start from cold", henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
+        rc = solstice_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        check("a changed disk refuses the saved Mac", rc == SOLSTICE_VM_RESUME_REFUSED && strstr(error, "disk has changed") != NULL);
+        check("refused, it can start from cold", solstice_vm_state() == SOLSTICE_VM_IDLE && solstice_vm_can_start());
         unlink(snap);
         /* A resume that fails for a reason of the moment (no JIT region, the machine cannot be made, the file cannot be
            opened now) keeps the save: it is the only copy of what the Mac had in memory. */
-        rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
+        rc = solstice_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         usleep(30000);
-        rc |= henge_vm_suspend(snap, "test", error, sizeof error);
-        henge_vm_stop();
+        rc |= solstice_vm_suspend(snap, "test", error, sizeof error);
+        solstice_vm_stop();
         check("save for the failed resumes", rc == 0 && access(snap, F_OK) == 0);
         uint8_t *rw = mapping.rw_addr;
         mapping.rw_addr = NULL;
-        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        rc = solstice_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
         mapping.rw_addr = rw;
-        check("no JIT region: the resume fails and the save stays", rc == HENGE_VM_RESUME_FAILED && access(snap, F_OK) == 0);
+        check("no JIT region: the resume fails and the save stays", rc == SOLSTICE_VM_RESUME_FAILED && access(snap, F_OK) == 0);
         char nodisk[300];
         snprintf(nodisk, sizeof nodisk, "%s/no-disk", dir);
-        rc = henge_vm_resume(rom, nodisk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
-        check("the machine cannot be made: the resume fails and the save stays", rc == HENGE_VM_RESUME_FAILED && access(snap, F_OK) == 0);
+        rc = solstice_vm_resume(rom, nodisk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        check("the machine cannot be made: the resume fails and the save stays", rc == SOLSTICE_VM_RESUME_FAILED && access(snap, F_OK) == 0);
         if (geteuid() != 0) { /* root opens it anyway */
             chmod(snap, 0);
-            rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+            rc = solstice_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
             chmod(snap, 0600);
-            check("the file cannot be opened now: the resume fails and the save stays", rc == HENGE_VM_RESUME_FAILED && access(snap, F_OK) == 0);
+            check("the file cannot be opened now: the resume fails and the save stays", rc == SOLSTICE_VM_RESUME_FAILED && access(snap, F_OK) == 0);
         }
-        check("after failed resumes it can start", henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
-        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
+        check("after failed resumes it can start", solstice_vm_state() == SOLSTICE_VM_IDLE && solstice_vm_can_start());
+        rc = solstice_vm_resume(rom, disk, aux, 1, 0, 64, 2, snap, "test", error, sizeof error);
         if (rc) fprintf(stderr, "resume after failed ones: %s\n", error);
-        check("the kept save still resumes", rc == HENGE_VM_RESUMED && henge_vm_state() == HENGE_VM_RUNNING);
-        henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
+        check("the kept save still resumes", rc == SOLSTICE_VM_RESUMED && solstice_vm_state() == SOLSTICE_VM_RUNNING);
+        solstice_vm_stop();
+        for (int n = 0; n < 3000 && solstice_vm_state() != SOLSTICE_VM_STOPPED; n++) usleep(1000);
         unlink(snap);
         /* A save goes back into the shape it was made with (RAM, CPUs), whatever the next start would want: the file
            says which, and another shape keeps the file instead of deleting it. */
-        rc = henge_vm_boot(rom, disk, aux, 1, 0, 128, 2, error, sizeof error);
+        rc = solstice_vm_boot(rom, disk, aux, 1, 0, 128, 2, error, sizeof error);
         usleep(30000);
-        rc |= henge_vm_suspend(snap, "test", error, sizeof error);
-        henge_vm_stop();
+        rc |= solstice_vm_suspend(snap, "test", error, sizeof error);
+        solstice_vm_stop();
         check("a save with 128 MB and 2 CPUs", rc == 0 && access(snap, F_OK) == 0);
         uint64_t saved_mb = 0;
         int saved_cpus = 0;
-        check("the save's shape", henge_vm_saved_shape(snap, "test", &saved_mb, &saved_cpus) == 0 && saved_mb == 128 && saved_cpus == 2);
-        check("no shape for another ident", henge_vm_saved_shape(snap, "other", &saved_mb, &saved_cpus) != 0);
-        rc = henge_vm_resume(rom, disk, aux, 1, 0, 64, 1, snap, "test", error, sizeof error);
-        check("another shape does not resume and keeps the save", rc == HENGE_VM_RESUME_FAILED && access(snap, F_OK) == 0
-              && henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
-        henge_vm_saved_shape(snap, "test", &saved_mb, &saved_cpus);
-        rc = henge_vm_resume(rom, disk, aux, 1, 0, saved_mb, saved_cpus, snap, "test", error, sizeof error);
+        check("the save's shape", solstice_vm_saved_shape(snap, "test", &saved_mb, &saved_cpus) == 0 && saved_mb == 128 && saved_cpus == 2);
+        check("no shape for another ident", solstice_vm_saved_shape(snap, "other", &saved_mb, &saved_cpus) != 0);
+        rc = solstice_vm_resume(rom, disk, aux, 1, 0, 64, 1, snap, "test", error, sizeof error);
+        check("another shape does not resume and keeps the save", rc == SOLSTICE_VM_RESUME_FAILED && access(snap, F_OK) == 0
+              && solstice_vm_state() == SOLSTICE_VM_IDLE && solstice_vm_can_start());
+        solstice_vm_saved_shape(snap, "test", &saved_mb, &saved_cpus);
+        rc = solstice_vm_resume(rom, disk, aux, 1, 0, saved_mb, saved_cpus, snap, "test", error, sizeof error);
         if (rc) fprintf(stderr, "resume in the save's shape: %s\n", error);
-        check("the save's own shape resumes", rc == HENGE_VM_RESUMED && henge_vm_state() == HENGE_VM_RUNNING
-              && henge_vm_ram_mb() == 128);
-        henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
+        check("the save's own shape resumes", rc == SOLSTICE_VM_RESUMED && solstice_vm_state() == SOLSTICE_VM_RUNNING
+              && solstice_vm_ram_mb() == 128);
+        solstice_vm_stop();
+        for (int n = 0; n < 3000 && solstice_vm_state() != SOLSTICE_VM_STOPPED; n++) usleep(1000);
         unlink(snap);
     }
     /* A device install: when its machine stops, the restore tools let go of its USB port and the machine is
-       released, so a device starts in the same launch (it used to need Henge quit and opened again). */
+       released, so a device starts in the same launch (it used to need Solstice quit and opened again). */
     {
         uint32_t spin[] = {0x14000000};
         write_file(rom, spin, sizeof spin);
         install_ok = 0;
         check("failed install start reports an error",
-              henge_vm_install(rom, disk, aux, 1, "none.ipsw", dir, 64, 2, error, sizeof error) != 0);
+              solstice_vm_install(rom, disk, aux, 1, "none.ipsw", dir, 64, 2, error, sizeof error) != 0);
         check("failed install detaches the restore tools and allows a start",
-              detached == 1 && henge_vm_state() == HENGE_VM_IDLE && henge_vm_can_start());
+              detached == 1 && solstice_vm_state() == SOLSTICE_VM_IDLE && solstice_vm_can_start());
         install_ok = 1;
-        int rc = henge_vm_install(rom, disk, aux, 1, "none.ipsw", dir, 64, 2, error, sizeof error);
+        int rc = solstice_vm_install(rom, disk, aux, 1, "none.ipsw", dir, 64, 2, error, sizeof error);
         if (rc) fprintf(stderr, "install: %s\n", error);
-        check("install starts", rc == 0 && henge_vm_state() == HENGE_VM_RUNNING);
-        check("nothing else starts while it runs", !henge_vm_can_start());
-        henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
-        check("install's machine stops", henge_vm_state() == HENGE_VM_STOPPED);
+        check("install starts", rc == 0 && solstice_vm_state() == SOLSTICE_VM_RUNNING);
+        check("nothing else starts while it runs", !solstice_vm_can_start());
+        solstice_vm_stop();
+        for (int n = 0; n < 3000 && solstice_vm_state() != SOLSTICE_VM_STOPPED; n++) usleep(1000);
+        check("install's machine stops", solstice_vm_state() == SOLSTICE_VM_STOPPED);
         check("restore tools detached", detached == 2);
         check("install's machine released", hv_vm_board()->ram == NULL && hv_vm_board()->vusb == NULL);
-        check("a device can start after an install", henge_vm_can_start());
-        rc = henge_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
+        check("a device can start after an install", solstice_vm_can_start());
+        rc = solstice_vm_boot(rom, disk, aux, 1, 0, 64, 2, error, sizeof error);
         check("a device boots after an install without quitting", rc == 0);
-        henge_vm_stop();
-        for (int n = 0; n < 3000 && henge_vm_state() != HENGE_VM_STOPPED; n++) usleep(1000);
-        check("and stops", henge_vm_state() == HENGE_VM_STOPPED);
+        solstice_vm_stop();
+        for (int n = 0; n < 3000 && solstice_vm_state() != SOLSTICE_VM_STOPPED; n++) usleep(1000);
+        check("and stops", solstice_vm_state() == SOLSTICE_VM_STOPPED);
     }
     hv_vm_destroy();
     atomic_store(&reader_done, 1);
@@ -310,7 +310,7 @@ int main(void) {
     int started_before = installer_started;
     install_ok = 0;
     check("installer reaches restore",
-          henge_vm_install(rom, disk, aux, 1, "unused", dir, 64, 2, error, sizeof error) != 0
+          solstice_vm_install(rom, disk, aux, 1, "unused", dir, 64, 2, error, sizeof error) != 0
           && installer_started == started_before + 1 && strstr(error, "installer could not start") != NULL);
     /* The installer stub owns no USB workers, so the test can release its board. */
     hv_vm_destroy();

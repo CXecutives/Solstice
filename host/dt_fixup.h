@@ -1,5 +1,5 @@
-#ifndef HENGEVM_DT_FIXUP_H
-#define HENGEVM_DT_FIXUP_H
+#ifndef SOLSTICEVM_DT_FIXUP_H
+#define SOLSTICEVM_DT_FIXUP_H
 
 #include <stdint.h>
 

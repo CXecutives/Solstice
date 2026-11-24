@@ -1,5 +1,5 @@
-#ifndef HENGEVM_GICV3_H
-#define HENGEVM_GICV3_H
+#ifndef SOLSTICEVM_GICV3_H
+#define SOLSTICEVM_GICV3_H
 
 #include <pthread.h>
 #include <stdint.h>

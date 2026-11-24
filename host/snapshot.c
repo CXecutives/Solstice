@@ -31,7 +31,7 @@
 #include "sysreg.h"
 #include "vm.h"
 
-#define SNAP_MAGIC "HENGESN1"
+#define SNAP_MAGIC "SOLSTSN1"
 #define SNAP_VERSION 1
 #define PAGE 0x4000ull
 #define CHUNK_PAGES 256u

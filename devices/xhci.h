@@ -1,5 +1,5 @@
-#ifndef HENGEVM_XHCI_H
-#define HENGEVM_XHCI_H
+#ifndef SOLSTICEVM_XHCI_H
+#define SOLSTICEVM_XHCI_H
 
 #include <pthread.h>
 

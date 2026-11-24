@@ -1,5 +1,5 @@
-#ifndef HENGEVM_PCIE_H
-#define HENGEVM_PCIE_H
+#ifndef SOLSTICEVM_PCIE_H
+#define SOLSTICEVM_PCIE_H
 
 #include <stdint.h>
 

@@ -1,5 +1,5 @@
-#ifndef HENGEVM_CPU_H
-#define HENGEVM_CPU_H
+#ifndef SOLSTICEVM_CPU_H
+#define SOLSTICEVM_CPU_H
 
 #include <stddef.h>
 #include <stdint.h>

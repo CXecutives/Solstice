@@ -1,5 +1,5 @@
-#ifndef HENGEVM_CLASSIFY_H
-#define HENGEVM_CLASSIFY_H
+#ifndef SOLSTICEVM_CLASSIFY_H
+#define SOLSTICEVM_CLASSIFY_H
 
 #include <stdint.h>
 

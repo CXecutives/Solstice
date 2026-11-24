@@ -1,5 +1,5 @@
-#ifndef HENGEVM_TRANSLATE_H
-#define HENGEVM_TRANSLATE_H
+#ifndef SOLSTICEVM_TRANSLATE_H
+#define SOLSTICEVM_TRANSLATE_H
 
 #include <stdint.h>
 

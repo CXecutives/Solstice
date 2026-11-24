@@ -1,5 +1,5 @@
-#ifndef HENGEVM_DISK_H
-#define HENGEVM_DISK_H
+#ifndef SOLSTICEVM_DISK_H
+#define SOLSTICEVM_DISK_H
 
 #include <stdint.h>
 #include <sys/uio.h>

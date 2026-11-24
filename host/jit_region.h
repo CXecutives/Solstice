@@ -1,5 +1,5 @@
-#ifndef HENGEVM_JIT_REGION_H
-#define HENGEVM_JIT_REGION_H
+#ifndef SOLSTICEVM_JIT_REGION_H
+#define SOLSTICEVM_JIT_REGION_H
 
 #include <stddef.h>
 #include <stdint.h>

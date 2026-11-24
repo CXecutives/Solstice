@@ -1,5 +1,5 @@
-#ifndef HENGEVM_VMAPPLE_H
-#define HENGEVM_VMAPPLE_H
+#ifndef SOLSTICEVM_VMAPPLE_H
+#define SOLSTICEVM_VMAPPLE_H
 
 #include <stdint.h>
 

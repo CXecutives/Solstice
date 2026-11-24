@@ -1,5 +1,5 @@
-#ifndef HENGEVM_VIRTIO_H
-#define HENGEVM_VIRTIO_H
+#ifndef SOLSTICEVM_VIRTIO_H
+#define SOLSTICEVM_VIRTIO_H
 
 #include <stdint.h>
 

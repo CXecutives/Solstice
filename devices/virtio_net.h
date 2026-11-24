@@ -1,5 +1,5 @@
-#ifndef HENGEVM_VIRTIO_NET_H
-#define HENGEVM_VIRTIO_NET_H
+#ifndef SOLSTICEVM_VIRTIO_NET_H
+#define SOLSTICEVM_VIRTIO_NET_H
 
 #include "virtio.h"
 

@@ -4,7 +4,7 @@ import QuartzCore
 /// What the engine was last told to draw into.
 nonisolated(unsafe) var engineLayer: UnsafeMutableRawPointer?
 
-@_cdecl("henge_vm_set_display_layer")
+@_cdecl("solstice_vm_set_display_layer")
 func recordDisplayLayer(_ layer: UnsafeMutableRawPointer?) { engineLayer = layer }
 
 @main

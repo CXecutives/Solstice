@@ -4,7 +4,7 @@ import QuartzCore
 /// What the engine was last told to draw into.
 nonisolated(unsafe) var engineLayer: UnsafeMutableRawPointer?
 
-@_cdecl("henge_vm_set_display_layer")
+@_cdecl("solstice_vm_set_display_layer")
 func recordDisplayLayer(_ layer: UnsafeMutableRawPointer?) { engineLayer = layer }
 
 /// An external display scene as the app has it: records what it was told. Showing the Mac

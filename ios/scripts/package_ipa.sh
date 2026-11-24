@@ -1,18 +1,18 @@
 #!/bin/zsh
-# Builds Henge for iOS and writes ~/Desktop/Solstice.ipa.
+# Builds Solstice for iOS and writes ~/Desktop/Solstice.ipa.
 # Unsigned build, then signed ad hoc inside out with the entitlements file named by the
-# HENGE_ENTITLEMENTS environment variable (default Henge/Henge.personal.entitlements), as Husk's
+# SOLSTICE_ENTITLEMENTS environment variable (default Solstice/Solstice.personal.entitlements), as Husk's
 # package_ipa.sh does: the sideloader (SideStore, AltStore, Impactor) re-signs it
 # with the user's own certificate and keeps the entitlements it can.
 set -e
 IOS="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${HENGE_IPA_OUT:-$HOME/Desktop/Solstice.ipa}" # HENGE_IPA_OUT: somewhere else (a trial build that must not replace the one on the Desktop)
+OUT="${SOLSTICE_IPA_OUT:-$HOME/Desktop/Solstice.ipa}" # SOLSTICE_IPA_OUT: somewhere else (a trial build that must not replace the one on the Desktop)
 [ -d "$IOS/deps/StikJIT.xcframework" ] || "$IOS/scripts/fetch_deps.sh"
 cd "$IOS"
 xcodegen generate >/dev/null
 DD="$IOS/build/DerivedData"
 mkdir -p "$IOS/build"
-xcodebuild -project Henge.xcodeproj -scheme Henge -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+xcodebuild -project Solstice.xcodeproj -scheme Solstice -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
     -derivedDataPath "$DD" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > "$DD.buildlog" 2>&1 || {
     # Never package what an older build left behind.
     grep -E "error:|BUILD" "$DD.buildlog" | sort -u
@@ -20,9 +20,9 @@ xcodebuild -project Henge.xcodeproj -scheme Henge -configuration Release -sdk ip
     exit 1
 }
 grep -E "BUILD" "$DD.buildlog" || true
-APP="$DD/Build/Products/Release-iphoneos/Henge.app"
+APP="$DD/Build/Products/Release-iphoneos/Solstice.app"
 rc=0
-for f in "$APP/Henge" "$APP/henge-jit.js" "$APP/PlugIns/HengeJITHelper.appex/HengeJITHelper" \
+for f in "$APP/Solstice" "$APP/solstice-jit.js" "$APP/PlugIns/SolsticeJITHelper.appex/SolsticeJITHelper" \
          "$APP/Frameworks/StikJIT.framework/StikJIT" "$APP/Frameworks/StikJIT.framework/Info.plist"; do
     if [ -f "$f" ]; then printf "  ok       %s\n" "${f#$APP/}"; else echo "  MISSING  ${f#$APP/}" >&2; rc=1; fi
 done
@@ -33,11 +33,11 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/Payload"
 cp -R "$APP" "$STAGE/Payload/"
 ENT="$STAGE/entitlements.plist"
-# HENGE_ENTITLEMENTS picks another file, as for xcodebuild (Henge/Henge.personal.entitlements for a free team).
-cp "$IOS/${HENGE_ENTITLEMENTS:-Henge/Henge.personal.entitlements}" "$ENT"
-SAPP="$STAGE/Payload/Henge.app"
-plutil -insert HengeBuildCommit -string "$(git -C "$IOS/.." rev-parse --short=12 HEAD 2>/dev/null || echo unknown)" "$SAPP/Info.plist"
-plutil -insert HengeBuildDate -string "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SAPP/Info.plist"
+# SOLSTICE_ENTITLEMENTS picks another file, as for xcodebuild (Solstice/Solstice.personal.entitlements for a free team).
+cp "$IOS/${SOLSTICE_ENTITLEMENTS:-Solstice/Solstice.personal.entitlements}" "$ENT"
+SAPP="$STAGE/Payload/Solstice.app"
+plutil -insert SolsticeBuildCommit -string "$(git -C "$IOS/.." rev-parse --short=12 HEAD 2>/dev/null || echo unknown)" "$SAPP/Info.plist"
+plutil -insert SolsticeBuildDate -string "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SAPP/Info.plist"
 # SOLSTICE_BUILD (CI run number): a rising version in the app and its JIT helper, so a sideloader sees an update.
 if [ -n "$SOLSTICE_BUILD" ]; then
   for plist in "$SAPP/Info.plist" "$SAPP"/PlugIns/*.appex/Info.plist; do

@@ -10,7 +10,7 @@
 #include "dispatch.h"
 #include "mmu.h"
 
-/* Only EL0 and EL1 exist for the guest; HengeVM plays EL2 (PSCI over HVC, as
+/* Only EL0 and EL1 exist for the guest; SolsticeVM plays EL2 (PSCI over HVC, as
    QEMU's vmapple machine sets up) and there is no EL3. */
 
 /* vmapple's OEM service calls for paravirtual ticket locks (HVC64: VMAPPLE_VCPU_WFK, VMAPPLE_VCPU_KICK). */
@@ -197,7 +197,7 @@ static uint64_t psci(HvCpu *cpu, uint64_t fn) {
         return t->off ? 1 : 0;
     }
     /* vmapple's paravirtualized PAC (XNU osfmk/arm64/hv_hvc.h): the guest
-       cannot program PAC keys itself, so the hypervisor does. HengeVM never
+       cannot program PAC keys itself, so the hypervisor does. SolsticeVM never
        signs pointers, so there is nothing to program; each call only has to
        succeed (XNU spins on a nonzero x0). */
     case 0xc1000000: /* VMAPPLE_PAC_SET_INITIAL_STATE */

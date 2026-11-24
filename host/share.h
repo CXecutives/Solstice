@@ -1,5 +1,5 @@
-#ifndef HENGEVM_SHARE_H
-#define HENGEVM_SHARE_H
+#ifndef SOLSTICEVM_SHARE_H
+#define SOLSTICEVM_SHARE_H
 
 #include <stddef.h>
 

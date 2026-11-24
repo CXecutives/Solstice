@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// The screens the Screens job photographs (ios/scripts/screens.sh): launched with `-solsticePreview <name>`, the app
-/// opens on that screen with the sample world (SampleData.swift) and the engine stub (henge-vm-stub.c), then writes a
+/// opens on that screen with the sample world (SampleData.swift) and the engine stub (solstice-vm-stub.c), then writes a
 /// ready marker. `-solsticePreview list` writes the list instead. Only in the simulator app (ios/screens.yml).
 struct Screen {
     enum Root {
@@ -78,7 +78,7 @@ struct Screen {
         Screen(name: "mac-settings-2", root: .macSettings, page: 1),
         Screen(name: "mac-settings-3", root: .macSettings, page: 2),
         Screen(name: "safe-mode", root: .tab(.macs), setUp: {
-            // Two launches in a row that ended with a Mac up: this one (HengeApp's noteLaunch) turns safe mode on.
+            // Two launches in a row that ended with a Mac up: this one (SolsticeApp's noteLaunch) turns safe mode on.
             SafeMode.noteLaunch()
             UserDefaults.standard.set(1, forKey: SettingKey.uncleanEnds.rawValue)
             UserDefaults.standard.set(true, forKey: SettingKey.macLive.rawValue)
@@ -124,7 +124,7 @@ enum Screens {
 
     static func mark(_ text: String) { try? Data(text.utf8).write(to: readyFile, options: .atomic) }
 
-    /// Before HengeApp reads anything: a clean container, then this screen's sample world.
+    /// Before SolsticeApp reads anything: a clean container, then this screen's sample world.
     static func prepare() {
         guard let requested else { return }
         let fm = FileManager.default
@@ -173,7 +173,7 @@ enum Screens {
         _ = keyboardWatch
         if screen.landscape { rotate() }
         if case .session = screen.root {
-            for _ in 0..<100 where session.error == nil && session.state != HENGE_VM_RUNNING && session.state != HENGE_VM_STOPPED {
+            for _ in 0..<100 where session.error == nil && session.state != SOLSTICE_VM_RUNNING && session.state != SOLSTICE_VM_STOPPED {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
@@ -184,7 +184,7 @@ enum Screens {
         try? await Task.sleep(nanoseconds: 1_000_000_000) // animations, sheets and the first engine poll
         if screen.darkOnly {
             try? await Task.sleep(nanoseconds: 2_000_000_000) // the session's cards and details follow its run loop (1 s a turn)
-            HengeLog.log("screens", "\(screen.name): state \(session.state.rawValue), error \(session.error ?? "none"), "
+            SolsticeLog.log("screens", "\(screen.name): state \(session.state.rawValue), error \(session.error ?? "none"), "
                          + "stuck \(session.stuck.map { "\($0)" } ?? "no"), storage paused \(session.storagePaused)")
         }
         // iPadOS can refuse to turn a window (its windowing mode): then there is no landscape picture to take.
@@ -200,7 +200,7 @@ enum Screens {
     private static func rotate() {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
         scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { error in
-            HengeLog.log("screens", "landscape refused: \(error.localizedDescription)")
+            SolsticeLog.log("screens", "landscape refused: \(error.localizedDescription)")
         }
     }
 

@@ -1,5 +1,5 @@
-#ifndef HENGEVM_INSTALL_H
-#define HENGEVM_INSTALL_H
+#ifndef SOLSTICEVM_INSTALL_H
+#define SOLSTICEVM_INSTALL_H
 
 #include <stdint.h>
 

@@ -1,5 +1,5 @@
-#ifndef HENGEVM_OPERANDS_H
-#define HENGEVM_OPERANDS_H
+#ifndef SOLSTICEVM_OPERANDS_H
+#define SOLSTICEVM_OPERANDS_H
 
 #include <stdint.h>
 

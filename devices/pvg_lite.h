@@ -1,11 +1,11 @@
-#ifndef HENGEVM_PVG_LITE_H
-#define HENGEVM_PVG_LITE_H
+#ifndef SOLSTICEVM_PVG_LITE_H
+#define SOLSTICEVM_PVG_LITE_H
 
 #include <stdint.h>
 
 #include "gicv3.h"
 
-/* HengeVM's own graphics device, for hosts without
+/* SolsticeVM's own graphics device, for hosts without
    ParavirtualizedGraphics.framework (iOS). It speaks the protocol of Apple's
    guest driver (AppleParavirtGPU) so the driver starts and its commands
    complete; pvg_metal.m runs what they draw. */

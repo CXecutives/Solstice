@@ -688,7 +688,7 @@ static int right_down, right_native;         /* the same */
 static dispatch_queue_t pointer_queue(void) {
     static dispatch_queue_t q;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ q = dispatch_queue_create("henge.pointer", DISPATCH_QUEUE_SERIAL); });
+    dispatch_once(&once, ^{ q = dispatch_queue_create("solstice.pointer", DISPATCH_QUEUE_SERIAL); });
     return q;
 }
 

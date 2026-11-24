@@ -113,7 +113,7 @@ static int cmd_store_iv(HvAes *a) {
 
 static void fifo_process(HvAes *a) {
     if (!a->fifo_idx) return;
-    if (a->m->log >= 1 && getenv("HENGEVM_AES_LOG"))
+    if (a->m->log >= 1 && getenv("SOLSTICEVM_AES_LOG"))
         fprintf(stderr, "solstice: aes cmd %x (word %u of command %08x)\n", a->fifo[0] >> CMD_SHIFT, a->fifo_idx, a->fifo[0]);
     int done;
     switch (a->fifo[0] >> CMD_SHIFT) {

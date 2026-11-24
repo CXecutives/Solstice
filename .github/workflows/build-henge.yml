@@ -7,7 +7,7 @@
 # It runs only on demand and does just what the inputs ask; tools/check.sh and tools/check-all.sh start it.
 # The parts run as parallel jobs, so a full check takes about as long as its slowest part.
 #
-# The IPA is signed ad hoc with Henge.personal.entitlements (free team: get-task-allow + increased memory
+# The IPA is signed ad hoc with Solstice.personal.entitlements (free team: get-task-allow + increased memory
 # limit); the sideloading tool re-signs it with the user's certificate on install.
 
 name: Build Solstice
@@ -49,7 +49,7 @@ permissions:
   contents: read
 
 jobs:
-  # No "Henge" in what a person can see, no setting around core/knobs.def (python3 only: a free Linux runner, no macOS slot).
+  # The old name nowhere, plain texts, no setting around core/knobs.def (python3 only: a free Linux runner, no macOS slot).
   brand:
     name: Brand gate
     runs-on: ubuntu-latest
@@ -78,7 +78,7 @@ jobs:
         run: |
           xcrun clang --version | head -1
           [ "$TESTS" = all ] && TESTS=""
-          # The app's engine bridge (henge-vm.c) with its network needs libslirp on the host, only for this test.
+          # The app's engine bridge (solstice-vm.c) with its network needs libslirp on the host, only for this test.
           case " $TESTS " in *" test_vm_lifecycle "*) brew install libslirp pkg-config ;; esac
           make -j4 core-test T="$TESTS"
 
@@ -162,7 +162,7 @@ jobs:
       - name: Check out Solstice
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          path: Henge
+          path: Solstice
 
       - name: Toolchain
         run: |
@@ -208,34 +208,34 @@ jobs:
           bash scripts/build_rppairing_ios.sh
 
       - name: Copy prebuilt deps into Solstice
-        working-directory: Henge
+        working-directory: Solstice
         run: zsh ios/scripts/fetch_deps.sh
 
       - name: Build the restore stack
-        working-directory: Henge
+        working-directory: Solstice
         run: zsh tools/build_ios_restore.sh
 
       - name: Build the engine
-        working-directory: Henge
+        working-directory: Solstice
         run: make -j4 ios-lib
 
       - name: SIMD gate
-        working-directory: Henge
+        working-directory: Solstice
         run: python3 tools/simd_gate.py build/ios
 
       - name: Package Solstice.ipa
-        working-directory: Henge
+        working-directory: Solstice
         env:
           SOLSTICE_BUILD: ${{ github.run_number }}
-          HENGE_IPA_OUT: ${{ github.workspace }}/Solstice.ipa
+          SOLSTICE_IPA_OUT: ${{ github.workspace }}/Solstice.ipa
         run: zsh ios/scripts/package_ipa.sh
 
       - name: Swift and Xcode warnings
         if: always()
-        working-directory: Henge
+        working-directory: Solstice
         run: |
           log=ios/build/DerivedData.buildlog
-          [ -f "$log" ] && grep -E "warning:" "$log" | sed 's/^.*\/Henge\///' | sort | uniq -c | sort -rn | head -40 || true
+          [ -f "$log" ] && grep -E "warning:" "$log" | sed 's/^.*\/Solstice\///' | sort | uniq -c | sort -rn | head -40 || true
 
       - name: Upload Solstice.ipa
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -250,5 +250,5 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: buildlog
-          path: Henge/ios/build/DerivedData.buildlog
+          path: Solstice/ios/build/DerivedData.buildlog
           if-no-files-found: ignore

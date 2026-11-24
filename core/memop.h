@@ -1,5 +1,5 @@
-#ifndef HENGEVM_MEMOP_H
-#define HENGEVM_MEMOP_H
+#ifndef SOLSTICEVM_MEMOP_H
+#define SOLSTICEVM_MEMOP_H
 
 #include <stdint.h>
 

@@ -410,7 +410,7 @@ static uint32_t surface_page_entry(HvPvgLite *lite, uint32_t list, uint64_t n, u
 
 - (void)makeMappedTexture:(HvObject *)o at:(uint64_t)at task:(uint32_t)task {
     /* d holds a v2 description (tag 0x39, 0x38 bytes) whose swizzle sits at +0x23..0x26: with only 32 bytes
-       read those came from the stack, and macOS 27.2's first surface made Metal abort Henge (swizzle 193). */
+       read those came from the stack, and macOS 27.2's first surface made Metal abort Solstice (swizzle 193). */
     struct __attribute__((packed)) { uint64_t mapping; uint32_t tag, size, ref; uint8_t d[64]; } h;
     memset(&h, 0, sizeof h);
     const uint32_t head = (uint32_t)offsetof(__typeof__(h), d);

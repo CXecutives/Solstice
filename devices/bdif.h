@@ -1,5 +1,5 @@
-#ifndef HENGEVM_BDIF_H
-#define HENGEVM_BDIF_H
+#ifndef SOLSTICEVM_BDIF_H
+#define SOLSTICEVM_BDIF_H
 
 #include "disk.h"
 #include "machine.h"

@@ -1,5 +1,5 @@
-#ifndef HENGEVM_EXCEPTION_H
-#define HENGEVM_EXCEPTION_H
+#ifndef SOLSTICEVM_EXCEPTION_H
+#define SOLSTICEVM_EXCEPTION_H
 
 #include <stdint.h>
 

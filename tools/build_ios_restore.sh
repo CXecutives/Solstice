@@ -1,9 +1,9 @@
 #!/bin/zsh
-# Builds the installer's libraries for iOS arm64 into build/ios/libhengerestore.a:
+# Builds the installer's libraries for iOS arm64 into build/ios/libsolsticerestore.a:
 # libplist, libimobiledevice-glue, libusbmuxd, libimobiledevice, libtatsu,
 # libirecovery, usbmuxd, idevicerestore (all third_party, vendored sources),
 # mbedtls (only so libimobiledevice compiles: a restore never opens TLS),
-# libzip (cmake), and HengeVM's libusb stand-in, curl stand-in and install
+# libzip (cmake), and SolsticeVM's libusb stand-in, curl stand-in and install
 # driver. The Mac build (make) uses Homebrew's copies of the same libraries.
 set -e
 # "tools/build_ios_restore.sh mac" builds the very same sources for the Mac into
@@ -59,24 +59,24 @@ if [ ! -f "$DEPS/libzip/lib/libzip.a" ]; then
 fi
 
 compile mbedtls -I"$TP/mbedtls/library" -- "$TP"/mbedtls/library/*.c
-compile plist -I"$TP/libplist/libcnary/include" -DPACKAGE_VERSION='"2.8.0-henge"' -- \
+compile plist -I"$TP/libplist/libcnary/include" -DPACKAGE_VERSION='"2.8.0-solstice"' -- \
     "$TP"/libplist/src/*.c "$TP"/libplist/libcnary/*.c
-compile glue -DPACKAGE_VERSION='"1.3.3-henge"' -- "$TP"/libimobiledevice-glue/src/*.c
-compile usbmuxdc -DPACKAGE_VERSION='"2.1.1-henge"' -DPACKAGE_STRING='"libusbmuxd"' -- "$TP"/libusbmuxd/src/*.c
-compile imd -DHAVE_MBEDTLS -DPACKAGE_VERSION='"1.4.0-henge"' -DPACKAGE_STRING='"libimobiledevice"' \
+compile glue -DPACKAGE_VERSION='"1.3.3-solstice"' -- "$TP"/libimobiledevice-glue/src/*.c
+compile usbmuxdc -DPACKAGE_VERSION='"2.1.1-solstice"' -DPACKAGE_STRING='"libusbmuxd"' -- "$TP"/libusbmuxd/src/*.c
+compile imd -DHAVE_MBEDTLS -DPACKAGE_VERSION='"1.4.0-solstice"' -DPACKAGE_STRING='"libimobiledevice"' \
     -I"$TP/libimobiledevice/src" -I"$TP/libimobiledevice/common" -- \
     "$TP"/libimobiledevice/src/*.c "$TP"/libimobiledevice/common/*.c
-compile tatsu -DPACKAGE_VERSION='"1.0.5-henge"' -- "$TP"/libtatsu/src/*.c
-compile irecv -DPACKAGE_VERSION='"1.3.1-henge"' -- "$TP"/libirecovery/src/libirecovery.c
-compile muxd -DPACKAGE_NAME='"usbmuxd"' -DPACKAGE_VERSION='"1.1.1-henge"' -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level -- \
+compile tatsu -DPACKAGE_VERSION='"1.0.5-solstice"' -- "$TP"/libtatsu/src/*.c
+compile irecv -DPACKAGE_VERSION='"1.3.1-solstice"' -- "$TP"/libirecovery/src/libirecovery.c
+compile muxd -DPACKAGE_NAME='"usbmuxd"' -DPACKAGE_VERSION='"1.1.1-solstice"' -Dmain=usbmuxd_main -Dlog_level=usbmuxd_log_level -- \
     "$TP"/usbmuxd/src/*.c
-compile idr -I"$TP/idevicerestore/src" -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME='"idevicerestore"' -DPACKAGE_VERSION='"1.0.0-henge"' -- \
+compile idr -I"$TP/idevicerestore/src" -DIDEVICERESTORE_NOMAIN -DPACKAGE_NAME='"idevicerestore"' -DPACKAGE_VERSION='"1.0.0-solstice"' -- \
     "$TP"/idevicerestore/src/*.c
-compile henge -std=c11 -I"$ROOT/core" -I"$ROOT/host" -I"$ROOT/devices" -- \
+compile solstice -std=c11 -I"$ROOT/core" -I"$ROOT/host" -I"$ROOT/devices" -- \
     "$ROOT/host/libusb_shim.c" "$ROOT/host/install.c"
-compile hengeobjc -fobjc-arc -- "$ROOT/host/curl_shim.m"
+compile solsticeobjc -fobjc-arc -- "$ROOT/host/curl_shim.m"
 
-rm -f "$BUILD/libhengerestore.a"
-xcrun --sdk $SDKNAME libtool -static -no_warning_for_no_symbols -o "$BUILD/libhengerestore.a" \
+rm -f "$BUILD/libsolsticerestore.a"
+xcrun --sdk $SDKNAME libtool -static -no_warning_for_no_symbols -o "$BUILD/libsolsticerestore.a" \
     "${OBJS[@]}" "$DEPS/libzip/lib/libzip.a" 2>&1 | grep -v 'same member name' || true
-ls -la "$BUILD/libhengerestore.a"
+ls -la "$BUILD/libsolsticerestore.a"

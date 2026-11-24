@@ -10,7 +10,7 @@ sys.dont_write_bytecode = True  # no __pycache__ in tools/
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import knobs  # noqa: E402
 
-SRC = pathlib.Path(__file__).resolve().parent.parent / "ios" / "Henge" / "EngineTuning.swift"
+SRC = pathlib.Path(__file__).resolve().parent.parent / "ios" / "Solstice" / "EngineTuning.swift"
 
 
 def table(text: str, name: str, by_case: dict) -> dict:
