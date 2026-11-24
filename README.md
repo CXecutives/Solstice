@@ -15,7 +15,7 @@ and iOS/iPadOS 26 or later, and macOS Sequoia 15.6.1 as the guest. There are no 
 
 ## Build
 
-Builds and tests run on GitHub Actions (`.github/workflows/build-henge.yml`), on a macOS runner:
+Builds and tests run on GitHub Actions (`.github/workflows/build-solstice.yml`), on a macOS runner:
 
 - `tools/check.sh test_jit test_mem` runs the named engine tests for what a change touched.
 - `tools/check-all.sh` runs every engine test (plain, with the shipped settings and ThinLTO, with undefined-behaviour

@@ -3,7 +3,7 @@
 # simulator, boots an iPhone 16 Pro and an 11-inch iPad Air, and for each screen the app lists, each device and both
 # appearances, launches it on that screen, waits for its ready marker and takes a screenshot. Writes
 # <device>-<appearance>-<screen>.png and index.html into SCREENS_OUT (default ios/build/screens).
-# Runs on a Mac with Xcode and XcodeGen (the Screens job in .github/workflows/build-henge.yml).
+# Runs on a Mac with Xcode and XcodeGen (the Screens job in .github/workflows/build-solstice.yml).
 set -euo pipefail
 IOS="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${SCREENS_OUT:-$IOS/build/screens}"

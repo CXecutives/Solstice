@@ -1,4 +1,4 @@
-# .github/workflows/build-henge.yml
+# .github/workflows/build-solstice.yml
 #
 # Solstice's only build: engine tests, Swift tests, the IPA and/or screenshots of the app, on GitHub-hosted macOS
 # runners (no Mac needed).

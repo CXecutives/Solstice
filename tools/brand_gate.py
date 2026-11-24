@@ -27,7 +27,6 @@ WHOLE_FILE = {"NOTICE", "README.md", "LICENSE", "HANDOFF.md", "PLAN.md", "CLAUDE
 ALLOWED = [
     (r"Based on Henge by Leviidev", "the credit line"),
     (r'contains\("Henge"\)', "a test that the old name is gone"),
-    (r"build-henge\.yml", "the workflow file's name, until it is renamed on the default branch"),
 ]
 ALLOWED = [(re.compile(rx), why) for rx, why in ALLOWED]
 
@@ -86,7 +85,7 @@ def agent_names():
 def main():
     names, marks = [], []
     for path in tracked():
-        if "henge" in path.lower() and not path.endswith("build-henge.yml"):
+        if "henge" in path.lower():
             names.append(f"{path}: the path itself")
         if path in WHOLE_FILE:
             continue
