@@ -9,10 +9,11 @@ tests="${*:-all}"
 ipa="${SOLSTICE_IPA:-false}"
 san="${SOLSTICE_SAN:-false}" # SOLSTICE_SAN=true: the tests again with undefined-behaviour traps
 screens="${SOLSTICE_SCREENS:-false}" # SOLSTICE_SCREENS=true: screenshots of every screen into out/screens (tools/screens.sh)
+screens_only="${SOLSTICE_SCREENS_ONLY:-}" # some screens and/or one device only, e.g. "iphone session-error"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 git push -q origin "$branch"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-out="$(gh workflow run build-henge.yml --ref "$branch" -f tests="$tests" -f ipa="$ipa" -f san="$san" -f screens="$screens" 2>&1)"
+out="$(gh workflow run build-henge.yml --ref "$branch" -f tests="$tests" -f ipa="$ipa" -f san="$san" -f screens="$screens" -f screens_only="$screens_only" 2>&1)"
 echo "$out"
 # gh prints the new run's URL; older versions do not, and then the run is looked up (it takes a while to be listed).
 run="$(printf '%s\n' "$out" | sed -n 's#.*/actions/runs/\([0-9][0-9]*\).*#\1#p' | head -1)"

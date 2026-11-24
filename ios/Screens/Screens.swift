@@ -8,6 +8,8 @@ struct Screen {
     enum Root {
         case tab(RootView.Tab)
         case jit([JITSetupFlow.Step])
+        /// A session started from Home, as the app does it (its own controller).
+        case appSession
         case macSettings
         case session(typing: Bool = false, details: Bool = false, confirmStop: Bool = false)
     }
@@ -27,7 +29,14 @@ struct Screen {
     var whenUp: @MainActor (SessionController) async -> Void = { _ in }
 
     /// A session is always dark (RootView shows it so): one appearance is enough.
-    var darkOnly: Bool { if case .session = root { return true } else { return false } }
+    var darkOnly: Bool {
+        switch root {
+        case .session, .appSession: return true
+        default: return false
+        }
+    }
+    /// The iPad in light only, apart from Home and Settings: its dark pictures add little (and runner time is scarce).
+    var padLight: Bool { !darkOnly && !name.hasPrefix("home") && !name.hasPrefix("settings") }
 
     static let all: [Screen] = [
         Screen(name: "home", root: .tab(.macs)),
@@ -93,6 +102,7 @@ struct Screen {
         }),
         Screen(name: "session-stopped", root: .session(), setUp: { setenv("SOLSTICE_STUB_STOP", "1", 1) }),
         Screen(name: "session-error", root: .session(), setUp: { setenv("SOLSTICE_STUB_BOOT_ERROR", Sample.bootError, 1) }),
+        Screen(name: "session-error-app", root: .appSession, setUp: { setenv("SOLSTICE_STUB_BOOT_ERROR", Sample.bootError, 1) }),
         Screen(name: "session-landscape", root: .session(), landscape: true),
         Screen(name: "session-landscape-keys", root: .session(typing: true), landscape: true),
     ]
@@ -109,7 +119,7 @@ enum Screens {
 
     /// What the job waits for: the screen's name once it can be photographed, "skip" for a page past the end.
     static let readyFile = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("solstice-preview-ready")
-    /// `-solsticePreview list`: one screen a line, its name and flags (dark-only, landscape).
+    /// `-solsticePreview list`: one screen a line, its name and flags (dark-only, pad-light, landscape).
     static let listFile = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("solstice-preview-list")
 
     static func mark(_ text: String) { try? Data(text.utf8).write(to: readyFile, options: .atomic) }
@@ -121,13 +131,15 @@ enum Screens {
         try? fm.removeItem(at: readyFile)
         if requested == "list" {
             let lines = Screen.all.map { s in
-                ([s.name] + (s.darkOnly ? ["dark-only"] : []) + (s.landscape ? ["landscape"] : [])).joined(separator: " ")
+                ([s.name] + (s.darkOnly ? ["dark-only"] : []) + (s.padLight ? ["pad-light"] : [])
+                    + (s.landscape ? ["landscape"] : [])).joined(separator: " ")
             }
             try? Data((lines.joined(separator: "\n") + "\n").utf8).write(to: listFile, options: .atomic)
             mark("list")
             return
         }
         guard let screen = current else { return }
+        _ = keyboardWatch
         let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         for item in (try? fm.contentsOfDirectory(at: documents, includingPropertiesForKeys: nil)) ?? [] { try? fm.removeItem(at: item) }
         try? fm.removeItem(at: Machines.root)
@@ -149,8 +161,16 @@ enum Screens {
         screen.setUp()
     }
 
+    /// The on-screen keyboard has come up (a typing session waits for it).
+    private static var keyboardShown = false
+    private static let keyboardWatch = NotificationCenter.default.addObserver(
+        forName: UIResponder.keyboardDidShowNotification, object: nil, queue: .main) { _ in
+        MainActor.assumeIsolated { keyboardShown = true }
+    }
+
     /// Once the screen shows: turn, wait for the session, scroll, then say it is ready.
     static func settle(_ screen: Screen, session: SessionController) async {
+        _ = keyboardWatch
         if screen.landscape { rotate() }
         if case .session = screen.root {
             for _ in 0..<100 where session.error == nil && session.state != HENGE_VM_RUNNING && session.state != HENGE_VM_STOPPED {
@@ -158,8 +178,11 @@ enum Screens {
             }
         }
         await screen.whenUp(session)
+        if case .session(typing: true, details: _, confirmStop: _) = screen.root { // the keyboard comes up late on a busy runner
+            for _ in 0..<80 where !keyboardShown { try? await Task.sleep(nanoseconds: 100_000_000) }
+        }
         try? await Task.sleep(nanoseconds: 1_000_000_000) // animations, sheets and the first engine poll
-        if case .session = screen.root {
+        if screen.darkOnly {
             try? await Task.sleep(nanoseconds: 2_000_000_000) // the session's cards and details follow its run loop (1 s a turn)
             HengeLog.log("screens", "\(screen.name): state \(session.state.rawValue), error \(session.error ?? "none"), "
                          + "stuck \(session.stuck.map { "\($0)" } ?? "no"), storage paused \(session.storagePaused)")
@@ -221,6 +244,8 @@ struct ScreensRoot: View {
             RootView(screensTab: tab)
         case .jit(let path):
             RootView(screensTab: .macs).sheet(isPresented: .constant(true)) { JITSetupFlow(screensPath: path) }
+        case .appSession:
+            RootView(screensTab: .macs, running: Sample.hero)
         case .macSettings:
             NavigationStack { MacSettingsView(mac: Sample.hero) { _ in } }.tint(Desk.accentLight)
         case .session(let typing, let details, let confirmStop):

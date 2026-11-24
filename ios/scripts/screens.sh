@@ -70,6 +70,14 @@ launch() { # udid container argument [wait]
     echo timeout
 }
 
+# SCREENS_ONLY (the workflow's screens_only): screen names and/or "iphone"/"ipad"; empty means everything.
+ONLY_SCREENS="" ONLY_DEVICES=""
+for word in ${SCREENS_ONLY:-}; do
+    case "$word" in iphone|ipad) ONLY_DEVICES="$ONLY_DEVICES $word" ;; *) ONLY_SCREENS="$ONLY_SCREENS $word" ;; esac
+done
+wanted() { [ -z "$ONLY_SCREENS" ] || case "$ONLY_SCREENS " in *" $1 "*) true ;; *) false ;; esac; }
+wanted_device() { [ -z "$ONLY_DEVICES" ] || case "$ONLY_DEVICES " in *" $1 "*) true ;; *) false ;; esac; }
+
 # Every screen on one device, in both appearances (a session only in dark: it is always dark).
 shoot_all() { # label udid
     local label="$1" udid="$2" container ready name flags file
@@ -80,7 +88,11 @@ shoot_all() { # label udid
             [ -n "$name" ] || continue
             [ "$SECONDS" -lt "$DEADLINE" ] || { echo "::warning::$label: out of time, $appearance $name and after not taken"; break 2; }
             case " $flags " in *" dark-only "*) [ "$appearance" = dark ] || continue ;; esac
+            case "$label $appearance $flags " in "ipad dark "*"pad-light "*) continue ;; esac
+            wanted "$name" || continue
             ready="$(launch "$udid" "$container" "$name")"
+            # A busy runner sometimes lets a launch or a screenshot time out: once more, then on.
+            case "$ready" in "launch failed"|timeout) ready="$(launch "$udid" "$container" "$name")" ;; esac
             [ "$ready" = skip ] && continue
             [ "$ready" = "$name" ] || echo "::warning::$label $appearance $name: not ready ($ready); photographed anyway"
             # The app's log, for a screen that was not ready and for each session (it says what the session was doing).
@@ -89,7 +101,9 @@ shoot_all() { # label udid
             fi
             sleep 0.3
             file="$OUT/$label-$appearance-$name.png"
-            limit 30 xcrun simctl io "$udid" screenshot --type=png "$file" > /dev/null 2>&1 || echo "::warning::$label $appearance $name: no screenshot"
+            limit 30 xcrun simctl io "$udid" screenshot --type=png "$file" > /dev/null 2>&1 \
+                || limit 60 xcrun simctl io "$udid" screenshot --type=png "$file" > /dev/null 2>&1 \
+                || echo "::warning::$label $appearance $name: no screenshot"
             echo "$label $appearance $name ${SECONDS}s"
             # simctl photographs the panel as it is mounted: a landscape screen comes out on its side.
             case " $flags " in *" landscape "*)
@@ -142,8 +156,8 @@ print(d[0]["udid"] if d else "")' "$RUNTIME" "$2")"
     limit 120 xcrun simctl shutdown "$udid" || true
     [ -z "$made" ] || limit 120 xcrun simctl delete "$udid" || true
 }
-device iPhone "$PHONE"
-device iPad "$PAD"
+! wanted_device iphone || device iPhone "$PHONE"
+! wanted_device ipad || device iPad "$PAD"
 
 python3 -I "$IOS/scripts/screens_index.py" "$OUT"
 echo "==> $(ls "$OUT"/*.png | wc -l | tr -d ' ') screenshots in ${SECONDS}s"

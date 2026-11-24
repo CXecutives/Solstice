@@ -152,10 +152,11 @@ extension RootView {
 
 #if SOLSTICE_SCREENS
 extension RootView {
-    /// The simulator app for screenshots (ios/Screens): opens on this tab.
-    init(screensTab: Tab) {
+    /// The simulator app for screenshots (ios/Screens): opens on this tab, with this Mac started.
+    init(screensTab: Tab, running: VirtualMac? = nil) {
         self.init()
         _tab = State(initialValue: screensTab)
+        _running = State(initialValue: running)
     }
 }
 #endif

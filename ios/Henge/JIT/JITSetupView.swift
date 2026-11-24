@@ -328,7 +328,7 @@ struct JITSetupFlow: View {
         @ViewBuilder content: () -> Content,
         @ViewBuilder actions: () -> Actions) -> some View {
         ZStack {
-            Theme.backdrop
+            Theme.backdrop.ignoresSafeArea() // under the bar with Close and the actions too: one background
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Image(systemName: symbol)
@@ -346,10 +346,12 @@ struct JITSetupFlow: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 12) { actions() }
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 16)
                 .background(Theme.backdrop)
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Theme.backdrop, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Close") { close() }

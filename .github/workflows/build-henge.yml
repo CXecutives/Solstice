@@ -30,6 +30,9 @@ on:
         description: Screenshots of every app screen in the simulator, with sample data (tools/screens.sh)
         type: boolean
         default: false
+      screens_only:
+        description: 'With screens: only these screens and/or devices, e.g. "iphone session-error" (empty: all)'
+        default: ''
 
 concurrency:
   group: build-${{ github.ref }}
@@ -132,6 +135,7 @@ jobs:
       - name: Photograph every screen
         env:
           SCREENS_OUT: ${{ github.workspace }}/screens
+          SCREENS_ONLY: ${{ inputs.screens_only }}
         run: bash ios/scripts/screens.sh
       - name: Upload the screenshots
         if: always() # what was taken, also when a screen failed

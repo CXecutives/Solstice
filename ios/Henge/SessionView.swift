@@ -267,12 +267,19 @@ struct SessionView: View {
         trackpadPanel(layout)
     }
 
+    /// A card (could not start, storage, stuck, heat, stopped) is over the trackpad.
+    private var cardUp: Bool {
+        error != nil || storagePaused || session.stuck != nil || power.holding || state == HENGE_VM_STOPPED
+    }
+
     private func trackpadPanel(_ layout: Layout) -> some View {
         let compact = layout.pad.height < 260
         return VStack(spacing: 0) {
             ZStack {
                 Trackpad()
-                if compact {
+                if cardUp {
+                    EmptyView() // a card sits over the pad: its hints would show around it
+                } else if compact {
                     Text("Trackpad").font(.system(size: 14)).foregroundStyle(Desk.faint).allowsHitTesting(false)
                 } else {
                     VStack(spacing: 6) {
