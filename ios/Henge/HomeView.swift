@@ -146,7 +146,7 @@ extension VirtualMac {
         var parts: [String] = []
         if let osName { parts.append(osName) }
         parts.append("\(ramMB / 1024) GB")
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -176,7 +176,7 @@ private struct MacHero: View {
                     }
                     .padding(.top, 15)
                     .padding(.horizontal, 5)
-                    Text("\(mac.summary) · \(mac.cpus) CPUs")
+                    Text("\(mac.summary), \(mac.cpus) CPUs")
                         .font(.system(size: 15))
                         .foregroundStyle(Desk.dim)
                         .frame(maxWidth: .infinity, alignment: .leading)

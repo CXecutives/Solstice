@@ -5,6 +5,9 @@ Everything a person can see says Solstice (names live in host/brand.h). What sta
 settings keys, queue labels, the log prefix of the engine, identifiers that happen to sit inside a string.
 Only needs python3; run from anywhere: python3 tools/brand_gate.py
 
+It also refuses a middle dot or a dash used as punctuation in any text of the app (the owner's rule for how
+texts read).
+
 Also checks that the places which cannot include host/brand.h (the Makefile, ios/project.yml) name the
 helper like brand.h does.
 """
@@ -45,6 +48,9 @@ ALLOWED = [
 # A test may assert that the old name is gone.
 ALLOWED_IN_TESTS = r'contains\("Henge"\)'
 ALLOWED = [(re.compile(rx), why) for rx, why in ALLOWED]
+
+# Texts are written plainly: no middle dot between words, no dash as punctuation.
+MARKS = ("·", "—", "–")
 
 LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 PLIST_STRING = re.compile(r"<string>([^<]*)</string>")
@@ -105,7 +111,7 @@ def agent_names():
 
 
 def main():
-    problems = []
+    problems, marks = [], []
     for path in tracked():
         if path in WHOLE_FILE or pathlib.Path(path).suffix not in CODE | PLIST | YAML:
             continue
@@ -114,6 +120,10 @@ def main():
         except (UnicodeDecodeError, FileNotFoundError):
             continue
         for n, line in enumerate(lines, 1):
+            if any(mark in line for mark in MARKS) and not path.startswith("tests/"):
+                for text in candidates(path, line):
+                    if any(mark in text for mark in MARKS):
+                        marks.append(f"{path}:{n}: {text[:100]!r}")
             if "henge" not in line.lower():
                 continue
             if path.startswith("tests/") and re.search(ALLOWED_IN_TESTS, line):
@@ -125,6 +135,11 @@ def main():
     if problems:
         print("brand gate: visible or unlisted \"Henge\" in string literals (names belong in host/brand.h):")
         for p in problems:
+            print("  " + p)
+        return 1
+    if marks:
+        print("brand gate: a middle dot or a dash as punctuation in a text (write a comma, a colon or two sentences):")
+        for p in marks:
             print("  " + p)
         return 1
     print("brand gate: ok")

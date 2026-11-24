@@ -579,7 +579,7 @@ static void key(uint16_t mac, int down) {
     } else {
         [NSCursor unhide];
     }
-    self.window.title = on ? @SOLSTICE_NAME " — press Control+Option to release the mouse" : @SOLSTICE_NAME " — click to use the mouse";
+    self.window.title = on ? @SOLSTICE_NAME ": press Control+Option to release the mouse" : @SOLSTICE_NAME ": click to use the mouse";
 }
 
 - (void)keyDown:(NSEvent *)e {
@@ -700,7 +700,7 @@ void hv_pvg_window_run(void) {
         static HVWindowDelegate *delegate;
         delegate = [HVWindowDelegate new];
         w.delegate = delegate;
-        w.title = @SOLSTICE_NAME " — click to use the mouse";
+        w.title = @SOLSTICE_NAME ": click to use the mouse";
         [w center];
         [w makeKeyAndOrderFront:nil];
         [w makeFirstResponder:v];

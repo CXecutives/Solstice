@@ -71,8 +71,8 @@ final class LogStream: ObservableObject {
         switch state {
         case .off: return "Off"
         case .connecting: text = "Connecting…"
-        case .connected: text = sent > 0 ? "Connected — \(sent) lines sent" : "Connected"
-        case .waiting(let why): text = "Waiting — \(why)"
+        case .connected: text = sent > 0 ? "Connected, \(sent) lines sent" : "Connected"
+        case .waiting(let why): text = "Waiting: \(why)"
         }
         return notLocal ? text + " (not a local address: sent unencrypted)" : text
     }

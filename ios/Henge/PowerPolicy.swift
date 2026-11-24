@@ -29,7 +29,7 @@ final class PowerPolicy: ObservableObject {
         switch state {
         case .nominal: return "Normal"
         case .fair: return "Warm"
-        case .serious: return "Hot — performance reduced"
+        case .serious: return "Hot, performance reduced"
         case .critical: return "Critical"
         @unknown default: return "Unknown"
         }
