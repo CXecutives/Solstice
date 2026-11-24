@@ -34,31 +34,39 @@ Das Repo ist öffentlich; die Geschichte wurde vorher von privaten Angaben berei
 - **Eigene App-Kennung** im Schluss-Build (`io.github.cxecutives.solstice`): der Mac wird danach einmal neu installiert.
 - Herkunftszeile unter Einstellungen → Info und in der README.
 
-## Stand des Umbaus (23.11.2026, spät)
-**In `main`, Build 1 = `out/Solstice.ipa` (1.0.71, Build 1071, Kennung noch `com.henge.app`):** Welle 1 (S, E1–E5), Welle 2
-(D Bildschirmgrößen, I Steuerung, L Lebenszyklus, U Einstellungen, K Knopf-Tabelle `core/knobs.def`, R sichtbare Namen
-`host/brand.h`), dazu die Behebungen aus sechs Prüfungen (Datenwege, Wecken/MMU, Bild, App, Code-Cache).
+## Stand des Umbaus (24.11.2026)
+**In `main`:** der ganze Umbau (Welle 1 und 2, alle Behebungen aus sechs Prüfungen) und seit heute:
+- **Alles heißt Solstice,** auch intern: Symbole `solstice_*`, Ordner `ios/Solstice`, Einstellungs-Schlüssel, Kennung
+  `io.github.cxecutives.solstice`, Workflow `build-solstice.yml`. „Henge" steht nur noch in Herkunft und Lizenz
+  (`README.md`, `NOTICE`, Zeile in Einstellungen, About) und in der Liste alter Gast-Namen in `host/brand.h`.
+  `tools/brand_gate.py` prüft das im ganzen Baum.
+- **Texte der App:** eigene Gliederung der Einstellungen (JIT, Trackpad & Mouse, Keyboard, Start & Resume, Appearance,
+  Performance, Diagnostics, About), Zeilen in Titel-Schreibweise wie in den iOS-Einstellungen, Menüpfade als „A > B",
+  kurze normale Sätze. Kein Punkt zwischen Wörtern, kein Gedankenstrich als Satzzeichen (prüft dieselbe Sperre).
+  Wunsch des Besitzers: eigenes, logisches, sorgfältiges Wording, weder KI-Ton noch Kopie des Originals.
+- **Bildschirmfotos** aller Ansichten aus dem Simulator: `tools/screens.sh`, Ergebnis in `out/screens/`.
+
 Geprüft: alle Engine-Tests normal, wie ausgeliefert + LTO und mit UB-Fallen, Swift-Tests, App-Build mit SIMD-Sperre,
 Namens- und Knopf-Sperre. **Noch auf keinem Gerät gelaufen.**
 
-**Was Build 1 am Gerät zeigen soll (Log lesen):**
+**Builds in `out/`:** `Solstice.ipa` ist der neue Stand mit neuer Kennung (für iOS eine neue App neben der alten: macOS
+wird darin frisch installiert, JIT neu eingerichtet). `Solstice-1.0.91.ipa` ist der letzte Stand mit alter Kennung.
+
+**Was der Gerätetest zeigen soll (Log lesen):**
 - Zähler gegen die Tabelle oben: Wieder-Übersetzungen, TLB-Nachfüllungen, Sprung-Cache-Füllungen, Geräte-Abfragen, Kicker.
-- iPad Air 4: kein totes Bild mehr; bei einem GPU-Fehler die Zeilen `pvg-metal: N remaps so far … told yes|no` und
+- iPad Air 4: kein totes Bild mehr; bei einem GPU-Fehler die Zeilen `pvg-metal: N remaps so far` und
   `GPU context lost: drawing on a new command queue`.
-- Fortsetzen (Start in Sekunden), Shut Down über den Ein/Aus-Knopf, Rechtsklick, deutsche Tastatur, Ton nach Unterbrechung,
-  schärferes Bild, Set Up räumt die alten Namen weg, Schlüsselbund-Übernahme der Kopplung.
+- iPhone: zählen die Werte unter Details hoch? (Im Simulator mit iOS 27 zeichnet die Sitzung auf dem iPhone nach dem
+  ersten Bild nicht neu; Auslöser dort ist `ExternalMacDisplayModifier`. Am echten Gerät unbestätigt.)
+- Fortsetzen, Shut Down über den Ein/Aus-Knopf, Rechtsklick, deutsche Tastatur, Ton nach Unterbrechung, schärferes Bild.
 
-**Unterwegs:** `solstice/screens` – Bildschirmfotos aller Ansichten aus dem Simulator (Schein-Engine), `tools/screens.sh`.
+**Danach:** nachbessern, was das Log zeigt; Bildschirmgröße in den Kopf des Speicherstands (heute verwirft eine geänderte
+Größe den Stand still); die Liste alter Gast-Namen entfernen, sobald alle Macs frisch installiert sind; drei
+Schluss-Prüfungen (Kern, App, Sicherheit); `-Werror`, `MAP.md`, `tools/WHERE.md`.
 
-**Danach:** Durchsicht des Aussehens anhand der Fotos · Texte in einen Katalog (`Strings.swift`) · Bildschirmgröße in den
-Kopf des Speicherstands (heute verwirft eine geänderte Größe den Stand still) · `-Werror`, `MAP.md`, `tools/WHERE.md` ·
-drei Schluss-Prüfungen (Kern, App, Sicherheit) · eigene App-Kennung + Programmname · Schluss-Build, frische Installation
-auf iPhone 16 Pro und iPad Air 4, Alltagstest.
+**Entschieden am 24.11.:** Es bleibt bei Sequoia 15.6.1. Kein Umschreiben in Rust: Die Engine ist C, eine Übersetzung
+bliebe rechtlich ein Abkömmling und die GPL gälte weiter; einzelne Teile in Rust neu zu schreiben bleibt möglich.
 
-**Offen / nur am Gerät zu klären:** Ein/Aus-Knopf (PL061) fährt macOS wirklich herunter?; Zwei-Finger-Rechtsklick;
-ISO-Tastatur (`^`/`<`); Schlüsselbund nach erneutem Signieren; ob eine neue Befehlswarteschlange die GPU-Sperre von iOS
-aufhebt; Ursache des Leerlauf-Sturms (Detektor loggt sie).
-
-**CI:** Alle macOS-Jobs auf dem `xcode-27`-Image. GitHub hat für macOS-arm64 Kapazitätsengpässe: Jobs warten bis 30 min
-und werden nach 15 min ohne Runner verworfen („not acquired“) – dann denselben Lauf neu starten. Mehrere Zweige zusammen in
+**CI:** alle macOS-Jobs auf dem `xcode-27`-Image. GitHub hat für macOS-arm64 Kapazitätsengpässe: Jobs warten bis 30 min
+und werden nach 15 min ohne Runner verworfen („not acquired"), dann denselben Lauf neu starten. Mehrere Zweige zusammen in
 einem Lauf prüfen statt einzeln.
