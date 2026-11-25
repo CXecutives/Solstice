@@ -70,3 +70,29 @@ bliebe rechtlich ein Abkömmling und die GPL gälte weiter; einzelne Teile in Ru
 **CI:** alle macOS-Jobs auf dem `xcode-27`-Image. GitHub hat für macOS-arm64 Kapazitätsengpässe: Jobs warten bis 30 min
 und werden nach 15 min ohne Runner verworfen („not acquired"), dann denselben Lauf neu starten. Mehrere Zweige zusammen in
 einem Lauf prüfen statt einzeln.
+
+## Neuaufbau in Rust (entschieden am 25.11.2026)
+Der Besitzer will Solstice als eigenes Werk neu aufbauen: die Engine in Rust, von Grund auf sauber gegliedert, mit
+maximaler Performance und niedrigster Verzögerung in jedem Aspekt, zuerst für das iPhone 16 Pro, der Auslegung nach für
+alle Geräte ab A14. Der C-Stand in `main` ist das Original, gegen das geprüft wird. Sequoia 15.6.1 bleibt, Lizenz und
+Herkunftszeile bleiben.
+
+**Vorgehen (freigegeben):** das Rust selbst schreiben, in eine vorher entworfene Struktur, Stück für Stück hinter
+derselben Schnittstelle, jedes Stück gegen den C-Stand und die Tests geprüft (die Methode von `rust-anything`: Verhalten
+des Originals aufzeichnen, Stück portieren, vergleichen). Kein mechanischer Übersetzer. Randteile zuerst (alles, was
+Daten vom Mac prüft), der Kern zuletzt. Assembler und die Grafik-Wiedergabe mit Metal bleiben.
+
+**Die großen Weichen, die der Plan klären muss:** Speicherzugriffe des Gasts (Tabelle im Code wie heute, oder
+Adressräume des Gasts im Wirt abbilden: vermutlich der größte Hebel und das größte Risiko), Stufen der Übersetzung,
+übersetzter Code über Starts hinweg, Zuordnung der virtuellen CPUs zu starken und sparsamen Kernen, Wege für Platte,
+Netz und Ton, Grenze zwischen Rust und Metal, Aufbau der Rust-Teile und wo „unsafe" erlaubt ist.
+
+**Stand:** Ein Plan für die Planung ist freigegeben (acht Pakete: Ziele in Zahlen, Pflichtenheft, Messbasis, Stand der
+Technik, Entwurfsfragen mit Versuchen, Geräte-Modell, Prüfweise, Risiken). Eine Sammelphase mit 17 parallelen Helfern
+wurde nach wenigen Minuten gestoppt, weil sie das Wochenlimit des Besitzers aufzehrte; es entstand noch kein Dokument.
+**Lehre: keine großen parallelen Läufe ohne sein Ja zum Verbrauch.** Sparsam weiter: der Leiter schreibt den Plan
+selbst, Helfer nur einzeln und für klar begrenzte Fragen.
+
+**Hilfreich:** Rust 1.95 ist auf dem PC vorhanden und darf genutzt werden (lokale `cargo test` für alles
+Geräteunabhängige). Offen ist der Gerätetest des fertigen Builds auf dem iPhone 16 Pro als Messbasis. Das App-Icon ist
+noch das ursprüngliche und bleibt vorerst.
